@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* tests/rc/statements.rc - an os2rc input compared with Open Watcom's wrc -zm (ADR-0099). */
+#define INCL_WIN
+#include <os2.h>
+MENU 3 PRELOAD
+BEGIN
+  MENUITEM "A\tB", 1, MIS_TEXT | MIS_BREAK
+  MENUITEM "C", 2, , MIA_CHECKED | MIA_DISABLED
+  MENUITEM "", 3, MIS_SEPARATOR
+  SUBMENU "S", 4, MIS_TEXT, MIA_HILITED
+  BEGIN
+    MENUITEM "D", 5
+    SUBMENU "T", 6
+    BEGIN
+      MENUITEM "E", 7
+    END
+  END
+  MENUITEM "#7", 8, MIS_BITMAP
+END
+ACCELTABLE 4
+BEGIN
+  "a", 10
+  "a", 11, CHAR
+  "B", 12, CHAR, SHIFT
+  "^C", 13
+  "x", 14, CONTROL, ALT
+  VK_F1, 15, VIRTUALKEY, SHIFT, CONTROL, ALT
+  65, 16
+  0x1e, 17, SCANCODE
+  VK_ALT, 18, VIRTUALKEY, LONEKEY
+  VK_F4, 19, VIRTUALKEY, ALT, SYSCOMMAND
+  VK_F1, 20, VIRTUALKEY, HELP
+END
+RCDATA 5
+BEGIN
+  1, 2L, "ab", 0x10, "c\0d", -1
+END
+RESOURCE 300 6 blob.bin
+DLGTEMPLATE 7
+BEGIN
+  DIALOG "x\ty\"z", 7, 0, 0, 10, 10, NOT WS_CLIPSIBLINGS
+  BEGIN
+    CONTROL "c", 30, 1, 2, 3, 4, WC_BUTTON, BS_PUSHBUTTON
+    PUSHBUTTON "p", 31, 1, 1, 1, 1, NOT WS_TABSTOP
+    CONTROL "q", 32, 1, 2, 3, 4, WC_STATIC, SS_TEXT | WS_VISIBLE
+       CTLDATA 1, 2, 3
+    ENTRYFIELD "e", 33, 1,1,1,1
+       CTLDATA 8, 32, 0, 0
+  END
+END
+STRINGTABLE
+BEGIN
+  32, "thirty-two"
+  33 "no comma"
+END

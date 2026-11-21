@@ -20,6 +20,10 @@ endif
 
 OS2_BUILD ?= $(WARPINE_SDK)/build/$(notdir $(CC))
 LX_LINK   ?= $(WARPINE_SDK)/../target/debug/lx_link
+# The resource compiler (ADR-0099): `$(OS2_RC) $(OS2_RCFLAGS) x.rc -o x.res`,
+# then pass x.res to $(LX_LINK) with the objects.
+OS2_RC    ?= $(WARPINE_SDK)/../target/debug/os2rc
+OS2_RCFLAGS = -I $(WARPINE_SDK)/include
 OS2_CRT0   = $(OS2_BUILD)/crt0.o
 OS2_LIBC   = $(OS2_BUILD)/libos2c.a
 

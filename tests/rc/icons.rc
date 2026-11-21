@@ -1,0 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* tests/rc/icons.rc - an os2rc input compared with Open Watcom's wrc -zm (ADR-0099). */
+#define INCL_WIN
+#include <os2.h>
+ICON 5 "../../samples/pm_pointer_test/cross.ptr"
+ICON 6 "../../samples/pm_pointer_test/cross.ptr"

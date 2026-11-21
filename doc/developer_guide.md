@@ -2123,7 +2123,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2195: 2138 warpine + 23 `gen_api` + 22 `lx_link` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2205: 2138 warpine + 23 `gen_api` + 24 `lx_link` + 8 `os2rc` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2427,7 +2427,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2195 unit tests (2138 warpine + 23 gen_api + 22 lx_link + 5 gen_arch + 7 gen_compat), 203 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2205 unit tests (2138 warpine + 23 gen_api + 24 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat), 204 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2467,7 +2467,18 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `LinkerState::build` lays out code at `0x10000`, data on the next 64 KB boundary and the stack after it, inside the program area. It also applies symbol precedence, merges commons, and defines `__{preinit,init,fini}_array_{start,end}`.
   - `lx_writer::write_lx` applies the relocations, writes LX fixups for absolute ones and import fixups for OS/2 APIs (from `targets/os2api.def`, embedded as a fallback), and fails on undefined symbols.
   - `resolve_import` gives an import's thunk address (calls reach it through `call rel32`); it knows every module of `constants::module_base`, and an unknown module is a link error (ADR-0097).
+  - `res_reader::parse_res` reads `.res` inputs (ADR-0099); `write_lx` puts the resources in a fourth object (`OBJ_RESOURCE`, base 0, each 4-byte aligned) with the LX resource table after the page map.
 - **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic".
+
+**`src/bin/os2rc.rs`** — the resource compiler of the C SDK (ADR-0099): `os2rc [-I dir] [-D name=value] in.rc -o out.res`.
+- **Preprocessor:** `logical_lines` (comments, continuations), `Preprocessor` (`#define` / `#include` / `#if` …; headers give only their directives; `RC_INVOKED`), and `Eval` (C expressions, casts; `#if` takes unknown names as 0, resources reject them).
+- **`Parser`:** one statement after another, into `Resource`s. String and message tables gather into bundles, written after the rest.
+- **Encoders:** `encode_menu`, `encode_dialog` (items depth first, then the pool: class name, text, control data, presentation parameters), and `write_res` (the classic `.res` format).
+- **The oracle:** every layout and default matches Open Watcom's `wrc -zm`:
+  - `os2rc_matches_open_watcom_wrc` compares the samples' scripts and `tests/rc/*.rc` resource by resource whenever Open Watcom is installed;
+  - three unit tests keep `wrc`'s bytes for scripts that exercise every structure.
+
+  When `os2rc` learns a statement, add a script for it to `tests/rc/`.
 
 **`sdk/`** — the C SDK for GCC and clang (ADR-0096).
 - **Headers:**

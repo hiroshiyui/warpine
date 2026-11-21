@@ -3,7 +3,9 @@
  * Warpine's SDK (ADR-0097): a frame and client window, the message loop,
  * window procedures called back by Warpine, sent and posted messages, a
  * timer, window words and text, rectangles, atoms, and GPI drawing read
- * back with GpiQueryPel. The program ends itself; each check prints
+ * back with GpiQueryPel; and resources compiled by os2rc (c_pm_test.rc,
+ * ADR-0099): the frame's menu and accelerators, a dialog, a string and
+ * raw data. The program ends itself; each check prints
  *
  *   c_pm_test: <what>: ok
  *   c_pm_test: <what>: FAIL got <value> want <value>
@@ -16,6 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+
+#include "c_pm_test.h"
 
 /* The structures as Warpine reads and writes them. */
 _Static_assert(sizeof(QMSG) == 32, "QMSG");
@@ -109,8 +113,42 @@ static MRESULT EXPENTRY client_proc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2
     return WinDefWindowProc(hwnd, msg, mp1, mp2);
 }
 
+static char dlg_entry_text[32];
+
+/* The dialog reads its entry field's text from the template, then ends. */
+static MRESULT EXPENTRY dlg_proc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
+{
+    if (msg == WM_INITDLG) {
+        WinQueryDlgItemText(hwnd, ID_DLG_EDIT, sizeof dlg_entry_text, dlg_entry_text);
+        WinDismissDlg(hwnd, DLG_RESULT);
+        return 0;
+    }
+    return WinDefDlgProc(hwnd, msg, mp1, mp2);
+}
+
+static void resource_checks(void)
+{
+    check("FCF_MENU loaded the RT_MENU resource as the frame's menu",
+          WinWindowFromID(frame, FID_MENU) != NULLHANDLE, 1);
+    check("FCF_ACCELTABLE loaded the RT_ACCELTABLE resource", WinQueryAccelTable(hab, frame) != NULLHANDLE, 1);
+    char text[40] = "";
+    LONG n = WinLoadString(hab, NULLHANDLE, ID_STR_HELLO, sizeof text, text);
+    check("WinLoadString reads the STRINGTABLE", n == 16 && !strcmp(text, "Hello from os2rc"), 1);
+    PVOID data = NULL;
+    ULONG size = 0;
+    static const unsigned char want[] = { 0x34, 0x12, 0xBC, 0x9A, 0x78, 0x56, 'r', 'a', 'w', 0 };
+    check("DosGetResource / DosQueryResourceSize read the RCDATA",
+          DosGetResource(NULLHANDLE, RT_RCDATA, ID_DATA, &data) == NO_ERROR
+          && DosQueryResourceSize(NULLHANDLE, RT_RCDATA, ID_DATA, &size) == NO_ERROR
+          && size == sizeof want && !memcmp(data, want, sizeof want), 1);
+    check("WinDlgBox runs the DLGTEMPLATE and returns WinDismissDlg's result",
+          WinDlgBox(HWND_DESKTOP, frame, dlg_proc, NULLHANDLE, ID_DLG, NULL), DLG_RESULT);
+    check("the dialog's entry field got the template's text", !strcmp(dlg_entry_text, "typed"), 1);
+}
+
 void run_checks(HWND hwnd)
 {
+    resource_checks();
     check("WM_CREATE reached the client once", created, 1);
     check("WM_PAINT reached the client", painted >= 1, 1);
     check("GpiBox filled with the colour GpiQueryPel reads back", paint_pel, CLR_BLUE);
@@ -221,8 +259,8 @@ int main(void)
     check("WinInitialize / WinCreateMsgQueue", hab != NULLHANDLE && hmq != NULLHANDLE, 1);
     check("WinRegisterClass", WinRegisterClass(hab, CLIENT_CLASS, client_proc, CS_SIZEREDRAW, 4), TRUE);
 
-    ULONG flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINMAX;
-    frame = WinCreateStdWindow(HWND_DESKTOP, 0, &flags, CLIENT_CLASS, "c_pm_test", 0, NULLHANDLE, 0, &client);
+    ULONG flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINMAX | FCF_MENU | FCF_ACCELTABLE;
+    frame = WinCreateStdWindow(HWND_DESKTOP, 0, &flags, CLIENT_CLASS, "c_pm_test", 0, NULLHANDLE, ID_MAIN, &client);
     check("WinCreateStdWindow", frame != NULLHANDLE && client != NULLHANDLE, 1);
     WinSetWindowPos(frame, HWND_TOP, 40, 40, CLIENT_CX + 100, CLIENT_CY + 100,
                     SWP_SIZE | SWP_MOVE | SWP_SHOW | SWP_ACTIVATE);

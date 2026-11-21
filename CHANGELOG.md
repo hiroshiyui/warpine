@@ -20,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - **`targets/os2api.def`** now lists the 362 PMWIN and PMGPI calls the PM sub-dispatchers serve, so `lx-link` links PM programs.
   - **`gen_api check-headers`** compares every integer constant in the headers with Warpine's own (801 of 962), and checks `EXPENTRY` declarations too.
   - **`samples/c_pm_test`:** a PM program, 33 checks, passing built by GCC and by clang.
+- **`os2rc`, a resource compiler for the C SDK** (ADR-0099).
+  - **Input:** resource scripts, with a C preprocessor in front, and the SDK's `os2.h` for the constants. The statements are MENU, DLGTEMPLATE (DIALOG, FRAME, WINDOW, CONTROL and the control statements, PRESPARAMS, CTLDATA), ACCELTABLE, STRINGTABLE, MESSAGETABLE, RCDATA, ICON, POINTER, BITMAP, FONT, RESOURCE, DEFAULTICON, DLGINCLUDE, CODEPAGE and RCINCLUDE.
+  - **Output:** classic OS/2 `.res` files, byte-identical to Open Watcom's `wrc -zm` for every script in `samples/` and `tests/rc/`.
+  - **`lx-link`** links `.res` files in, as a resource object with the LX resource table.
+  - **`samples/c_pm_test`** gets its menu, accelerators, a dialog, a string and raw data from a script: 47 checks, with GCC and with clang.
 - **The C runtime: a per-thread `errno` and floating point in `printf`** (ADR-0098).
   - **`errno`** is a word of OS/2 thread-local memory: every thread has its own, starting at 0.
   - **`printf`** formats doubles (`%e %f %g`, all flags, `L` for `long double`) from their exact decimal digits, rounded once with ties to even, with no floating-point instruction.

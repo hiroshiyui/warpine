@@ -1822,6 +1822,65 @@ fn test_c_sdk_from_gcc_and_clang() {
     }
 }
 
+/// The resources of a classic OS/2 .res file, by (type, name): memory
+/// flags and data.
+fn parse_classic_res(path: &Path) -> std::collections::BTreeMap<(u16, u16), (u16, Vec<u8>)> {
+    let b = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut out = std::collections::BTreeMap::new();
+    let mut i = 0;
+    while i + 12 <= b.len() {
+        assert!(b[i] == 0xFF && b[i + 3] == 0xFF, "{}: numeric type and name at {i}", path.display());
+        let w = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+        let size = u32::from_le_bytes([b[i + 8], b[i + 9], b[i + 10], b[i + 11]]) as usize;
+        out.insert((w(i + 1), w(i + 4)), (w(i + 6), b[i + 12..i + 12 + size].to_vec()));
+        i += 12 + size;
+    }
+    assert_eq!(i, b.len(), "{}: trailing bytes", path.display());
+    out
+}
+
+/// ADR-0099: os2rc against the oracle — every resource script in samples/
+/// and tests/rc/, compiled by Open Watcom's wrc -zm (with Open Watcom's
+/// headers) and by os2rc (with the SDK's), gives the same resources,
+/// byte for byte. Skips when Open Watcom is not installed.
+#[test]
+fn os2rc_matches_open_watcom_wrc() {
+    let watcom = std::fs::canonicalize("vendor/watcom").ok();
+    let Some(wrc) = watcom.as_ref().map(|w| w.join("binl64/wrc")).filter(|p| p.exists()) else {
+        eprintln!("skipping os2rc_matches_open_watcom_wrc: Open Watcom not installed (vendor/setup_watcom.sh)");
+        return;
+    };
+    let watcom = watcom.unwrap();
+    let sdk = std::fs::canonicalize("sdk/include").expect("sdk/include");
+    let mut scripts: Vec<std::path::PathBuf> = Vec::new();
+    for dir in std::fs::read_dir("samples").expect("samples").flatten().map(|e| e.path()).chain([std::path::PathBuf::from("tests/rc")]) {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            scripts.extend(entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "rc")));
+        }
+    }
+    scripts.sort();
+    assert!(scripts.len() >= 20, "found only {} scripts", scripts.len());
+    let out = tempfile::tempdir().expect("tempdir");
+    for (n, script) in scripts.iter().enumerate() {
+        let script = std::fs::canonicalize(script).expect("canonicalize");
+        let dir = script.parent().expect("a directory");
+        let file = script.file_name().expect("a name");
+        let (a, b) = (out.path().join(format!("{n}.wrc.res")), out.path().join(format!("{n}.os2rc.res")));
+        let r = Command::new(&wrc).current_dir(dir).env("WATCOM", &watcom)
+            .args(["-q", "-r", "-zm", "-bt=os2"])
+            .arg(format!("-i={}", watcom.join("h/os2").display())).arg(format!("-i={}", watcom.join("h").display()))
+            .arg(file).arg(format!("-fo={}", a.display())).output().expect("run wrc");
+        assert!(r.status.success(), "wrc {}:\n{}", script.display(), String::from_utf8_lossy(&r.stdout));
+        let r = Command::new(env!("CARGO_BIN_EXE_os2rc")).current_dir(dir).arg("-I").arg(&sdk)
+            .arg(file).arg("-o").arg(&b).output().expect("run os2rc");
+        assert!(r.status.success(), "os2rc {}:\n{}", script.display(), String::from_utf8_lossy(&r.stderr));
+        let (want, got) = (parse_classic_res(&a), parse_classic_res(&b));
+        for key in want.keys().chain(got.keys()) {
+            assert_eq!(got.get(key), want.get(key), "{}: resource type {} id {}", script.display(), key.0, key.1);
+        }
+    }
+}
+
 /// ADR-0097: samples/c_pm_test — a PM program built with the SDK's pm.h by
 /// GCC and by clang (each when installed): a frame and client, the message
 /// loop, window procedures called back by Warpine, sent and posted
@@ -1839,12 +1898,13 @@ fn gui_c_pm_from_gcc_and_clang() {
         let dir = tempfile::tempdir().expect("tempdir");
         let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
                     format!("BUILD={}", dir.path().display()),
-                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link")),
+                    format!("OS2_RC={}", env!("CARGO_BIN_EXE_os2rc"))];
         let out = Command::new("make").args(["-s", "-C", "samples/c_pm_test"]).args(&vars).output().expect("run make");
         assert!(out.status.success(), "make ({compiler}):\n{}{}",
                 String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         let exe = dir.path().join("c_pm_test.exe");
-        assert!(assert_scripted_checks_pass_env(exe.to_str().unwrap(), "c_pm_test", 41, "15000 quit\n", &[]),
+        assert!(assert_scripted_checks_pass_env(exe.to_str().unwrap(), "c_pm_test", 47, "15000 quit\n", &[]),
                 "{compiler}: c_pm_test did not run");
     }
 }

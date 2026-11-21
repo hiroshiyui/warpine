@@ -223,8 +223,8 @@ modules = ["loader/gdb_stub.rs", "loader/crash_dump.rs"]
 [[layer]]
 id = "tools"
 zone = "build"
-label = "Build tools: lx-link, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033)"
-modules = ["bin/lx_link.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compat.rs"]
+label = "Build tools: lx-link, os2rc, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033, ADR-0099)"
+modules = ["bin/lx_link.rs", "bin/os2rc.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compat.rs"]
 
 [[layer]]
 id = "deskserver"

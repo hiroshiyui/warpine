@@ -430,6 +430,19 @@ APIRET APIENTRY DosQueryModuleHandle(PCSZ pszModname, PHMODULE phmod);
 APIRET APIENTRY DosQueryModuleName(HMODULE hmod, ULONG cbName, PCHAR pch);
 APIRET APIENTRY DosQueryModFromEIP(HMODULE *phMod, ULONG *pObjNum, ULONG BuffLen,
                                    PCHAR pBuff, ULONG *pOffset, ULONG Address);
+/* Resource types. */
+#define RT_POINTER     1
+#define RT_BITMAP      2
+#define RT_MENU        3
+#define RT_DIALOG      4
+#define RT_STRING      5
+#define RT_FONTDIR     6
+#define RT_FONT        7
+#define RT_ACCELTABLE  8
+#define RT_RCDATA      9
+#define RT_MESSAGE     10
+#define RT_DLGINCLUDE  11
+
 APIRET APIENTRY DosGetResource(HMODULE hmod, ULONG idType, ULONG idName, PPVOID ppb);
 APIRET APIENTRY DosFreeResource(PVOID pb);
 APIRET APIENTRY DosQueryResourceSize(HMODULE hmod, ULONG idt, ULONG idn, PULONG pulsize);

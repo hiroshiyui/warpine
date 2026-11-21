@@ -1,0 +1,34 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* tests/rc/escapes_icons_windows.rc - an os2rc input compared with Open Watcom's wrc -zm (ADR-0099). */
+#define INCL_WIN
+#include <os2.h>
+#define TWO 2
+ICON 1 "../../samples/pm_pointer_test/cross.ptr"
+POINTER 2 "../../samples/pm_pointer_test/cross.ptr"
+DLGINCLUDE 1 "probe.h"
+CODEPAGE 437
+STRINGTABLE
+BEGIN
+  1, "\x41\101\\q"
+  2, "a" "b"
+  3, "c"
+END
+STRINGTABLE
+BEGIN
+  4, "w"
+END
+DLGTEMPLATE 9
+BEGIN
+  DIALOG "n", 9, 0, 0, 10, 10
+  BEGIN
+    GROUPBOX "g", (TWO + 1) * 2 - ~0, 1,1,5,5
+    WINDOW "w", 41, 1,1,1,1, "MyClass", WS_VISIBLE
+    BEGIN
+      LTEXT "inner", 42, 0,0,1,1
+    END
+    FRAME "f", 43, 1,1,1,1, FS_BORDER, FCF_TITLEBAR
+    BEGIN
+      PUSHBUTTON "pb", 44, 0,0,1,1
+    END
+  END
+END

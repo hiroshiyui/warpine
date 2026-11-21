@@ -68,6 +68,8 @@ const LX_HEADER_SIZE: u32 = 172; // 0xAC
 const OBJ_READ: u32 = 0x0001;
 const OBJ_WRITE: u32 = 0x0002;
 const OBJ_EXEC: u32 = 0x0004;
+/// The object holds resources (reached through the resource table).
+const OBJ_RESOURCE: u32 = 0x0008;
 const OBJ_BIG: u32 = 0x0040; // 32-bit (USE32)
 const OBJ_USE32: u32 = 0x2000;
 
@@ -118,9 +120,9 @@ mod args {
                 }
                 // All other unknown flags: silently skip
             } else {
-                // Positional: only collect .o / .rlib / .a files
+                // Positional: only collect .o / .rlib / .a / .res files
                 let lower = arg.to_ascii_lowercase();
-                if lower.ends_with(".o") || lower.ends_with(".rlib") || lower.ends_with(".a") {
+                if lower.ends_with(".o") || lower.ends_with(".rlib") || lower.ends_with(".a") || lower.ends_with(".res") {
                     inputs.push(PathBuf::from(arg));
                 }
             }
@@ -164,6 +166,44 @@ mod def_parser {
             }
         }
         map
+    }
+}
+
+// ─── mod res_reader ───────────────────────────────────────────────────────────
+
+/// `.res` files in the classic OS/2 format (`os2rc`, ADR-0099): each
+/// resource is 0xFF, its type, 0xFF, its name (both numbers), memory
+/// flags, its size and its data.
+mod res_reader {
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ResEntry {
+        pub type_id: u16,
+        pub name: u16,
+        pub data: Vec<u8>,
+    }
+
+    /// Size of an entry's header.
+    const HEADER: usize = 12;
+    /// The mark before a numeric type or name.
+    const ORDINAL_MARK: u8 = 0xFF;
+
+    pub fn parse_res(data: &[u8], source: &str) -> Result<Vec<ResEntry>, String> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < data.len() {
+            let h = data.get(i..i + HEADER).ok_or_else(|| format!("{source}: a resource header is cut short"))?;
+            if h[0] != ORDINAL_MARK || h[3] != ORDINAL_MARK {
+                return Err(format!("{source}: resources must have numeric types and names (offset {i})"));
+            }
+            let type_id = u16::from_le_bytes([h[1], h[2]]);
+            let name = u16::from_le_bytes([h[4], h[5]]);
+            let size = u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize;
+            let body = data.get(i + HEADER..).and_then(|r| r.get(..size))
+                .ok_or_else(|| format!("{source}: resource {type_id}/{name} is cut short"))?;
+            out.push(ResEntry { type_id, name, data: body.to_vec() });
+            i += HEADER + size;
+        }
+        Ok(out)
     }
 }
 
@@ -614,9 +654,10 @@ mod lx_writer {
 
     use super::elf_reader::{ElfObject, RelocKind, RelocTarget};
     use super::linker_state::{page_count, LinkerState};
+    use super::res_reader::ResEntry;
     use super::{
         resolve_import, LX_HEADER_OFFSET, LX_HEADER_SIZE,
-        OBJ_BIG, OBJ_EXEC, OBJ_READ, OBJ_USE32, OBJ_WRITE, PAGE_SIZE, STACK_SIZE,
+        OBJ_BIG, OBJ_EXEC, OBJ_READ, OBJ_RESOURCE, OBJ_USE32, OBJ_WRITE, PAGE_SIZE, STACK_SIZE,
     };
 
     // A fixup record ready to be serialised.
@@ -674,6 +715,7 @@ mod lx_writer {
         objects: &[ElfObject],
         state: &LinkerState,
         def_map: &HashMap<String, (String, u32)>,
+        resources: &[ResEntry],
     ) -> Result<Vec<u8>, String> {
         let entry_offset = state.entry_va - state.code_va;
         let mut code_data = state.code.clone();
@@ -682,7 +724,9 @@ mod lx_writer {
         let code_pages = page_count(code_data.len() as u64);
         let data_pages = page_count(data_data.len() as u64 + u64::from(state.bss_size));
         let stack_pages = (STACK_SIZE / PAGE_SIZE) as usize;
-        let total_pages = code_pages + data_pages + stack_pages;
+        let (res_blob, res_table) = resource_object(resources)?;
+        let res_pages = page_count(res_blob.len() as u64);
+        let total_pages = code_pages + data_pages + stack_pages + res_pages;
 
         let mut module_map: HashMap<String, u8> = HashMap::new();
         let mut imported_modules: Vec<String> = Vec::new();
@@ -757,7 +801,7 @@ mod lx_writer {
             fixup_page_table[code_pages + pi] = fixup_records.len() as u32;
             for fx in &data_fixups[pi] { encode_fixup(&mut fixup_records, fx); }
         }
-        for pi in 0..stack_pages {
+        for pi in 0..stack_pages + res_pages {
             fixup_page_table[code_pages + data_pages + pi] = fixup_records.len() as u32;
         }
         fixup_page_table[total_pages] = fixup_records.len() as u32;
@@ -781,10 +825,11 @@ mod lx_writer {
         let entry_table_bytes: Vec<u8> = vec![0, 0];
 
         // ── Compute table offsets (all relative to LX header start, 0x40) ─────
-        let num_objects: u32 = 3;
+        let num_objects: u32 = if resources.is_empty() { 3 } else { 4 };
         let obj_table_off: u32 = LX_HEADER_SIZE;
         let page_map_off: u32 = obj_table_off + num_objects * 24;
-        let resident_name_off: u32 = page_map_off + total_pages as u32 * 8;
+        let resource_table_off: u32 = page_map_off + total_pages as u32 * 8;
+        let resident_name_off: u32 = resource_table_off + res_table.len() as u32;
         let entry_table_off: u32 = resident_name_off + resident_name_bytes.len() as u32;
         let fixup_page_table_off: u32 = entry_table_off + entry_table_bytes.len() as u32;
         let fixup_record_off: u32 = fixup_page_table_off + (total_pages as u32 + 1) * 4;
@@ -821,6 +866,7 @@ mod lx_writer {
             import_modules_off, imported_modules.len() as u32, import_proc_name_off,
             loader_section_size, fixup_section_size,
             data_pages_offset_abs,
+            if resources.is_empty() { 0 } else { resource_table_off }, resources.len() as u32,
         ));
 
         // 3. Object table.
@@ -839,11 +885,19 @@ mod lx_writer {
             OBJ_READ | OBJ_WRITE | OBJ_BIG | OBJ_USE32,
             code_pages as u32 + data_pages as u32 + 1, STACK_SIZE / PAGE_SIZE,
         ));
+        if !resources.is_empty() {
+            // The loader places resource objects itself: base 0.
+            out.extend_from_slice(&encode_object_entry(
+                res_blob.len() as u32, 0, OBJ_READ | OBJ_RESOURCE,
+                (code_pages + data_pages + stack_pages) as u32 + 1, res_pages as u32,
+            ));
+        }
 
         // 4. Page map: each page's bytes in the file; pages past the
         // initialised bytes (zeros, the stack) have none.
         let mut file_off: u32 = 0;
-        for (pages, len) in [(code_pages, code_data.len()), (data_pages, data_data.len()), (stack_pages, 0)] {
+        for (pages, len) in [(code_pages, code_data.len()), (data_pages, data_data.len()), (stack_pages, 0),
+                             (res_pages, res_blob.len())] {
             for pi in 0..pages {
                 let psize = len.saturating_sub(pi * PAGE_SIZE as usize).min(PAGE_SIZE as usize) as u16;
                 out.extend_from_slice(&file_off.to_le_bytes());
@@ -853,7 +907,8 @@ mod lx_writer {
             }
         }
 
-        // 5. Resident name table.
+        // 5. Resource table, then the resident name table.
+        out.extend_from_slice(&res_table);
         out.extend_from_slice(&resident_name_bytes);
         // 6. Entry table.
         out.extend_from_slice(&entry_table_bytes);
@@ -869,7 +924,33 @@ mod lx_writer {
         // 12. Data pages: the initialised bytes, page after page.
         out.extend_from_slice(&code_data);
         out.extend_from_slice(&data_data);
+        out.extend_from_slice(&res_blob);
         Ok(out)
+    }
+
+    /// The resource object's bytes (each resource 4-byte aligned) and the
+    /// LX resource table: type, name, size, object (4) and offset, 14 bytes
+    /// an entry. A type and name given twice is an error.
+    fn resource_object(resources: &[ResEntry]) -> Result<(Vec<u8>, Vec<u8>), String> {
+        const RESOURCE_OBJECT: u16 = 4;
+        let mut blob = Vec::new();
+        let mut table = Vec::with_capacity(resources.len() * 14);
+        let mut seen = std::collections::HashSet::new();
+        for r in resources {
+            if !seen.insert((r.type_id, r.name)) {
+                return Err(format!("resource type {} id {} is given twice", r.type_id, r.name));
+            }
+            while blob.len() % 4 != 0 { blob.push(0); }
+            let offset = u32::try_from(blob.len()).map_err(|_| "resources larger than 4 GB".to_string())?;
+            let size = u32::try_from(r.data.len()).map_err(|_| "a resource larger than 4 GB".to_string())?;
+            table.extend_from_slice(&r.type_id.to_le_bytes());
+            table.extend_from_slice(&r.name.to_le_bytes());
+            table.extend_from_slice(&size.to_le_bytes());
+            table.extend_from_slice(&RESOURCE_OBJECT.to_le_bytes());
+            table.extend_from_slice(&offset.to_le_bytes());
+            blob.extend_from_slice(&r.data);
+        }
+        Ok((blob, table))
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -935,6 +1016,8 @@ mod lx_writer {
         loader_section_size: u32,
         fixup_section_size: u32,
         data_pages_offset_abs: u32,
+        resource_table_off: u32,
+        resource_count: u32,
     ) -> Vec<u8> {
         let mut h = Vec::with_capacity(172);
         h.extend_from_slice(b"LX");
@@ -959,8 +1042,8 @@ mod lx_writer {
         h.extend_from_slice(&num_objects.to_le_bytes());            // object_count
         h.extend_from_slice(&page_map_off.to_le_bytes());           // object_page_map_offset
         h.extend_from_slice(&0u32.to_le_bytes());                   // object_iter_data_map_offset
-        h.extend_from_slice(&0u32.to_le_bytes());                   // resource_table_offset
-        h.extend_from_slice(&0u32.to_le_bytes());                   // resource_count
+        h.extend_from_slice(&resource_table_off.to_le_bytes());     // resource_table_offset
+        h.extend_from_slice(&resource_count.to_le_bytes());         // resource_count
         h.extend_from_slice(&resident_name_off.to_le_bytes());      // resident_name_table_offset
         h.extend_from_slice(&entry_table_off.to_le_bytes());        // entry_table_offset
         h.extend_from_slice(&0u32.to_le_bytes());                   // module_directives_offset
@@ -1044,6 +1127,7 @@ fn main() {
             process::exit(1);
         }
     }
+    let resources = std::mem::take(&mut inputs.resources);
     let objects = select_objects(inputs, &def_map);
     if objects.is_empty() {
         eprintln!("lx-link: no ELF objects found in inputs");
@@ -1056,7 +1140,7 @@ fn main() {
         Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
     };
 
-    let lx_bytes = match lx_writer::write_lx(&objects, &state, &def_map) {
+    let lx_bytes = match lx_writer::write_lx(&objects, &state, &def_map, &resources) {
         Ok(b) => b,
         Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
     };
@@ -1073,6 +1157,8 @@ fn main() {
 struct Inputs {
     objects: Vec<elf_reader::ElfObject>,
     members: Vec<elf_reader::ElfObject>,
+    /// Resources from .res files, in order.
+    resources: Vec<res_reader::ResEntry>,
 }
 
 /// The objects to link: the plain ones, then archive members pulled in
@@ -1080,7 +1166,7 @@ struct Inputs {
 /// static linker does), in archive order.
 fn select_objects(inputs: Inputs, def_map: &std::collections::HashMap<String, (String, u32)>) -> Vec<elf_reader::ElfObject> {
     use std::collections::HashSet;
-    let Inputs { mut objects, members } = inputs;
+    let Inputs { mut objects, members, .. } = inputs;
     let mut members: Vec<Option<elf_reader::ElfObject>> = members.into_iter().map(Some).collect();
     loop {
         let defined: HashSet<&str> = objects.iter()
@@ -1154,6 +1240,11 @@ fn load_def_file(explicit: Option<&Path>) -> String {
 fn load_input(path: &Path, inputs: &mut Inputs) -> Result<(), Box<dyn Error>> {
     let data = std::fs::read(path)?;
     let name = path.display().to_string();
+
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("res")) {
+        inputs.resources.extend(res_reader::parse_res(&data, &name)?);
+        return Ok(());
+    }
 
     if data.starts_with(b"!<arch>\n") {
         let archive = ArchiveFile::parse(data.as_slice())?;
@@ -1289,7 +1380,7 @@ VIOCALLS.19   VioWrtTTY\n";
     /// writer's image, read back from the file's pages).
     fn link(objects: &[ElfObject], defs: &HashMap<String, (String, u32)>) -> Result<(LinkerState, Vec<u8>), String> {
         let state = LinkerState::build(objects, None).map_err(|e| e.to_string())?;
-        let lx = lx_writer::write_lx(objects, &state, defs)?;
+        let lx = lx_writer::write_lx(objects, &state, defs, &[])?;
         Ok((state, lx))
     }
 
@@ -1435,7 +1526,7 @@ VIOCALLS.19   VioWrtTTY\n";
         let live = live_sections(&objects);
         assert_eq!(live[0], vec![true, false, true, false], "_start's .text and what it uses");
         let state = LinkerState::build(&objects, Some(&live)).unwrap();
-        assert!(lx_writer::write_lx(&objects, &state, &HashMap::new()).is_ok());
+        assert!(lx_writer::write_lx(&objects, &state, &HashMap::new(), &[]).is_ok());
         assert!(!state.symbol_table.contains_key("unused"));
         assert!(link(&objects, &HashMap::new()).is_err(), "without GC, nowhere is undefined");
     }
@@ -1453,7 +1544,7 @@ VIOCALLS.19   VioWrtTTY\n";
             ..Default::default()
         };
         let inputs = Inputs { objects: vec![a], members: vec![
-            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)] };
+            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)], resources: Vec::new() };
         let names: Vec<String> = select_objects(inputs, &HashMap::new()).into_iter().map(|o| o.name).collect();
         assert_eq!(names, ["start.o", "f.o", "g.o"]);
     }
@@ -1480,7 +1571,7 @@ VIOCALLS.19   VioWrtTTY\n";
             ..Default::default()
         }];
         let state = LinkerState::build(&objects, None).expect("build state");
-        let lx_bytes = lx_writer::write_lx(&objects, &state, &HashMap::new()).expect("write");
+        let lx_bytes = lx_writer::write_lx(&objects, &state, &HashMap::new(), &[]).expect("write");
 
         // Must start with MZ, then LX at 0x40.
         assert!(lx_bytes.len() > LX_HEADER_OFFSET as usize + LX_HEADER_SIZE as usize);
@@ -1499,6 +1590,55 @@ VIOCALLS.19   VioWrtTTY\n";
 
         let eip = u32::from_le_bytes(lx_bytes[hdr + 0x1C..hdr + 0x20].try_into().unwrap());
         assert_eq!(eip, 0, "entry offset = 0 for _start at code base");
+    }
+
+    /// Resources from .res files land in a fourth object flagged
+    /// OBJ_RESOURCE, found through the LX resource table (ADR-0099).
+    #[test]
+    fn resources_get_an_object_and_a_table() {
+        use res_reader::ResEntry;
+        let objects = vec![ElfObject {
+            name: "a.o".into(),
+            sections: vec![section(".text", SecClass::Code, vec![0xF4], vec![])],
+            symbols: vec![sym("_start", 0, 0)],
+            ..Default::default()
+        }];
+        let state = LinkerState::build(&objects, None).expect("build state");
+        let resources = vec![ResEntry { type_id: 3, name: 100, data: vec![1, 2, 3] },
+                             ResEntry { type_id: 4, name: 101, data: vec![9; 5000] }];
+        let lx = lx_writer::write_lx(&objects, &state, &HashMap::new(), &resources).expect("write");
+        let hdr = LX_HEADER_OFFSET as usize;
+        let u32_at = |o: usize| u32::from_le_bytes(lx[o..o + 4].try_into().unwrap());
+        let u16_at = |o: usize| u16::from_le_bytes(lx[o..o + 2].try_into().unwrap());
+        assert_eq!(u32_at(hdr + 0x44), 4, "code, data, stack and resources");
+        assert_eq!(u32_at(hdr + 0x54), 2, "resource_count");
+        let table = hdr + u32_at(hdr + 0x50) as usize;
+        let obj4 = hdr + u32_at(hdr + 0x40) as usize + 3 * 24;
+        assert_eq!(u32_at(obj4 + 8), OBJ_READ | OBJ_RESOURCE);
+        assert_eq!(u32_at(obj4), 4 + 5000, "the second resource starts 4-byte aligned");
+        assert_eq!(u32_at(obj4 + 16), 2, "two pages");
+        // Entry 2: type 4, name 101, 5000 bytes, object 4, offset 4.
+        let e2 = table + 14;
+        assert_eq!((u16_at(e2), u16_at(e2 + 2), u32_at(e2 + 4), u16_at(e2 + 8), u32_at(e2 + 10)), (4, 101, 5000, 4, 4));
+        // The object's first page holds the bytes, at the end of the file.
+        let first = lx.len() - (4 + 5000);
+        assert_eq!(&lx[first..first + 3], &[1, 2, 3]);
+        assert_eq!(lx[first + 4], 9);
+
+        let dup = vec![ResEntry { type_id: 3, name: 1, data: vec![] }, ResEntry { type_id: 3, name: 1, data: vec![] }];
+        let e = lx_writer::write_lx(&objects, &state, &HashMap::new(), &dup).unwrap_err();
+        assert!(e.contains("given twice"), "{e}");
+    }
+
+    #[test]
+    fn res_files_parse_and_bad_ones_are_refused() {
+        let mut res = vec![0xFF, 3, 0, 0xFF, 100, 0, 0x30, 0x10, 2, 0, 0, 0, b'h', b'i'];
+        assert_eq!(res_reader::parse_res(&res, "x.res").unwrap(),
+                   [res_reader::ResEntry { type_id: 3, name: 100, data: b"hi".to_vec() }]);
+        res.pop();
+        assert!(res_reader::parse_res(&res, "x.res").unwrap_err().contains("cut short"));
+        let named = [b'M', b'E', 0, 0xFF, 1, 0, 0, 0, 0, 0, 0, 0];
+        assert!(res_reader::parse_res(&named, "x.res").unwrap_err().contains("numeric"));
     }
 
     #[test]

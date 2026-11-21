@@ -654,6 +654,83 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #define SB_SLIDERPOSITION  0x0006
 #define SB_ENDSCROLL       0x0007
 
+/* Combination boxes */
+#define CBS_SIMPLE        0x0001
+#define CBS_DROPDOWN      0x0002
+#define CBS_DROPDOWNLIST  0x0004
+
+/* Multi-line entry fields */
+#define MLS_WORDWRAP   0x0001
+#define MLS_BORDER     0x0002
+#define MLS_VSCROLL    0x0004
+#define MLS_HSCROLL    0x0008
+#define MLS_READONLY   0x0010
+#define MLS_IGNORETAB  0x0020
+
+/* Spin buttons */
+#define SPBS_NUMERICONLY   0x0001
+#define SPBS_READONLY      0x0002
+#define SPBS_JUSTRIGHT     0x0004
+#define SPBS_JUSTLEFT      0x0008
+#define SPBS_JUSTCENTER    0x000C
+#define SPBS_MASTER        0x0010
+#define SPBS_NOBORDER      0x0020
+#define SPBS_PADWITHZEROS  0x0080
+#define SPBS_FASTSPIN      0x0100
+
+/* Sliders */
+#define SLS_CENTER           0x0000
+#define SLS_HOMEBOTTOM       0x0000
+#define SLS_HOMELEFT         0x0000
+#define SLS_HORIZONTAL       0x0000
+#define SLS_PRIMARYSCALE1    0x0000
+#define SLS_VERTICAL         0x0001
+#define SLS_BOTTOM           0x0002
+#define SLS_LEFT             0x0002
+#define SLS_RIGHT            0x0004
+#define SLS_TOP              0x0004
+#define SLS_SNAPTOINCREMENT  0x0008
+#define SLS_BUTTONSBOTTOM    0x0010
+#define SLS_BUTTONSLEFT      0x0010
+#define SLS_BUTTONSRIGHT     0x0020
+#define SLS_BUTTONSTOP       0x0020
+#define SLS_OWNERDRAW        0x0040
+#define SLS_READONLY         0x0080
+#define SLS_RIBBONSTRIP      0x0100
+#define SLS_HOMERIGHT        0x0200
+#define SLS_HOMETOP          0x0200
+#define SLS_PRIMARYSCALE2    0x0400
+
+/* Value sets */
+#define VS_BITMAP        0x0001
+#define VS_ICON          0x0002
+#define VS_TEXT          0x0004
+#define VS_RGB           0x0008
+#define VS_COLORINDEX    0x0010
+#define VS_BORDER        0x0020
+#define VS_ITEMBORDER    0x0040
+#define VS_SCALEBITMAPS  0x0080
+#define VS_RIGHTTOLEFT   0x0100
+#define VS_OWNERDRAW     0x0200
+
+/* Containers */
+#define CCS_EXTENDSEL       0x0001
+#define CCS_MULTIPLESEL     0x0002
+#define CCS_AUTOPOSITION    0x0008
+#define CCS_READONLY        0x0020
+#define CCS_MINIRECORDCORE  0x0040
+
+/* Notebooks */
+#define BKS_MAJORTABRIGHT     0x0010
+#define BKS_MAJORTABLEFT      0x0020
+#define BKS_MAJORTABTOP       0x0040
+#define BKS_MAJORTABBOTTOM    0x0080
+#define BKS_TABBEDDIALOG      0x0800
+#define BKS_STATUSTEXTRIGHT   0x1000
+#define BKS_STATUSTEXTCENTER  0x2000
+#define BKS_TABTEXTRIGHT      0x4000
+#define BKS_TABTEXTCENTER     0x8000
+
 /* Built-in window classes */
 #define WC_FRAME       ((PSZ)0xFFFF0001L)
 #define WC_COMBOBOX    ((PSZ)0xFFFF0002L)

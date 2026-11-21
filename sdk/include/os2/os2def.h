@@ -15,7 +15,8 @@
 #ifndef WARPINE_OS2_OS2DEF_H
 #define WARPINE_OS2_OS2DEF_H
 
-#if !defined(__GNUC__) || !defined(__i386__)
+/* The resource compiler (os2rc) reads only the #defines. */
+#if !defined(RC_INVOKED) && (!defined(__GNUC__) || !defined(__i386__))
 #  error "Warpine's os2.h is for GCC or clang building i386 code (-m32, or --target=i386-unknown-none)"
 #endif
 

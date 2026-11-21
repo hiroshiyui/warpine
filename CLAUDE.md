@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2195 unit tests (2138 warpine + 23 gen_api + 22 lx_link + 5 gen_arch + 7 gen_compat) + 203 integration tests
+cargo test                                 # 2205 unit tests (2138 warpine + 23 gen_api + 24 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat) + 204 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -55,6 +55,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
   - `lx-link` refuses position-independent code and fails on undefined symbols.
 - **The C SDK** (ADR-0096, ADR-0097): `sdk/include/os2.h` (Dos*, Que*, Vio*, Kbd*, Mou*, and a PM subset in `os2/pm.h`) and a small C runtime.
   - Build it with `make -C sdk` (or `CC=clang`); a program's Makefile includes `sdk/os2.mk` (see `samples/c_sdk_test`).
+  - Resources (ADR-0099): `cargo build --bin os2rc`; `os2rc -I sdk/include x.rc -o x.res`, then pass `x.res` to `lx-link` (see `samples/c_pm_test`). Its output must stay byte-identical to `wrc -zm` (`os2rc_matches_open_watcom_wrc`).
   - Every call a header declares must be in `targets/os2api.def`; VIO / KBD / MOU calls go through `OS2_PASCAL_API`; every integer `#define` must equal Warpine's constant of that name.
   - The def lists PMWIN / PMGPI calls the sub-dispatchers serve: a new PM call needs its def line too.
 - **Generators:** each has a test that fails when its output is stale.

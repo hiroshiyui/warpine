@@ -1,0 +1,43 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* c_pm_test.rc - resources compiled by os2rc (ADR-0099) and linked by
+ * lx-link: the frame's menu and accelerators, a dialog, a string and raw
+ * data, each checked by c_pm_test.c. */
+#define INCL_WIN
+#include <os2.h>
+#include "c_pm_test.h"
+
+MENU ID_MAIN
+BEGIN
+    SUBMENU "~File", IDM_FILE
+    BEGIN
+        MENUITEM "~Hello\tCtrl+H", IDM_HELLO
+        MENUITEM SEPARATOR
+        MENUITEM "E~xit", IDM_EXIT
+    END
+END
+
+ACCELTABLE ID_MAIN
+BEGIN
+    "h", IDM_HELLO, CONTROL
+    VK_F3, IDM_EXIT, VIRTUALKEY
+END
+
+DLGTEMPLATE ID_DLG
+BEGIN
+    DIALOG "From os2rc", ID_DLG, 20, 20, 160, 60, WS_VISIBLE, FCF_TITLEBAR
+    BEGIN
+        LTEXT         "A label", ID_DLG_LABEL, 8, 40, 100, 10
+        ENTRYFIELD    "typed",   ID_DLG_EDIT,  8, 24, 100, 10, ES_MARGIN
+        DEFPUSHBUTTON "OK",      DID_OK,       8,  4,  40, 14
+    END
+END
+
+STRINGTABLE
+BEGIN
+    ID_STR_HELLO, "Hello from os2rc"
+END
+
+RCDATA ID_DATA
+BEGIN
+    0x1234, 0x56789ABCL, "raw"
+END

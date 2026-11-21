@@ -54,6 +54,12 @@
 #  include <os2/sub.h>
 #endif
 
+/* A resource script (os2rc defines RC_INVOKED) needs the window
+ * manager's constants whatever it selects. */
+#if defined(RC_INVOKED) && !defined(INCL_WIN)
+#  define INCL_WIN
+#endif
+
 #ifdef INCL_PM
 #  define INCL_WIN
 #  define INCL_GPI

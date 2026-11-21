@@ -1,0 +1,17 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* tests/rc/frames_windows.rc - an os2rc input compared with Open Watcom's wrc -zm (ADR-0099). */
+#define INCL_WIN
+#include <os2.h>
+DLGTEMPLATE 1
+BEGIN
+ FRAME "f", 1, 0,0,1,1
+ BEGIN
+  WINDOW "w", 2, 0,0,1,1, "C"
+  CONTROL "c", 3, 0,0,1,1, WC_BUTTON
+  FRAME "g", 4, 0,0,1,1, 0
+ END
+END
+WINDOWTEMPLATE 2
+BEGIN
+ WINDOW "x", 2, 0,0,1,1, WC_STATIC, SS_TEXT
+END
