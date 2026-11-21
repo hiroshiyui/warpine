@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Fuzz targets for the parsers that read untrusted input (TODOs: Security
+# Facilities; doc/developer_guide.md, "Fuzzing"). A workspace of its own,
+# on the pinned nightly of rust-toolchain.toml here: Warpine's build does
+# not depend on it. `fuzz/run.sh <target> [seconds]` builds with
+# libFuzzer's coverage instrumentation and runs a target.
+#
+# The targets include Warpine's parser modules by #[path], as os2msg and
+# lx-link include msgfile.rs; Warpine has no library crate.
+
+[package]
+name = "warpine-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+# libFuzzer's driver; pinned exactly, checked by fuzz/deny.toml.
+libfuzzer-sys = "=0.4.13"
+# Warpine's own logging facade, at the version Warpine locks (src/ne.rs
+# logs through it; nothing is printed while fuzzing).
+log = "=0.4.29"
+
+[[bin]]
+name = "desktop_proto"
+path = "fuzz_targets/desktop_proto.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lx_parse"
+path = "fuzz_targets/lx_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ne_parse"
+path = "fuzz_targets/ne_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "msgfile"
+path = "fuzz_targets/msgfile.rs"
+test = false
+doc = false
+
+[profile.release]
+debug = 1

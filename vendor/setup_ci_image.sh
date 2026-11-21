@@ -21,6 +21,11 @@
 # the channel manifest's hashes. Move RUSTUP_VERSION and RUSTUP_SHA256
 # together (https://static.rust-lang.org/rustup/archive/<version>/
 # x86_64-unknown-linux-gnu/rustup-init.sha256).
+# The fuzz targets' nightly comes from rustup like the stable toolchain.
+# cargo-deny (the dependency policy of deny.toml, advisories included) is
+# its release's static musl binary, by version and SHA-256; move
+# CARGO_DENY_VERSION and CARGO_DENY_SHA256 together (the release's
+# cargo-deny-<version>-x86_64-unknown-linux-musl.tar.gz.sha256).
 
 set -euo pipefail
 
@@ -31,9 +36,13 @@ BASE_IMAGE=$(setting BASE_IMAGE)
 BASE_DIGEST=$(setting BASE_DIGEST)
 SNAPSHOT=$(setting SNAPSHOT)
 RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$ROOT/rust-toolchain.toml")
+# The fuzz targets' dated nightly (fuzz/rust-toolchain.toml).
+FUZZ_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$ROOT/fuzz/rust-toolchain.toml")
 RUSTUP_VERSION="1.29.3"
 RUSTUP_SHA256="b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55"
-IMAGE="localhost/warpine-ci:${SUITE}-${SNAPSHOT}-rust${RUST_TOOLCHAIN}"
+CARGO_DENY_VERSION="0.19.4"
+CARGO_DENY_SHA256="3bd58b784e83715b86ddbc9deac591890372ec77fda5741bb0826970b958506f"
+IMAGE="localhost/warpine-ci:${SUITE}-${SNAPSHOT}-rust${RUST_TOOLCHAIN}-deny${CARGO_DENY_VERSION}-fuzz${FUZZ_TOOLCHAIN}"
 
 if [ "${1:-}" = "--print-image" ]; then
     echo "$IMAGE"
@@ -41,7 +50,7 @@ if [ "${1:-}" = "--print-image" ]; then
 fi
 
 command -v podman >/dev/null || { echo "setup_ci_image.sh: podman is not installed" >&2; exit 1; }
-[ -n "$SUITE" ] && [ -n "$BASE_DIGEST" ] && [ -n "$SNAPSHOT" ] && [ -n "$RUST_TOOLCHAIN" ] \
+[ -n "$SUITE" ] && [ -n "$BASE_DIGEST" ] && [ -n "$SNAPSHOT" ] && [ -n "$RUST_TOOLCHAIN" ] && [ -n "$FUZZ_TOOLCHAIN" ] \
     || { echo "setup_ci_image.sh: cannot read the pins" >&2; exit 1; }
 
 if [ "${1:-}" != "--refresh" ] && podman image exists "$IMAGE"; then
@@ -68,6 +77,13 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init \\
  && chmod +x /tmp/rustup-init \\
  && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain ${RUST_TOOLCHAIN} -c clippy,rustfmt \\
  && rm /tmp/rustup-init \\
+ && /opt/cargo/bin/rustup toolchain install ${FUZZ_TOOLCHAIN} --profile minimal \\
+ && curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/cargo-deny.tar.gz \\
+      https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz \\
+ && echo '${CARGO_DENY_SHA256}  /tmp/cargo-deny.tar.gz' | sha256sum -c - \\
+ && tar -xzf /tmp/cargo-deny.tar.gz -C /tmp \\
+ && install -m 0755 /tmp/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny /opt/cargo/bin/cargo-deny \\
+ && rm -rf /tmp/cargo-deny.tar.gz /tmp/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl \\
  && chmod -R a+rwX /opt/rustup /opt/cargo
 CONTAINERFILE
 

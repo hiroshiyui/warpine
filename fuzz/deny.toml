@@ -1,0 +1,26 @@
+# cargo-deny policy of the fuzz workspace: as Warpine's (../deny.toml), plus
+# NCSA, the licence of LLVM's libFuzzer that libfuzzer-sys bundles (a
+# permissive licence compatible with the GPL). Run `cargo deny check` here.
+
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = ["0BSD", "Apache-2.0", "BSD-3-Clause", "MIT", "NCSA", "Unicode-3.0", "Unlicense", "Zlib"]
+exceptions = [{ crate = "warpine-fuzz", allow = ["GPL-3.0-or-later"] }]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

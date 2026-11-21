@@ -1,7 +1,8 @@
 # cargo-deny policy (https://embarkstudios.github.io/cargo-deny/): where
 # dependencies may come from, which licences they may have, and which
 # advisories block a build. `cargo deny check` runs it; the pre-commit hook
-# runs the offline checks (sources, bans, licences), releases all of them.
+# runs the offline checks (sources, bans, licences), CI's watcom entry and
+# releases all of them, advisories included.
 
 [graph]
 # Only the targets Warpine builds for.

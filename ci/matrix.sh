@@ -3,7 +3,7 @@
 # ci/matrix.sh - one entry of the CI matrix (ADR-0106), run in the image
 # vendor/setup_ci_image.sh builds (ci/run.sh starts it there):
 #
-#   ci/matrix.sh watcom   # Open Watcom's samples: every test, clippy, the generators
+#   ci/matrix.sh watcom   # Open Watcom's samples: every test, clippy, the generators, cargo deny, fuzzing
 #   ci/matrix.sh gcc      # every C sample from the pinned GCC, the integration tests on them
 #   ci/matrix.sh clang    # the same with the pinned clang
 #
@@ -46,6 +46,26 @@ case "$MODE" in
         cargo run -q --bin gen_api -- validate-doc
         cargo run -q --bin gen_api -- check-headers
         cargo run -q --bin gen_arch -- check
+        # The whole dependency policy of deny.toml, advisories included
+        # (the pre-commit hook checks only what needs no network).
+        step "dependency policy (cargo deny, with advisories)"
+        cargo deny --log-level error check
+        (cd fuzz && cargo deny --log-level error check)
+        # The parsers that read untrusted input, for a minute each, from the
+        # samples just built (fuzz/). A crash prints its input to rerun.
+        step "fuzzing"
+        fuzz/seed.sh
+        for target in desktop_proto lx_parse ne_parse msgfile; do
+            if ! FUZZ_TARGET_DIR="$CARGO_TARGET_DIR/fuzz" fuzz/run.sh "$target" "${FUZZ_SECONDS:-60}" >"$CARGO_TARGET_DIR/fuzz-$target.log" 2>&1; then
+                tail -40 "$CARGO_TARGET_DIR/fuzz-$target.log"
+                for crash in fuzz/artifacts/"$target"/*; do
+                    [ -f "$crash" ] && { echo "input $crash (base64):"; base64 -w 76 "$crash"; }
+                done
+                echo "ci/matrix.sh: fuzz target $target failed" >&2
+                exit 1
+            fi
+            grep -h "^Done" "$CARGO_TARGET_DIR/fuzz-$target.log" || true
+        done
         ;;
     gcc|clang)
         step "every C sample from $MODE ($("$MODE" --version | head -1))"

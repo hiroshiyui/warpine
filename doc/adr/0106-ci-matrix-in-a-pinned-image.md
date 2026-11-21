@@ -1,6 +1,6 @@
 # ADR-0106: CI: the test matrix in a pinned image, on GitHub's runners and on a workstation alike
 
-- **Status:** Accepted; builds on ADR-0101 (pinned compilers), ADR-0066 (pinned third-party inputs)
+- **Status:** Accepted; builds on ADR-0101 (pinned compilers), ADR-0066 (pinned third-party inputs); amended by ADR-0112 (the watcom entry also runs `cargo deny check` with advisories, and fuzzes; the image gains cargo-deny and the fuzz toolchain)
 - **Date:** 2026-11-21
 - **Sources:**
   - GitHub's documentation of Actions on Linux runners: KVM on the standard runners (a udev rule gives the runner's user `/dev/kvm`), Podman on `ubuntu-24.04`.
