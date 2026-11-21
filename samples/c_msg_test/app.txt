@@ -1,0 +1,8 @@
+; app.txt - the messages bound into c_msg_test.exe (ADR-0105).
+; Compiled by os2msg into app.msg, which lx-link binds.
+APP
+APP0001E: The file %1 was not found in %2.
+APP0002I: Two lines
+of information.
+APP0004P: Continue (Y/N)?
+APP0005W: Only %1 of %2 bytes were written.

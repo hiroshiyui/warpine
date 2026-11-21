@@ -530,7 +530,7 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: MSG_BASE + 5, module: "MSG", name: "DosPutMessage",     argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_put_message(a[0],a[1],a[2])) },
     ApiEntry { ordinal: MSG_BASE + 6, module: "MSG", name: "DosGetMessage",     argc: 8,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_message(a[1],a[2],a[3],a[4],a[5],a[6],a[7])) },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_message(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7])) },
     ApiEntry { ordinal: MSG_BASE + 8, module: "MSG", name: "DosQueryMessageCP", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_message_cp(a[0],a[1],a[2],a[3])) },
 

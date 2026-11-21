@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Message files** (ADR-0105).
+  - **`DosGetMessage` reads messages.** Before, it returned a placeholder. It looks in the program's bound messages, then the named file, the current directory and `DPATH`. Errors and warnings get their id (`ABC0001: `), `%1` … `%9` their strings, and a missing file or message gives a text and its error (317, 318, 319).
+  - **Warpine's own format,** compiled from text by the new **`os2msg`** (`$(OS2_MSG)` in `os2.mk`). IBM's `MKMSGF` files are not read.
+  - **Binding:** `lx-link` binds `.msg` inputs into the program, and the SDK's `DosGetMessage` passes them.
+  - **`samples/c_msg_test`:** 12 checks with GCC and clang.
 - **GDB finds the DLLs' debug companions** (ADR-0104).
   - The GDB stub lists each loaded DLL's `.dbg` at the DLL's load addresses (`qXfer:libraries:read`). `break` on a DLL's function works with no `add-symbol-file`.
   - Loading or freeing a DLL with `DosLoadModule` / `DosFreeModule` stops the program briefly so that GDB reads the list again; pending breakpoints in the new DLL take effect before its `_DLL_InitTerm` runs.

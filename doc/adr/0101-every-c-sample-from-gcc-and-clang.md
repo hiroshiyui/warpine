@@ -1,6 +1,6 @@
 # ADR-0101: Every C sample from GCC and clang: the whole SDK, DLLs from lx-link, pinned compilers
 
-- **Status:** Accepted; builds on ADR-0095–0100
+- **Status:** Accepted; builds on ADR-0095–0100; its `DosGetMessage` choice is amended by ADR-0105
 - **Date:** 2026-11-21
 - **Sources:**
   - IBM's *Control Program*, *Presentation Manager* and *Multimedia Programming References*, the *REXX Reference*: the calls, structures and constants declared.
@@ -57,7 +57,7 @@ After ADR-0100, 37 of the 117 samples compiled with the SDK. The others needed d
 
 ## Warpine's choices (unverified)
 
-- **`DosGetMessage`:** the message segment the import skips is passed as null by the stub; programs that bind messages into their executable are not supported.
+- **`DosGetMessage`:** the message segment the import skips is passed as null by the stub; programs that bind messages into their executable are not supported. (ADR-0105 binds Warpine's own message files and passes their segment.)
 - **The layouts** follow Open Watcom's headers where IBM's reference does not give sizes:
   - the find buffers and EA structures padded to 4 bytes, but the 64-bit find buffers packed;
   - `VIOCONFIGINFO` packed to 2.

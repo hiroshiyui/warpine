@@ -19,11 +19,16 @@ CC = gcc
 endif
 
 OS2_BUILD ?= $(WARPINE_SDK)/build/$(notdir $(CC))
-LX_LINK   ?= $(WARPINE_SDK)/../target/debug/lx_link
+# Where cargo put Warpine's tools (CARGO_TARGET_DIR, as cargo reads it).
+CARGO_TARGET_DIR ?= $(WARPINE_SDK)/../target
+LX_LINK   ?= $(CARGO_TARGET_DIR)/debug/lx_link
 # The resource compiler (ADR-0099): `$(OS2_RC) $(OS2_RCFLAGS) x.rc -o x.res`,
 # then pass x.res to $(LX_LINK) with the objects.
-OS2_RC    ?= $(WARPINE_SDK)/../target/debug/os2rc
+OS2_RC    ?= $(CARGO_TARGET_DIR)/debug/os2rc
 OS2_RCFLAGS = -I $(WARPINE_SDK)/include
+# The message compiler (ADR-0105): `$(OS2_MSG) x.txt -o x.msg`; pass x.msg
+# to $(LX_LINK) to bind it into the program, or ship it beside the program.
+OS2_MSG   ?= $(CARGO_TARGET_DIR)/debug/os2msg
 OS2_CRT0   = $(OS2_BUILD)/crt0.o
 OS2_DLL0   = $(OS2_BUILD)/dll0.o
 OS2_LIBCXX = $(OS2_BUILD)/libos2cxx.a

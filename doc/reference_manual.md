@@ -690,7 +690,26 @@ BSD socket calls on Linux sockets. Socket options use OS/2's BSD numbering (`SOL
 
 DosInsertMessage (4), DosPutMessage (5), DosGetMessage (6), DosQueryMessageCP (8) — the 32-bit ordinals of Open Watcom's `os2386.lib` (MSG.6 is `DOS32TRUEGETMESSAGE`, MSG.8 `DOS32IQUERYMESSAGECP`; the library's `DosGetMessage` passes its message segment as an extra first argument, which Warpine skips).
 
-`DosInsertMessage` replaces `%1` … `%9` by the insertion strings (at most 9, else `ERROR_MR_INV_IVCOUNT`) and returns `ERROR_MR_MSG_TOO_LONG` with what fits when the buffer is too small; other `%` sequences stay as they are. Message files are not read: `DosGetMessage` returns a placeholder text, and `DosQueryMessageCP` reports the process codepage for a file that exists (`ERROR_MR_UN_ACC_MSGF` for a missing one).
+`DosInsertMessage` replaces `%1` … `%9` by the insertion strings (at most 9, else `ERROR_MR_INV_IVCOUNT`) and returns `ERROR_MR_MSG_TOO_LONG` with what fits when the buffer is too small; other `%` sequences stay as they are. `DosQueryMessageCP` reports the process codepage for a file that exists (`ERROR_MR_UN_ACC_MSGF` for a missing one).
+
+`DosGetMessage` reads message files in Warpine's own format (ADR-0105), which the SDK's `os2msg` compiles from text; IBM `MKMSGF` files are not read.
+- **Where it looks:**
+  1. the program's bound messages (`.msg` files given to `lx-link`), by file name;
+  2. the file as named, if the name has a drive or directory;
+  3. otherwise the current directory, then each `DPATH` directory.
+- **The text:** errors and warnings start with their id (`ABC0001: `), and `%1` … `%9` take the insertion strings (at most 9, else `ERROR_MR_INV_IVCOUNT`).
+- **Errors:** a message cut to the buffer returns `ERROR_MR_MSG_TOO_LONG`. With no file (`ERROR_MR_UN_ACC_MSGF`), a file in another format (`ERROR_MR_INV_MSGF_FORMAT`) or no such message (`ERROR_MR_MID_NOT_FOUND`), the buffer gets a text saying so.
+
+The source `os2msg` reads:
+
+```
+; comment
+ABC
+ABC0001E: The file %1 was not found.
+ABC0002I: Information,
+on two lines.
+ABC0003P: Continue (Y/N)?
+```
 
 ### MDM / MMPM/2 (4 APIs)
 

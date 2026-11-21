@@ -10,6 +10,9 @@ samples/rust_hello/target/
 *.err
 *.res
 *.map
+# Debug companions (lx-link, ADR-0102) and message files (os2msg, ADR-0105)
+*.dbg
+/samples/c_msg_test/*.msg
 # The 32-bit copy of bsesub.h the VIO samples generate (samples/bsesub32.mk)
 build-bsesub32/
 *.gz

@@ -2116,6 +2116,44 @@ fn gdb_debugs_a_c_program_at_the_source_level() {
     }
 }
 
+/// DosGetMessage with Warpine's message files (ADR-0105): `os2msg`
+/// compiles `app.txt` and `dsk.txt`; `lx-link` binds `app.msg` into
+/// `c_msg_test.exe`; `DSK.MSG` lies in `C:\MSGS`, on CONFIG.SYS's DPATH.
+#[test]
+fn dos_get_message_reads_bound_and_drive_message_files() {
+    if !kvm_available() || Command::new("make").arg("--version").output().is_err() { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_msg_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link")),
+                    format!("OS2_MSG={}", env!("CARGO_BIN_EXE_os2msg"))];
+        let out = Command::new("make").args(["-s", "-C", "samples/c_msg_test"]).args(&vars).output().expect("run make");
+        assert!(out.status.success(), "make ({compiler}):\n{}{}",
+                String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let drive_c = dir.path().join("warpine").join("drive_c");
+        std::fs::create_dir_all(drive_c.join("MSGS")).expect("mkdir");
+        std::fs::copy(dir.path().join("dsk.msg"), drive_c.join("MSGS").join("DSK.MSG")).expect("copy");
+        std::fs::write(drive_c.join("CONFIG.SYS"), "SET DPATH=C:\\MSGS;C:\\OS2\r\n").expect("config.sys");
+        let out = Command::new("timeout").arg("30").arg(warpine()).arg(dir.path().join("c_msg_test.exe"))
+            .env("WARPINE_HEADLESS", "1")
+            .env("XDG_DATA_HOME", dir.path())
+            .env("XDG_RUNTIME_DIR", dir.path())
+            .envs(PINNED_LOCALE.iter().copied())
+            .env("RUST_LOG", "error")
+            .stdin(Stdio::null())
+            .output().expect("run warpine");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
+        assert!(text.contains("c_msg_test: done 12/12"), "{compiler}:\n{text}");
+        assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
+    }
+}
+
 // ── GUI regression tests ─────────────────────────────────────────────────────
 //
 // These drive a PM sample with a scripted session (`WARPINE_GUI_SCRIPT`, see

@@ -630,25 +630,6 @@ impl super::Loader {
         }
     }
 
-    /// DosGetMessage (ordinal 317): get message from MSG file.
-    #[allow(clippy::too_many_arguments)]
-    pub fn dos_get_message(&self, _p_table: u32, _c_table: u32, p_buf: u32, cb_buf: u32,
-                           msg_num: u32, psz_file: u32, pcb_msg: u32) -> u32 {
-        let file = self.read_guest_string(psz_file);
-        debug!("  DosGetMessage(file='{}', msg={})", file, msg_num);
-        // Write a placeholder message
-        let msg = format!("SYS{:04}: Message not available", msg_num);
-        let bytes = msg.as_bytes();
-        let copy_len = bytes.len().min(cb_buf as usize);
-        if p_buf != 0 && copy_len > 0 {
-            self.guest_write_bytes(p_buf, &bytes[..copy_len]);
-        }
-        if pcb_msg != 0 {
-            self.guest_write::<u32>(pcb_msg, copy_len as u32);
-        }
-        NO_ERROR
-    }
-
     /// DosPutMessage (MSG ordinal 3): write a message to a file handle.
     pub fn dos_put_message(&self, hf: u32, cb_msg: u32, p_msg: u32) -> u32 {
         debug!("  DosPutMessage(hf={}, cb={})", hf, cb_msg);

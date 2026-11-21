@@ -398,7 +398,16 @@ Printing is not supported: there are no printer drivers, queues or ports. The `P
 
 ### MSG.DLL (src/loader/msgcalls.rs, src/loader/stubs.rs)
 
-The 32-bit MSG ordinals are those of Open Watcom's `os2386.lib`: 4 `DosInsertMessage`, 5 `DosPutMessage`, 6 `DOS32TRUEGETMESSAGE`, 8 `DOS32IQUERYMESSAGECP` (1–3 and 7 are 16-bit). The library's `DosGetMessage` (object `msgseg32`) passes the program's message segment as an extra first argument to MSG.6, so the registry skips it and `vcpu.rs` removes it from the stack on return (`msg_callee_pop`; the stub's caller removes only `DosGetMessage`'s seven arguments, and the stack was 4 bytes off before). `DosInsertMessage` (`insert_strings`) replaces `%1` … `%9` by the table strings (at most `MAX_INSERTIONS`, each bounded), copies what fits and returns `ERROR_MR_MSG_TOO_LONG` when the result was cut. Warpine reads no message files: `DosGetMessage` returns a placeholder text and `DosQueryMessageCP` reports, for a file that exists, the process codepage (`message_cp_list`: count, codepages, language family and dialect as USHORTs).
+The 32-bit MSG ordinals are those of Open Watcom's `os2386.lib`: 4 `DosInsertMessage`, 5 `DosPutMessage`, 6 `DOS32TRUEGETMESSAGE`, 8 `DOS32IQUERYMESSAGECP` (1–3 and 7 are 16-bit). The library's `DosGetMessage` (object `msgseg32`) passes the program's message segment as an extra first argument to MSG.6, so the registry skips it and `vcpu.rs` removes it from the stack on return (`msg_callee_pop`; the stub's caller removes only `DosGetMessage`'s seven arguments, and the stack was 4 bytes off before). `DosInsertMessage` (`insert_strings`) replaces `%1` … `%9` by the table strings (at most `MAX_INSERTIONS`, each bounded), copies what fits and returns `ERROR_MR_MSG_TOO_LONG` when the result was cut. `DosQueryMessageCP` reports, for a file that exists, the process codepage (`message_cp_list`: count, codepages, language family and dialect as USHORTs).
+
+**Message files** (ADR-0105) are Warpine's own format, `src/loader/msgfile.rs`:
+- The module is pure: `compile` (the `os2msg` source), `parse` / `write` (files), `build_segment` / `segment_entries` (bound segments).
+- `os2msg` and `lx-link` include it with `#[path]`, so it uses nothing else of Warpine's.
+
+`dos_get_message` takes MSG.6's segment argument (`a[0]`):
+1. `bound_message_file` reads the segment's header and entries with bounded guest reads and finds the file by its upper-case name. A segment without Warpine's magic (another compiler's) is ignored.
+2. Otherwise, `message_file_on_drive` tries the name as given, then each `DPATH` directory (`environment_value` walks `pib_pchenv`, bounded to 64 KB), through the drive manager; files over 16 MB are not read.
+3. `lookup_in` gives the text with its id prefix for `E` / `W`; `failure_text` gives the `SYS0317` / `SYS0318` / `SYS0319` text and error otherwise.
 
 ## Threading Model
 
@@ -2491,6 +2500,8 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `debug_elf` (ADR-0102): when an input has `.debug_*` sections (`SecClass::Debug`, never laid out), `main` writes `<output>.dbg`. `join` concatenates them by name and applies their relocations against the final layout; `write` emits an ELF32 file with `.text` / `.data` / `.bss` at their linked addresses, the debug sections and the global symbols.
 - **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic". Other types in debug sections are left as they are.
 
+**`src/bin/os2msg.rs`** — the message compiler of the C SDK (ADR-0105): `os2msg [--codepage N] in.txt -o out.msg`, a thin front end to `msgfile::compile` and `write`. `lx-link` takes `.msg` inputs (`Inputs::messages`) and adds `message_object`: one data section holding `msgfile::build_segment`'s segment, at `__warpine_message_segment`.
+
 **`src/bin/os2rc.rs`** — the resource compiler of the C SDK (ADR-0099): `os2rc [-I dir] [-D name=value] in.rc -o out.res`.
 - **Preprocessor:** `logical_lines` (comments, continuations), `Preprocessor` (`#define` / `#include` / `#if` …; headers give only their directives; `RC_INVOKED`), and `Eval` (C expressions, casts; `#if` takes unknown names as 0, resources reject them).
 - **`Parser`:** one statement after another, into `Resource`s. String and message tables gather into bundles, written after the rest.
@@ -2520,7 +2531,7 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `dll0.c` (ADR-0101): a DLL's `_DLL_InitTerm` (weak): on attach the thread-local words, the init arrays and `__dll_initialize`; on detach `__dll_terminate`, the DLL's `__cxa_atexit` destructors and the fini arrays;
   - `stdlib.c`: `exit`, `atexit` and `__cxa_atexit` / `__cxa_finalize` (one list, newest first), `getenv`, conversions, `qsort`, the runtime's lock, and the thread-local words `crt0` / `dll0` allocate: `errno` (`__errno_location`, ADR-0098) and two for the C++ runtime (`__libc_cxx_globals`);
   - `time.c`, `scanf.c` (ADR-0101): `<time.h>` on `DosGetDateTime` (64-bit `time_t`), `sscanf`;
-  - `msgstub.c`: `__warpine_DosGetMessage`, which adds the null message segment MSG.6 takes before its arguments;
+  - `msgstub.c`: `__warpine_DosGetMessage`, which adds the message segment MSG.6 takes before its arguments: `__warpine_message_segment`, a weak reference that `lx-link` defines when `.msg` files are bound (ADR-0105), else 0;
   - `malloc.c`: first-fit, 16-byte aligned, arenas from `DosAllocMem`;
   - `stdio.c`: streams on OS/2 handles, writes straight through;
   - `printf.c`: the formatter; doubles are rounded once, ties to even, on the digits `dtoa.c` gives;

@@ -19,6 +19,10 @@ use std::process;
 
 use object::read::archive::ArchiveFile;
 
+#[path = "../loader/msgfile.rs"]
+#[allow(dead_code)] // the reader's lookups are Warpine's
+mod msgfile;
+
 // ─── Constants (mirrors src/loader/constants.rs — duplicated because bin
 // crates cannot use `use warpine::...` without a lib.rs) ──────────────────────
 
@@ -171,9 +175,10 @@ mod args {
                 }
                 // All other unknown flags: silently skip
             } else {
-                // Positional: only collect .o / .rlib / .a / .res / .dll files
+                // Positional: only collect .o / .rlib / .a / .res / .dll /
+                // .msg files
                 let lower = arg.to_ascii_lowercase();
-                if [".o", ".rlib", ".a", ".res", ".dll"].iter().any(|e| lower.ends_with(e)) {
+                if [".o", ".rlib", ".a", ".res", ".dll", ".msg"].iter().any(|e| lower.ends_with(e)) {
                     inputs.push(PathBuf::from(arg));
                 }
             }
@@ -1770,6 +1775,16 @@ fn main() {
         }
     }
     let resources = std::mem::take(&mut inputs.resources);
+    let messages = std::mem::take(&mut inputs.messages);
+    if !messages.is_empty() {
+        match message_object(&messages) {
+            Ok(o) => inputs.objects.push(o),
+            Err(e) => {
+                eprintln!("lx-link: bad message file: {e}");
+                process::exit(1);
+            }
+        }
+    }
     let mut spec = lx_writer::Spec::default();
     // Names a DLL input exports become imports from it; an OS/2 API of
     // the same name stays the API.
@@ -1852,6 +1867,26 @@ struct Inputs {
     resources: Vec<res_reader::ResEntry>,
     /// DLLs given as inputs: module name and exports.
     dlls: Vec<(String, Vec<(String, u32)>)>,
+    /// Message files to bind (ADR-0105): file name and bytes.
+    messages: Vec<(String, Vec<u8>)>,
+}
+
+/// The symbol of the bound message segment, which the SDK's
+/// `DosGetMessage` stub passes to MSG.6 (ADR-0105).
+const MESSAGE_SEGMENT: &str = "__warpine_message_segment";
+
+/// The message files given to the link, as one object: a data section
+/// holding their bound message segment, at [`MESSAGE_SEGMENT`].
+fn message_object(messages: &[(String, Vec<u8>)]) -> Result<elf_reader::ElfObject, String> {
+    let segment = msgfile::build_segment(messages).map_err(|e| e.to_string())?;
+    let size = segment.len() as u64;
+    Ok(elf_reader::ElfObject {
+        name: "<bound messages>".into(),
+        sections: vec![elf_reader::ElfSection { name: ".data.messages".into(), class: elf_reader::SecClass::Data,
+                                                data: segment, size, align: 4, relocs: Vec::new() }],
+        symbols: vec![elf_reader::ElfSymbol { name: MESSAGE_SEGMENT.into(), section_idx: 0, offset: 0, weak: false }],
+        ..Default::default()
+    })
 }
 
 /// The objects to link: the plain ones, then archive members pulled in
@@ -1952,6 +1987,11 @@ fn load_input(path: &Path, inputs: &mut Inputs) -> Result<(), Box<dyn Error>> {
     }
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) {
         inputs.dlls.push(dll_reader::read_exports(&data, &name)?);
+        return Ok(());
+    }
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("msg")) {
+        let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(name);
+        inputs.messages.push((file, data));
         return Ok(());
     }
 
@@ -2253,7 +2293,7 @@ VIOCALLS.19   VioWrtTTY\n";
             ..Default::default()
         };
         let inputs = Inputs { objects: vec![a], members: vec![
-            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)], resources: Vec::new(), dlls: Vec::new() };
+            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)], ..Default::default() };
         let names: Vec<String> = select_objects(inputs, &HashMap::new()).into_iter().map(|o| o.name).collect();
         assert_eq!(names, ["start.o", "f.o", "g.o"]);
     }
@@ -2583,6 +2623,21 @@ VIOCALLS.19   VioWrtTTY\n";
         assert_eq!(lx[fx + 1] & 0x03, 0x01, "an import by ordinal");
         assert_eq!(u16::from_le_bytes([lx[fx + 2], lx[fx + 3]]), 1, "at the call's operand");
         assert_eq!((lx[fx + 4], u16::from_le_bytes([lx[fx + 5], lx[fx + 6]])), (1, 3), "module 1, ordinal 3");
+    }
+
+    #[test]
+    fn message_files_become_a_bound_segment_object() {
+        let app = msgfile::write(&msgfile::compile(b"APP\nAPP0001I: hi\n", 0).unwrap()).unwrap();
+        let o = message_object(&[("app.msg".into(), app)]).expect("object");
+        assert_eq!(o.symbols.len(), 1);
+        assert_eq!((o.symbols[0].name.as_str(), o.symbols[0].offset, o.symbols[0].weak), (MESSAGE_SEGMENT, 0, false));
+        let sec = &o.sections[0];
+        assert_eq!(sec.class, elf_reader::SecClass::Data);
+        assert_eq!(&sec.data[..8], msgfile::SEGMENT_MAGIC);
+        assert_eq!(sec.size as usize, sec.data.len());
+        assert!(message_object(&[("bad.msg".into(), b"junk".to_vec())]).unwrap_err().contains("bad.msg"));
+        let a = args::parse_args(&["lx-link".into(), "x.o".into(), "app.MSG".into(), "-o".into(), "x.exe".into()]);
+        assert_eq!(a.inputs, vec![std::path::PathBuf::from("x.o"), "app.MSG".into()]);
     }
 
     #[test]

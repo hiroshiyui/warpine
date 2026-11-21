@@ -38,6 +38,7 @@ pub mod pm_dde;
 pub mod pm_switch;
 pub mod pm_startapp;
 mod msgcalls;
+pub mod msgfile;
 pub mod vio_frame;
 pub mod pm_minmax;
 mod pm_sysmenu;

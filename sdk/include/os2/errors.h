@@ -92,7 +92,9 @@
 #define ERROR_DOSSUB_BADSIZE          313
 #define ERROR_DOSSUB_BADFLAG          314
 #define ERROR_MR_MSG_TOO_LONG         316
+#define ERROR_MR_MID_NOT_FOUND        317
 #define ERROR_MR_UN_ACC_MSGF          318
+#define ERROR_MR_INV_MSGF_FORMAT      319
 #define ERROR_MR_INV_IVCOUNT          320
 #define ERROR_TS_SEMHANDLE            323
 #define ERROR_TS_NOTIMER              324

@@ -110,7 +110,7 @@ modules = [
   "loader/rexx/number.rs", "loader/rexx/program.rs", "loader/rexx/rexxutil.rs", "loader/rexx/stream.rs",
   "loader/rexx/template.rs", "loader/rexx/trace.rs", "loader/rexx/embed.rs", "loader/rexx_vfs.rs",
   "loader/rexxapi.rs", "loader/rexxapi/host.rs", "loader/cmd/input.rs", "loader/cmd/parse.rs",
-  "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/npipe_sem.rs", "loader/inherit.rs", "loader/msgcalls.rs",
+  "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/npipe_sem.rs", "loader/inherit.rs", "loader/msgcalls.rs", "loader/msgfile.rs",
   "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/session_threads.rs", "loader/shared_arena.rs", "loader/shared_sem.rs",
   "loader/clock.rs", "loader/warpine_api.rs", "loader/infoseg.rs",
 ]
@@ -223,8 +223,8 @@ modules = ["loader/gdb_stub.rs", "loader/crash_dump.rs"]
 [[layer]]
 id = "tools"
 zone = "build"
-label = "Build tools: lx-link, os2rc, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033, ADR-0099)"
-modules = ["bin/lx_link.rs", "bin/os2rc.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compat.rs"]
+label = "Build tools: lx-link, os2rc, os2msg, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033, ADR-0099, ADR-0105)"
+modules = ["bin/lx_link.rs", "bin/os2rc.rs", "bin/os2msg.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compat.rs"]
 
 [[layer]]
 id = "deskserver"

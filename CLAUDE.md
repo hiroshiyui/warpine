@@ -56,6 +56,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 - **The C SDK** (ADR-0096–0101): `sdk/include/os2.h` declares everything (Dos*, Que*, NLS, MSG, Vio*, Kbd*, Mou*, PM in `os2/pm.h` and the PM module headers it includes; `INCL_*` select nothing), `rexxsaa.h`, `os2me.h`, and a small C runtime (stdio, stdlib with `strtod`, string, math, time).
   - Build it with `make -C sdk` (or `CC=clang`); a program's Makefile includes `sdk/os2.mk` (see `samples/c_sdk_test`).
   - Resources (ADR-0099): `cargo build --bin os2rc`; `os2rc -I sdk/include x.rc -o x.res`, then pass `x.res` to `lx-link` (see `samples/c_pm_test`). Its output must stay byte-identical to `wrc -zm` (`os2rc_matches_open_watcom_wrc`).
+  - Messages (ADR-0105): `cargo build --bin os2msg`; `os2msg x.txt -o x.msg` writes Warpine's own message format (`src/loader/msgfile.rs`, shared with `lx-link` through `#[path]`); a `.msg` given to `lx-link` is bound into the program (see `samples/c_msg_test`). IBM `MKMSGF` files are not read.
   - Every call a header declares must be in `targets/os2api.def`; VIO / KBD / MOU calls go through `OS2_PASCAL_API`; every integer `#define` must equal Warpine's constant of that name.
   - The def lists PMWIN / PMGPI calls the sub-dispatchers serve: a new PM call needs its def line too.
   - Structure layouts match Open Watcom's (`tests/sdk_layout`, ADR-0101): a new structure Open Watcom also has goes into `fields.inc`.
