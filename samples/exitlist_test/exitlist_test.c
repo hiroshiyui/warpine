@@ -62,6 +62,11 @@ static int n_passed = 0;
 static char seq[16];
 static int  n_seq = 0;
 static HEV  hev;
+#if defined( THREAD_EXIT ) || defined( NO_MAIN )
+/* Posted by thread 1 once it has written its results: thread 2 ends the
+   process (or itself) only then, however the threads are scheduled. */
+static HEV  go;
+#endif
 
 /* ---------- output (no C library stdio: it may be gone at exit) ---------- */
 
@@ -226,9 +231,11 @@ static VOID APIENTRY second_thread( ULONG arg )
 {
     (void)arg;
 #if defined( THREAD_EXIT )
+    DosWaitEventSem( go, SEM_INDEFINITE_WAIT );
     write_stdout( "exitlist_test: thread 2 ends the process\r\n" );
     DosExit( EXIT_PROCESS, 4 );
 #elif defined( NO_MAIN )
+    DosWaitEventSem( go, SEM_INDEFINITE_WAIT );
     DosSleep( 200 );
     write_stdout( "exitlist_test: thread 2 ends the process\r\n" );
     DosExit( EXIT_THREAD, 5 );
@@ -245,10 +252,14 @@ int main( void )
     HEV   never;
 #endif
     register_routines();
+#if defined( THREAD_EXIT ) || defined( NO_MAIN )
+    DosCreateEventSem( NULL, &go, 0, FALSE );
+#endif
 #if defined( THREAD_EXIT )
     DosCreateEventSem( NULL, &never, 0, FALSE );
     check( "DosCreateThread", DosCreateThread( &tid, second_thread, 0, 0, STACK_SIZE ), NO_ERROR );
     done( "done" );
+    DosPostEventSem( go );
     DosWaitEventSem( never, SEM_INDEFINITE_WAIT );
     write_stdout( "exitlist_test: thread 1 woke up: FAIL\r\n" );
     return 1;
@@ -265,6 +276,7 @@ int main( void )
     check( "DosCreateThread", DosCreateThread( &tid, second_thread, 0, 0, STACK_SIZE ), NO_ERROR );
     done( "done" );
     write_stdout( "exitlist_test: thread 1 ends first\r\n" );
+    DosPostEventSem( go );
     DosExit( EXIT_THREAD, 0 );
     return 1;
 #elif defined( HLT_EXIT )

@@ -79,6 +79,41 @@ static void APIENTRY worker( ULONG i )
     while( !stop_flag[i] ) DosSleep( 10 );
 }
 
+/* The cap mode's workers block on one event semaphore instead of polling:
+   hundreds of polling threads would load the machine. */
+static HEV gate;
+
+static void APIENTRY blocked_worker( ULONG i )
+{
+    (void)i;
+    DosWaitEventSem( gate, SEM_INDEFINITE_WAIT );
+}
+
+/* Create blocked workers until DosCreateThread fails; returns the number
+   created, *prc the failing return code. */
+static int fill_blocked( APIRET *prc )
+{
+    int    n = 0;
+    APIRET rc = NO_ERROR;
+    while( n < MAX_T ) {
+        rc = DosCreateThread( &tids[n], (PFNTHREAD)blocked_worker, n, CREATE_READY, 16384 );
+        if( rc != NO_ERROR ) break;
+        n++;
+    }
+    *prc = rc;
+    return n;
+}
+
+/* Release the blocked workers, wait for them, and close the gate again. */
+static void end_blocked( int n )
+{
+    ULONG posts;
+    int   i;
+    DosPostEventSem( gate );
+    for( i = 0; i < n; i++ ) DosWaitThread( &tids[i], DCWW_WAIT );
+    DosResetEventSem( gate, &posts );
+}
+
 /* Create threads from index `from` until DosCreateThread fails; returns
    the number created, *prc the failing return code. */
 static int fill( int from, APIRET *prc )
@@ -149,11 +184,12 @@ int main( void )
     }
     if( strncmp( mode, "exit7", 5 ) == 0 ) return 7;
     if( strncmp( mode, "cap", 3 ) == 0 ) {
+        if( DosCreateEventSem( NULL, &gate, 0, FALSE ) != NO_ERROR ) return 255;
         for( i = 0; i < 2; i++ ) {
-            n = fill( 0, &rc );
+            n = fill_blocked( &rc );
             report( rc == ERROR_MAX_THRDS_REACHED, "process cap rc=", rc );
             report( n > 0, "process cap: created threads=", n );
-            end_threads( 0, n );
+            end_blocked( n );
         }
         write_stdout( failures ? "threads_limit_test: FAILED\r\n" : "threads_limit_test: all passed\r\n" );
         return failures ? 1 : 0;
