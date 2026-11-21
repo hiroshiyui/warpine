@@ -1562,7 +1562,7 @@ impl super::Loader {
 /// exception-handler arguments (cdecl/caller-cleanup convention):
 ///
 /// ```text
-/// [ESP+0]  CALLBACK_RET_TRAP   ← return address
+/// [ESP+0]  XCPT_RET_TRAP       ← return address (an unwinder recognises it, ADR-0110)
 /// [ESP+4]  pExceptionReport
 /// [ESP+8]  pRegistrationRecord
 /// [ESP+12] pContextRecord

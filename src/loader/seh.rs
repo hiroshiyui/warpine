@@ -13,9 +13,14 @@
 //   • On a hardware fault (IDT exception) or DosRaiseException the dispatcher
 //     allocates guest EXCEPTIONREPORTRECORD + CONTEXTRECORD, then calls the
 //     first handler via ApiResult::ExceptionDispatch.
-//   • In vcpu.rs the CALLBACK_RET_TRAP handler processes FrameKind::ExceptionHandler:
+//   • Handlers are called with the return address XCPT_RET_TRAP, which
+//     vcpu.rs takes like CALLBACK_RET_TRAP; for FrameKind::ExceptionHandler:
 //       XCPT_CONTINUE_EXECUTION  → restore FaultContext, resume
 //       XCPT_CONTINUE_SEARCH    → invoke next handler in chain (or crash)
+//   • DosUnwindException (ADR-0110) returns ApiResult::Unwind: vcpu.rs calls
+//     the handlers above the target with EH_UNWINDING one at a time
+//     (FrameKind::UnwindHandler, `unwind_step` here), then goes on at
+//     pTargetIP or returns.
 
 use super::constants::*;
 use super::{ApiResult, FaultContext};
@@ -255,12 +260,11 @@ impl super::Loader {
         })
     }
 
-    /// Walk the exception handler chain starting at `reg_rec`, calling each handler
-    /// with `EH_UNWINDING` set.  Used by `DosUnwindException`.
-    ///
-    /// Stops when `reg_rec == stop_at` (exclusive; if 0 walk entire chain).
-    /// After walking, restores the stack to the target frame by setting
-    /// `TIB_EXCHAIN` to `stop_at`.
+    /// `DosRaiseException(pexcept)`: the caller's report record goes to the
+    /// first handler of the calling thread's chain, with its
+    /// `ExceptionAddress` set to the call's return address (ADR-0110).
+    /// `vcpu.rs` sets the context so that `XCPT_CONTINUE_EXECUTION` returns
+    /// `NO_ERROR` to the caller.
     pub(crate) fn dos_raise_exception(&self, vcpu: &dyn super::vm_backend::VcpuBackend, vcpu_id: u32, p_exc_rec: u32) -> ApiResult {
         debug!("  DosRaiseException(pExcRec=0x{:08X})", p_exc_rec);
         if p_exc_rec == 0 {
