@@ -188,7 +188,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
-- [ ] **Memory protection on the page tables** (ADR-0114): phases 1 and 2 are done (page states for `DosAllocMem` memory in shared process tables; sparse thread stacks with `XCPT_UNABLE_TO_GROW_STACK`, at ring 3). Read-only objects (phase 3) and not-present free memory (phase 4) are done too. Left: a sparse main-thread stack; `DosQueryMem` reporting an object's real access and `PAG_FREE` for free memory.
+- [ ] **Memory protection on the page tables** (ADR-0114): phases 1 and 2 are done (page states for `DosAllocMem` memory in shared process tables; sparse thread stacks with `XCPT_UNABLE_TO_GROW_STACK`, at ring 3). Read-only objects (phase 3) and not-present free memory (phase 4) are done too. Left: a sparse main-thread stack; `PAG_EXECUTE` in `DosQueryMem` for code objects.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Profiles**:
   - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
