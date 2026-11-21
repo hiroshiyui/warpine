@@ -729,8 +729,9 @@ mod eh_frame {
 /// in the program, the global symbols, and the inputs' DWARF sections
 /// joined by name with their relocations applied against the final
 /// layout. `symbol-file prog.dbg` then gives Warpine's GDB stub source
-/// lines, types and variables; a DLL, which the loader moves, takes
-/// `add-symbol-file mod.dbg -o <load offset>`.
+/// lines, types and variables. A DLL's companion, at the addresses it was
+/// linked for, is listed by the stub with the DLL's load addresses
+/// (ADR-0104), and GDB moves it there itself.
 mod debug_elf {
     use super::elf_reader::{ElfObject, RelocKind, RelocTarget, SecClass};
     use super::linker_state::LinkerState;

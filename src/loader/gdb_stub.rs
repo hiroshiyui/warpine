@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -28,6 +29,10 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase, SingleThreadResume, SingleThreadResumeOps,
     SingleThreadSingleStep, SingleThreadSingleStepOps,
 };
+use gdbstub::target::ext::libraries::{Libraries, LibrariesOps};
+use gdbstub::target::ext::target_description_xml_override::{
+    TargetDescriptionXmlOverride, TargetDescriptionXmlOverrideOps,
+};
 use gdbstub::target::ext::breakpoints::{
     Breakpoints, BreakpointsOps, SwBreakpoint, SwBreakpointOps,
 };
@@ -36,6 +41,7 @@ use gdbstub_arch::x86::X86_SSE;
 use gdbstub_arch::x86::reg::{X86CoreRegs, X86SegmentRegs};
 use log::{info, warn};
 
+use super::mutex_ext::MutexExt;
 use super::vm_backend::{GuestRegs, GuestSregs};
 
 // ── Stop reason ───────────────────────────────────────────────────────────────
@@ -54,6 +60,9 @@ pub enum GdbVcpuStopReason {
     Interrupt,
     /// Guest raised a CPU exception (vector number).
     Exception(u8),
+    /// A module was loaded or freed: the client reads the library list
+    /// again and goes on (ADR-0104).
+    Library,
 }
 
 /// Complete vCPU state snapshot taken when the CPU stops.
@@ -72,6 +81,7 @@ impl GdbStopInfo {
             GdbVcpuStopReason::HwBreakpoint => SingleThreadStopReason::HwBreak(()),
             GdbVcpuStopReason::SingleStep   => SingleThreadStopReason::DoneStep,
             GdbVcpuStopReason::Interrupt    => SingleThreadStopReason::Signal(Signal::SIGINT),
+            GdbVcpuStopReason::Library      => SingleThreadStopReason::Library(()),
             GdbVcpuStopReason::Exception(v) => {
                 let sig = match v {
                     0 | 4 => Signal::SIGFPE,   // #DE, #OF
@@ -117,6 +127,13 @@ pub struct GdbState {
 
     /// Hardware execute breakpoints (DR0-DR3).  `None` = slot unused.
     pub hw_breakpoints: Mutex<[Option<u32>; 4]>,
+
+    /// A module was loaded or freed since the program started: the vCPU
+    /// stops with [`GdbVcpuStopReason::Library`] (ADR-0104).
+    pub library_event: AtomicBool,
+    /// The vCPU has made its stop at the entry point; module changes
+    /// before it (the program's own imports) are in the first list.
+    pub started: AtomicBool,
 }
 
 impl Default for GdbState {
@@ -133,6 +150,17 @@ impl GdbState {
             resume_cond:    Condvar::new(),
             sw_breakpoints: Mutex::new(HashMap::new()),
             hw_breakpoints: Mutex::new([None; 4]),
+            library_event:  AtomicBool::new(false),
+            started:        AtomicBool::new(false),
+        }
+    }
+
+    /// A module was loaded or freed: once the program runs, the vCPU stops
+    /// so that the client reads the library list again.
+    pub fn libraries_changed(&self) {
+        if self.started.load(Ordering::Acquire) {
+            self.library_event.store(true, Ordering::Release);
+            self.stop_requested.store(true, Ordering::Release);
         }
     }
 
@@ -224,6 +252,77 @@ impl Target for WarpineTarget {
 
     fn support_breakpoints(&mut self) -> Option<BreakpointsOps<'_, Self>> {
         Some(self)
+    }
+
+    fn support_libraries(&mut self) -> Option<LibrariesOps<'_, Self>> {
+        Some(self)
+    }
+
+    fn support_target_description_xml_override(&mut self) -> Option<TargetDescriptionXmlOverrideOps<'_, Self>> {
+        Some(self)
+    }
+}
+
+/// The target description: i386 with SSE, as `X86_SSE` gives it, and no
+/// OS ABI. A Linux-hosted GDB otherwise takes the debug companion (an ELF
+/// file that names none) for GNU/Linux and asks for SVR4 library lists;
+/// with none it reads Warpine's (ADR-0104).
+pub const TARGET_XML: &str = r#"<target version="1.0"><architecture>i386:intel</architecture><osabi>none</osabi><feature name="org.gnu.gdb.i386.sse"></feature></target>"#;
+
+impl TargetDescriptionXmlOverride for WarpineTarget {
+    fn target_description_xml(&self, annex: &[u8], offset: u64, length: usize, buf: &mut [u8]) -> TargetResult<usize, Self> {
+        if annex != b"target.xml" { return Err(TargetError::NonFatal); }
+        Ok(copy_window(TARGET_XML.as_bytes(), offset, length, buf))
+    }
+}
+
+// ── Libraries (ADR-0104) ──────────────────────────────────────────────────────
+
+/// The debug companion `lx-link` writes beside a module (`X.DLL` →
+/// `X.dbg`, ADR-0102), if there is one.
+pub fn debug_companion(module: &Path) -> Option<PathBuf> {
+    ["dbg", "DBG"].iter().map(|ext| module.with_extension(ext)).find(|p| p.is_file())
+}
+
+/// GDB's library list (the generic format of `qXfer:libraries:read`): each
+/// module with a debug companion, named by the companion's host path, with
+/// one segment address per object, in object order — the order of the
+/// companion's loadable segments, so GDB moves each by its own offset.
+pub fn library_list_xml(modules: &[(PathBuf, Vec<u32>)]) -> String {
+    let mut xml = String::from("<library-list version=\"1.0\">\n");
+    for (companion, bases) in modules {
+        let name: String = companion.to_string_lossy().chars().map(|c| match c {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '"' => "&quot;".to_string(),
+            '\'' => "&apos;".to_string(),
+            c => c.to_string(),
+        }).collect();
+        xml.push_str(&format!("<library name=\"{name}\">"));
+        for base in bases { xml.push_str(&format!("<segment address=\"0x{base:x}\"/>")); }
+        xml.push_str("</library>\n");
+    }
+    xml.push_str("</library-list>\n");
+    xml
+}
+
+/// Copy the part of `data` at `offset` that fits into `buf`.
+fn copy_window(data: &[u8], offset: u64, length: usize, buf: &mut [u8]) -> usize {
+    let Ok(start) = usize::try_from(offset) else { return 0 };
+    let Some(rest) = data.get(start..) else { return 0 };
+    let n = rest.len().min(length).min(buf.len());
+    buf[..n].copy_from_slice(&rest[..n]);
+    n
+}
+
+impl Libraries for WarpineTarget {
+    fn get_libraries(&self, offset: u64, length: usize, buf: &mut [u8]) -> TargetResult<usize, Self> {
+        let modules: Vec<(PathBuf, Vec<u32>)> = self.shared.dll_mgr.lock_or_recover().loaded_files()
+            .into_iter()
+            .filter_map(|(file, bases)| debug_companion(&file).map(|c| (c, bases)))
+            .collect();
+        Ok(copy_window(library_list_xml(&modules).as_bytes(), offset, length, buf))
     }
 }
 
@@ -485,4 +584,65 @@ pub fn launch_gdb_stub(shared: Arc<super::SharedState>, port: u16) {
             Err(e)     => warn!("GDB: session error: {}", e),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_list_names_each_companion_with_its_object_addresses() {
+        let xml = library_list_xml(&[("/d/a.dbg".into(), vec![0x0200_0000, 0x0201_0000]),
+                                     ("/d/b&<\"'>.dbg".into(), vec![0x0203_0000])]);
+        assert_eq!(xml, "<library-list version=\"1.0\">\n\
+                         <library name=\"/d/a.dbg\"><segment address=\"0x2000000\"/><segment address=\"0x2010000\"/></library>\n\
+                         <library name=\"/d/b&amp;&lt;&quot;&apos;&gt;.dbg\"><segment address=\"0x2030000\"/></library>\n\
+                         </library-list>\n");
+        assert_eq!(library_list_xml(&[]), "<library-list version=\"1.0\">\n</library-list>\n");
+    }
+
+    #[test]
+    fn copy_window_reads_from_an_offset_and_stops_at_the_end() {
+        let mut buf = [0u8; 4];
+        assert_eq!(copy_window(b"abcdef", 0, 4, &mut buf), 4);
+        assert_eq!(&buf, b"abcd");
+        assert_eq!(copy_window(b"abcdef", 4, 4, &mut buf), 2);
+        assert_eq!(&buf[..2], b"ef");
+        assert_eq!(copy_window(b"abcdef", 6, 4, &mut buf), 0);
+        assert_eq!(copy_window(b"abcdef", 99, 4, &mut buf), 0);
+        assert_eq!(copy_window(b"abcdef", 0, 2, &mut buf), 2);
+    }
+
+    #[test]
+    fn target_description_names_no_os_abi() {
+        assert!(TARGET_XML.contains("<osabi>none</osabi>"));
+        assert!(TARGET_XML.contains("<architecture>i386:intel</architecture>"));
+        assert!(TARGET_XML.contains("org.gnu.gdb.i386.sse"));
+    }
+
+    #[test]
+    fn debug_companion_is_the_dbg_file_beside_the_module() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dll = dir.path().join("x.dll");
+        assert_eq!(debug_companion(&dll), None);
+        std::fs::write(dir.path().join("x.dbg"), b"").expect("write");
+        assert_eq!(debug_companion(&dll), Some(dir.path().join("x.dbg")));
+    }
+
+    #[test]
+    fn module_changes_stop_the_vcpu_only_once_the_program_runs() {
+        let g = GdbState::new();
+        g.libraries_changed();
+        assert!(!g.library_event.load(Ordering::Acquire) && !g.stop_requested.load(Ordering::Acquire),
+                "the program's own imports are in the first list");
+        g.started.store(true, Ordering::Release);
+        g.libraries_changed();
+        assert!(g.library_event.load(Ordering::Acquire) && g.stop_requested.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn library_stop_asks_the_client_to_reread_the_list() {
+        let info = GdbStopInfo { reason: GdbVcpuStopReason::Library, regs: GuestRegs::default(), sregs: GuestSregs::default() };
+        assert!(matches!(info.to_stop_reason(), SingleThreadStopReason::Library(())));
+    }
 }

@@ -2079,13 +2079,18 @@ gdb -ex 'target remote :1234'
 **Architecture:**
 
 - `GdbState` — Shared `Mutex`+`Condvar` synchronisation channel between the vCPU thread and the GDB stub thread. An `AtomicBool` (`stop_requested`) handles Ctrl-C interrupt from the GDB client.
-- `WarpineTarget` — Implements `gdbstub::Target` with `X86_SSE` architecture, `SingleThreadBase`, `SingleThreadResume`, `SingleThreadSingleStep`, and `Breakpoints`/`SwBreakpoint`.
+- `WarpineTarget` — Implements `gdbstub::Target` with `X86_SSE` architecture, `SingleThreadBase`, `SingleThreadResume`, `SingleThreadSingleStep`, `Breakpoints`/`SwBreakpoint`, `Libraries` (ADR-0104) and a target description override (`TARGET_XML`, with `<osabi>none</osabi>`).
 - `GdbBlockingEventLoop` — Polls `stop_cond` with 10 ms timeout and checks the TCP socket for incoming bytes between polls.
 - `launch_gdb_stub()` — Binds `127.0.0.1:<port>`, accepts one connection, and runs `GdbStub::run_blocking`.
 
 **Features:** Software breakpoints (INT 3 patching with original byte restore), single-step via `KVM_GUESTDBG_SINGLESTEP`, full 256 MB guest memory read/write, Ctrl-C stop with `SIGINT` mapping. The vCPU pauses at the entry point on startup, sending `SIGTRAP` to the GDB client; the stub takes that stop when the client connects (`take_initial_stop`), so GDB starts at the entry point.
 
-**Source-level debugging** (ADR-0102): a program `lx-link` linked from objects with DWARF has a debug companion, `prog.dbg`. Give it to GDB with `symbol-file prog.dbg` before `target remote`; a DLL takes `add-symbol-file mod.dbg -o <offset>`.
+**Source-level debugging** (ADR-0102): a program `lx-link` linked from objects with DWARF has a debug companion, `prog.dbg`. Give it to GDB with `symbol-file prog.dbg` before `target remote`.
+
+**DLLs** (ADR-0104):
+- `get_libraries` answers `qXfer:libraries:read` from `DllManager::loaded_files` (each user module's host file, recorded by `load_dll`, and its object bases). It lists those with a companion beside them (`debug_companion`), one `<segment>` per object: the companion's loadable segments are the code and data objects, in that order.
+- `load_dll` and `dos_free_module` call `GdbState::libraries_changed`. Once the vCPU has made its first stop (`started`), that sets `library_event` and `stop_requested`. The vCPU loop then stops with `GdbVcpuStopReason::Library`, which GDB answers by reading the list and resuming.
+- `TARGET_XML` names no OS ABI: otherwise a Linux-built GDB takes the ELF companion for GNU/Linux and asks for SVR4 lists.
 
 ### Crash Dump Facility
 

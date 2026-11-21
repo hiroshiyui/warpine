@@ -472,6 +472,7 @@ impl super::Loader {
         // If a GDB stub is attached, pause at the entry point and wait for the
         // first 'continue' or 'step' command before executing any guest code.
         if !resumed && let Some(gdb) = self.shared.gdb_state.as_ref() {
+            gdb.started.store(true, Ordering::Release);
             let regs  = vcpu.get_regs().unwrap();
             let sregs = vcpu.get_sregs().unwrap();
             gdb.notify_stopped(GdbStopInfo {
@@ -550,13 +551,15 @@ impl super::Loader {
                 }
             }
 
-            // GDB Ctrl-C: pause the vCPU and wait for a resume command.
+            // GDB Ctrl-C, or a module loaded or freed (ADR-0104): pause
+            // the vCPU and wait for a resume command.
             if let Some(gdb) = self.shared.gdb_state.as_ref()
-                && gdb.stop_requested.swap(false, Ordering::Relaxed) {
+                && gdb.stop_requested.swap(false, Ordering::AcqRel) {
                 let regs  = vcpu.get_regs().unwrap();
                 let sregs = vcpu.get_sregs().unwrap();
+                let library = gdb.library_event.swap(false, Ordering::AcqRel);
                 gdb.notify_stopped(GdbStopInfo {
-                    reason: GdbVcpuStopReason::Interrupt,
+                    reason: if library { GdbVcpuStopReason::Library } else { GdbVcpuStopReason::Interrupt },
                     regs,
                     sregs,
                 });

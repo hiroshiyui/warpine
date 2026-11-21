@@ -504,7 +504,12 @@ warpine --gdb 1234 prog.exe
 gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234' -ex 'break main' -ex 'continue'
 ```
 
-Breakpoints by function or `file:line`, `next` / `step`, arguments and locals, `print` of structures, `finish`, `bt` and globals then work. A DLL's companion has its link addresses: load it with `add-symbol-file mod.dbg -o <load address - link address>`.
+Breakpoints by function or `file:line`, `next` / `step`, arguments and locals, `print` of structures, `finish`, `bt` and globals then work.
+
+DLLs need nothing more (ADR-0104):
+- The stub lists every loaded DLL that has a `.dbg` beside it, at the addresses the loader gave its objects, and GDB loads it (`info sharedlibrary`). Some GDB versions (16) list the DLLs loaded before the first stop without reading their symbols: run `sharedlibrary` after `target remote`.
+- `DosLoadModule` and `DosFreeModule` stop the program briefly so that GDB reads the list again. With `set breakpoint pending on`, a breakpoint in a DLL loaded later takes effect before its `_DLL_InitTerm` runs.
+- When the program's DLLs have `_DLL_InitTerm` routines, the first stop is at Warpine's start thunk, which runs them before the program's entry point.
 
 ---
 

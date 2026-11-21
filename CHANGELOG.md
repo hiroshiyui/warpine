@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **GDB finds the DLLs' debug companions** (ADR-0104).
+  - The GDB stub lists each loaded DLL's `.dbg` at the DLL's load addresses (`qXfer:libraries:read`). `break` on a DLL's function works with no `add-symbol-file`.
+  - Loading or freeing a DLL with `DosLoadModule` / `DosFreeModule` stops the program briefly so that GDB reads the list again; pending breakpoints in the new DLL take effect before its `_DLL_InitTerm` runs.
+  - `samples/c_gdb_test` has two DLLs now, one imported and one loaded at run time; the integration test stops in both.
 - **C++ for the SDK** (ADR-0103): programs from g++ and clang++, with the SDK's own C++ runtime (`libos2cxx.a`).
   - **Exceptions:** `throw` / `catch` through frames with destructors, rethrow, `catch (...)`, catch by base class and by pointer, `std::terminate`. A DWARF unwinder reads the `.eh_frame` that `lx-link` now keeps, pruned to the functions it keeps.
   - **Run-time type information:** `typeid`, `dynamic_cast` (down, across, to `void *`), and the `type_info` objects of the fundamental types.

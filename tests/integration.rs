@@ -2071,8 +2071,16 @@ fn gdb_debugs_a_c_program_at_the_source_level() {
             .args(["60", "gdb", "-nx", "-batch", "-ex", "set confirm off", "-ex", "set tcp connect-timeout 20"])
             .args(["-ex", &format!("symbol-file {}", dbg.display())])
             .args(["-ex", &format!("target remote 127.0.0.1:{port}")])
-            .args(["-ex", "info symbol $pc", "-ex", "break add_points", "-ex", "continue", "-ex", "print *b",
-                   "-ex", "finish", "-ex", "print counter", "-ex", "print greeting", "-ex", "continue"])
+            // The DLLs' companions come from the stub's library list
+            // (ADR-0104): gdbdll.dll's at the first stop, gdbdyn.dll's when
+            // DosLoadModule loads it, which the pending breakpoint waits for.
+            // `sharedlibrary`: GDB 16 lists the first list's libraries
+            // without reading their symbols until asked.
+            .args(["-ex", "sharedlibrary", "-ex", "info sharedlibrary", "-ex", "set breakpoint pending on",
+                   "-ex", "break add_points", "-ex", "break scale_point", "-ex", "break dyn_twice",
+                   "-ex", "continue", "-ex", "print *b",
+                   "-ex", "finish", "-ex", "print counter", "-ex", "print greeting",
+                   "-ex", "continue", "-ex", "print *p", "-ex", "continue", "-ex", "print v", "-ex", "continue"])
             .output().expect("run gdb");
         let text = String::from_utf8_lossy(&gdb.stdout).into_owned() + &String::from_utf8_lossy(&gdb.stderr);
         // Bounded: a stub that never got its client would wait forever.
@@ -2088,16 +2096,22 @@ fn gdb_debugs_a_c_program_at_the_source_level() {
         let mut program_out = String::new();
         use std::io::Read;
         child.stdout.take().unwrap().read_to_string(&mut program_out).ok();
-        for want in ["_start in section .text",
-                     "Breakpoint 1, add_points (a=", "c_gdb_test.c:23",
+        for want in ["gdbdll.dbg",
+                     "Breakpoint 1, add_points (a=", "c_gdb_test.c:25",
                      "a->x += b->x;",
                      "$1 = {x = 30, y = 40}",
                      "Value returned is $2 = 73",
                      "$3 = 1",
-                     "$4 = \"debugging\""] {
+                     "$4 = \"debugging\"",
+                     "Breakpoint 2, scale_point (p=", "gdbdll.c:13", "int before = p->x;",
+                     "$5 = {x = 31, y = 42}",
+                     "Breakpoint 3, dyn_twice (v=21) at ", "gdbdyn.c:11",
+                     "$6 = 21",
+                     "unloaded shared library"] {
             assert!(text.contains(want), "{compiler}: gdb did not show {want:?}:\n{text}");
         }
         assert!(program_out.contains("c_gdb_test: debugging, sum 73, counter 1"), "{compiler}: {program_out}");
+        assert!(program_out.contains("c_gdb_test: scaled by 62, twice 42"), "{compiler}: {program_out}");
         assert_eq!(status.code(), Some(0), "{compiler}: the program ends normally after the session");
     }
 }

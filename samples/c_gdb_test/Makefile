@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# samples/c_gdb_test/Makefile - a program built with debugging information
-# (ADR-0102): `make` (CC=gcc) or `make CC=clang`; BUILD names where the
-# program and its debug companion (c_gdb_test.dbg) go.
+# samples/c_gdb_test/Makefile - a program and two DLLs built with debugging
+# information (ADR-0102, ADR-0104): `make` (CC=gcc) or `make CC=clang`;
+# BUILD names where they and their debug companions (*.dbg) go.
 include ../../sdk/os2.mk
 
 BUILD ?= .
@@ -13,17 +13,24 @@ ifeq ($(wildcard $(LX_LINK)),)
 all:
 	@echo "c_gdb_test: skipped, lx-link not built (cargo build --bin lx_link)"
 else
-all: $(BUILD)/c_gdb_test.exe
+all: $(BUILD)/c_gdb_test.exe $(BUILD)/gdbdyn.dll
 endif
 
-$(BUILD)/c_gdb_test.o: c_gdb_test.c $(wildcard $(WARPINE_SDK)/include/*.h $(WARPINE_SDK)/include/os2/*.h)
+$(BUILD)/%.o: %.c gdb_point.h $(wildcard $(WARPINE_SDK)/include/*.h $(WARPINE_SDK)/include/os2/*.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# lx-link writes $(BUILD)/c_gdb_test.dbg too, since the object has DWARF.
-$(BUILD)/c_gdb_test.exe: $(BUILD)/c_gdb_test.o $(OS2_CRT0) $(OS2_LIBC)
-	$(LX_LINK) --gc-sections $(OS2_CRT0) $< $(OS2_LIBC) -o $@
+# lx-link writes a .dbg beside each module, since the objects have DWARF.
+$(BUILD)/gdbdll.dll: $(BUILD)/gdbdll.o $(OS2_DLL0) $(OS2_LIBC)
+	$(LX_LINK) --dll --export scale_point --initinstance --terminstance $(OS2_DLL0) $< $(OS2_LIBC) -o $@
+
+$(BUILD)/gdbdyn.dll: $(BUILD)/gdbdyn.o $(OS2_DLL0) $(OS2_LIBC)
+	$(LX_LINK) --dll --export dyn_twice --initinstance --terminstance $(OS2_DLL0) $< $(OS2_LIBC) -o $@
+
+# The program imports scale_point from gdbdll.dll.
+$(BUILD)/c_gdb_test.exe: $(BUILD)/c_gdb_test.o $(BUILD)/gdbdll.dll $(OS2_CRT0) $(OS2_LIBC)
+	$(LX_LINK) --gc-sections $(OS2_CRT0) $(BUILD)/c_gdb_test.o $(BUILD)/gdbdll.dll $(OS2_LIBC) -o $@
 
 clean:
-	rm -f *.o *.exe *.dbg
+	rm -f *.o *.exe *.dll *.dbg
 
 .PHONY: all clean

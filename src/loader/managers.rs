@@ -428,6 +428,9 @@ pub struct DllManager {
     next_handle: u32,
     /// OS/2 path of each loaded (non-built-in) module, by handle.
     paths: HashMap<u32, String>,
+    /// The host file each loaded (non-built-in) module came from, by
+    /// handle: the GDB stub finds its debug companion beside it (ADR-0104).
+    host_files: HashMap<u32, std::path::PathBuf>,
     /// Modules loaded whose `_DLL_InitTerm(hmod, 0)` has not run yet, in
     /// load order (a module after the ones it imports): (handle, entry).
     pending_init: Vec<(u32, u32)>,
@@ -446,7 +449,7 @@ impl Default for DllManager {
 
 impl DllManager {
     pub fn new() -> Self {
-        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new(), pending_init: Vec::new(), pending_free: HashMap::new(),
+        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new(), host_files: HashMap::new(), pending_init: Vec::new(), pending_free: HashMap::new(),
                      exe_objects: Vec::new(), exe_name: String::new() }
     }
 
@@ -500,6 +503,21 @@ impl DllManager {
         self.paths.insert(handle, path);
     }
 
+    /// Record the host file loaded module `handle` came from.
+    pub fn set_host_file(&mut self, handle: u32, file: std::path::PathBuf) {
+        self.host_files.insert(handle, file);
+    }
+
+    /// The loaded modules that came from a host file, in load order: the
+    /// file and the address of each of its objects (the GDB stub's library
+    /// list, ADR-0104).
+    pub fn loaded_files(&self) -> Vec<(std::path::PathBuf, Vec<u32>)> {
+        self.dlls.iter()
+            .filter(|d| !d.is_builtin)
+            .filter_map(|d| self.host_files.get(&d.handle).map(|f| (f.clone(), d.object_bases.clone())))
+            .collect()
+    }
+
     /// The OS/2 path recorded for module `handle`.
     pub fn module_path(&self, handle: u32) -> Option<&str> {
         self.paths.get(&handle).map(String::as_str)
@@ -547,6 +565,7 @@ impl DllManager {
             let initterm_addr = self.dlls[idx].initterm_addr;
             self.dlls.remove(idx);
             self.paths.remove(&handle);
+            self.host_files.remove(&handle);
             Some((bases, initterm_addr))
         } else {
             None
@@ -565,6 +584,26 @@ mod tests {
         assert!(m.has_pending_init());
         assert_eq!(m.take_pending_init(), vec![(0x1001, 0x5000), (0x1002, 0x6000)]);
         assert!(!m.has_pending_init());
+    }
+
+    fn user_dll(name: &str, handle: u32, bases: Vec<u32>, builtin: bool) -> LoadedDll {
+        LoadedDll { name: name.into(), handle, object_bases: bases, object_sizes: Vec::new(),
+                    exports_by_ordinal: HashMap::new(), exports_by_name: HashMap::new(),
+                    ref_count: 1, initterm_addr: None, is_builtin: builtin }
+    }
+
+    #[test]
+    fn loaded_files_list_user_modules_with_their_objects_until_freed() {
+        let mut m = DllManager::new();
+        m.register(user_dll("A", 0x1001, vec![0x0200_0000, 0x0201_0000], false));
+        m.register(user_dll("UCONV", 0x1002, vec![], true));
+        m.register(user_dll("B", 0x1003, vec![0x0203_0000], false));
+        m.set_host_file(0x1001, "/x/a.dll".into());
+        m.set_host_file(0x1003, "/x/b.dll".into());
+        assert_eq!(m.loaded_files(), vec![("/x/a.dll".into(), vec![0x0200_0000, 0x0201_0000]),
+                                          ("/x/b.dll".into(), vec![0x0203_0000])]);
+        assert!(m.decrement_refcount(0x1001).is_some());
+        assert_eq!(m.loaded_files(), vec![(std::path::PathBuf::from("/x/b.dll"), vec![0x0203_0000])]);
     }
 
     use super::*;

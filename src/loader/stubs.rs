@@ -527,6 +527,7 @@ impl super::Loader {
         if freed.is_some() {
             // Its resources live in the pages about to be freed.
             self.shared.resource_mgr.lock_or_recover().remove_module(hmod);
+            if let Some(gdb) = self.shared.gdb_state.as_ref() { gdb.libraries_changed(); }
         }
         match freed {
             Some((bases, Some(addr))) => {

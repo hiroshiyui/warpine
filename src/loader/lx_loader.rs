@@ -381,6 +381,7 @@ impl super::Loader {
                 is_builtin: false,
             });
             dll_mgr.set_module_path(handle, os2_path);
+            dll_mgr.set_host_file(handle, std::path::PathBuf::from(dll_path));
             // Its _DLL_InitTerm runs after those of the modules it imports
             // (loaded above): at process start, or in DosLoadModule.
             if let Some(entry) = initterm_addr { dll_mgr.add_pending_init(handle, entry); }
@@ -398,6 +399,10 @@ impl super::Loader {
                 }
             }
         }
+
+        // A debugger attached to a running program reads the new module
+        // list at the next stop (ADR-0104).
+        if let Some(gdb) = self.shared.gdb_state.as_ref() { gdb.libraries_changed(); }
 
         loading.remove(&dll_name_upper);
         Ok(handle)
