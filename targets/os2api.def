@@ -761,6 +761,10 @@ WARPINE.2     WrpGetDateTime64    # NOTE: Warpine extension, not in os2386.lib
 WARPINE.3     WrpLocalTime64      # NOTE: Warpine extension, not in os2386.lib
 WARPINE.4     WrpMakeTime64       # NOTE: Warpine extension, not in os2386.lib
 WARPINE.5     WrpBuiltinWindowProc # NOTE: Warpine extension: window procedure of the built-in classes
+WARPINE.7     WrpRegisterUnwindTables   # NOTE: Warpine extension: a module's C++ unwind tables (ADR-0107)
+WARPINE.8     WrpDeregisterUnwindTables # NOTE: Warpine extension (ADR-0107)
+WARPINE.9     WrpQueryUnwindTables      # NOTE: Warpine extension (ADR-0107)
+WARPINE.10    WrpQueryRuntimeBlock      # NOTE: Warpine extension: per-thread words every module shares (ADR-0107)
 
 # ── PMDRAG (drag and drop; pm_drag.rs, ADR-0045)
 PMDRAG.32     DrgAccessDraginfo

@@ -15,13 +15,11 @@
 
 char *__libc_env;
 
-/* ── Thread-local memory: errno, and the C++ runtime's two words ────── */
+/* ── Thread-local memory: errno ─────────────────────────────────────── */
 #define TLS_ERRNO      0
-#define TLS_CXX        1   /* the caught exceptions, the uncaught count */
-#define TLS_WORDS      3
+#define TLS_WORDS      1
 static ULONG *tls_words;
 static int errno_before_init;
-static ULONG cxx_before_init[2];
 
 void __libc_init_errno(void)
 {
@@ -34,9 +32,21 @@ int *__errno_location(void)
     return tls_words ? (int *)&tls_words[TLS_ERRNO] : &errno_before_init;
 }
 
+/* The C++ runtime's two words per thread (ADR-0107): in Warpine's runtime
+ * block, which every module of the process shares, so an exception thrown
+ * in one module and caught in another is counted once. Its address is the
+ * same on every thread. */
+static ULONG *runtime_block;
+static ULONG cxx_fallback[2];
+
 void *__libc_cxx_globals(void)
 {
-    return tls_words ? (void *)&tls_words[TLS_CXX] : (void *)cxx_before_init;
+    if (!runtime_block) {
+        PULONG block;
+        if (WrpQueryRuntimeBlock(&block) != NO_ERROR) return cxx_fallback;
+        runtime_block = block;
+    }
+    return &runtime_block[WRP_RUNTIME_CXX_WORD];
 }
 
 /* ── The runtime's lock ─────────────────────────────────────────────── */

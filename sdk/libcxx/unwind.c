@@ -7,7 +7,12 @@
  * exception-handling chapter (level I).
  *
  * lx-link places every kept .eh_frame record between __EH_FRAME_BEGIN__ and
- * __EH_FRAME_END__; the unwinder finds a frame's FDE by scanning them.
+ * __EH_FRAME_END__, followed by a zero word; the unwinder finds a frame's
+ * FDE by scanning them. Each module (the program and every DLL) links its
+ * own copy of this runtime, which registers the module's tables with
+ * Warpine when it starts (ADR-0107); a frame in another module is looked
+ * up in that module's tables (WrpQueryUnwindTables), so an exception can
+ * pass from module to module.
  * Registers are DWARF's i386 numbers: 0 eax, 1 ecx, 2 edx, 3 ebx, 4 esp,
  * 5 ebp, 6 esi, 7 edi, 8 eip (the return address column).
  *
@@ -174,10 +179,11 @@ struct fde {
     const unsigned char *insns, *end;
 };
 
-static int find_fde(uint32_t pc, struct fde *out)
+/* Scan the records from `p` up to `end`, or to the zero word that ends
+ * them when `end` is null. */
+static int scan_fde(const unsigned char *p, const unsigned char *end, uint32_t pc, struct fde *out)
 {
-    const unsigned char *p = __EH_FRAME_BEGIN__;
-    while (p + 4 <= __EH_FRAME_END__) {
+    while (!end || p + 4 <= end) {
         uint32_t len = read_u32(p);
         if (len == 0 || len == 0xFFFFFFFFu) break;
         const unsigned char *next = p + 4 + len;
@@ -212,6 +218,29 @@ static int find_fde(uint32_t pc, struct fde *out)
         p = next;
     }
     return 0;
+}
+
+/* The FDE of `pc`: in this module's tables, else in those of the module
+ * whose code holds it. */
+static int find_fde(uint32_t pc, struct fde *out)
+{
+    PVOID other;
+    if (scan_fde(__EH_FRAME_BEGIN__, __EH_FRAME_END__, pc, out)) return 1;
+    if (WrpQueryUnwindTables((PVOID)(uintptr_t)pc, &other) != NO_ERROR) return 0;
+    if (other == (PVOID)__EH_FRAME_BEGIN__) return 0;
+    return scan_fde(other, NULL, pc, out);
+}
+
+/* This module's tables are registered while its runtime runs: from the
+ * program's or the DLL's constructors to its destructors. */
+__attribute__((constructor)) static void register_unwind_tables(void)
+{
+    WrpRegisterUnwindTables((PVOID)__EH_FRAME_BEGIN__);
+}
+
+__attribute__((destructor)) static void deregister_unwind_tables(void)
+{
+    WrpDeregisterUnwindTables((PVOID)__EH_FRAME_BEGIN__);
 }
 
 /* ── Call-frame instructions ────────────────────────────────────────── */

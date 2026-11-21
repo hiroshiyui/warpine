@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **C++ exceptions across DLLs** (ADR-0107).
+  - An exception thrown in a DLL can be caught by the program, and the other way round, also through frames with destructors and with `throw;`. Before, it ended in `std::terminate`.
+  - Each module's C++ runtime registers its unwind tables with Warpine (`WrpRegisterUnwindTables`, `WrpQueryUnwindTables`), and the runtimes share a per-thread runtime block (`WrpQueryRuntimeBlock`), so `std::uncaught_exceptions()` agrees in every module. An exception is freed by the runtime that allocated it.
+  - The new calls are declared in `os2/warpine.h`.
+  - `samples/cxx_test` has a C++ DLL, `cxxdll.dll`: 35 checks with g++ and clang++.
 - **Message files** (ADR-0105).
   - **`DosGetMessage` reads messages.** Before, it returned a placeholder. It looks in the program's bound messages, then the named file, the current directory and `DPATH`. Errors and warnings get their id (`ABC0001: `), `%1` … `%9` their strings, and a missing file or message gives a text and its error (317, 318, 319).
   - **Warpine's own format,** compiled from text by the new **`os2msg`** (`$(OS2_MSG)` in `os2.mk`). IBM's `MKMSGF` files are not read.

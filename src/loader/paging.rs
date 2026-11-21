@@ -101,6 +101,8 @@ pub const CR4_PSE: u64 = 1 << 4;
 
 /// DWORDs in the thread-local area, and most per call.
 pub const TLM_WORDS: u32 = 32;
+// The runtime block (ADR-0107) lies past the words handed out.
+const _: () = assert!(RUNTIME_BLOCK >= TLM_PAGE + 4 * TLM_WORDS);
 pub const TLM_MAX_PER_CALL: u32 = 8;
 
 /// The paging block's contents for a block at `base`: the directory, the

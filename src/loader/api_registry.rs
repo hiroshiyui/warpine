@@ -771,6 +771,14 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| l.wrp_builtin_window_proc(a[0],a[1],a[2],a[3]) },
     ApiEntry { ordinal: WARPINE_BASE + 6, module: "WARPINE", name: "WrpStartProcess", argc: 0,
                handler: |l,_v,i,_a| l.dll_init_chain(i, super::pm_hook::ChainThen::StartProcess) },
+    ApiEntry { ordinal: WARPINE_BASE + 7, module: "WARPINE", name: "WrpRegisterUnwindTables",   argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_register_unwind_tables(a[0])) },
+    ApiEntry { ordinal: WARPINE_BASE + 8, module: "WARPINE", name: "WrpDeregisterUnwindTables", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_deregister_unwind_tables(a[0])) },
+    ApiEntry { ordinal: WARPINE_BASE + 9, module: "WARPINE", name: "WrpQueryUnwindTables",      argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_query_unwind_tables(a[0],a[1])) },
+    ApiEntry { ordinal: WARPINE_BASE + 10, module: "WARPINE", name: "WrpQueryRuntimeBlock",     argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_query_runtime_block(a[0])) },
 
     // ── PMDRAG — drag and drop (base PMDRAG_BASE = 21504; pm_drag.rs, ADR-0045)
     ApiEntry { ordinal: PMDRAG_BASE + 32, module: "PMDRAG", name: "DrgAccessDraginfo",          argc: 1,

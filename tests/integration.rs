@@ -1933,7 +1933,7 @@ fn test_cxx_from_gcc_and_clang() {
         assert!(out.contains(&format!("cxx_test: built by {cxx}")), "{cxx}:\n{out}");
         let done = out.lines().find_map(|l| l.strip_prefix("cxx_test: done ")).unwrap_or("");
         let (passed, total) = done.split_once('/').unwrap_or(("", "?"));
-        assert!(total.parse::<u32>().is_ok_and(|t| t >= 27) && passed == total, "{cxx}: done {done}\n{out}");
+        assert!(total.parse::<u32>().is_ok_and(|t| t >= 35) && passed == total, "{cxx}: done {done}\n{out}");
         assert!(out.ends_with("cxx_test: the global's destructor ran at exit\n"), "{cxx}: destructors at exit\n{out}");
         assert_eq!(code, 0, "{cxx}:\n{out}");
 

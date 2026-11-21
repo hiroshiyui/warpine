@@ -179,7 +179,9 @@ void __cxa_end_catch() noexcept
         if (++h->handlerCount == 0) g->caughtExceptions = h->nextException;
     } else if (--h->handlerCount == 0) {
         g->caughtExceptions = h->nextException;
-        destroy(h);
+        // Through its cleanup: the runtime of the module that threw it
+        // allocated it, and frees it with its own heap (ADR-0107).
+        _Unwind_DeleteException(&h->unwindHeader);
     }
 }
 

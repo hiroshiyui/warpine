@@ -11,6 +11,11 @@
  * handler registered with DosSetExceptionHandler, which leaves the chain
  * with the frame it was registered in.
  *
+ * With cxxdll.dll, which links its own copy of the runtime (ADR-0107):
+ * exceptions thrown in the DLL and caught here, thrown here and caught in
+ * the DLL, passing a DLL frame whose destructor runs, rethrown in the DLL,
+ * and the uncaught counts of both runtimes afterwards.
+ *
  *   cxx_test: <name>: ok
  *   cxx_test: <name>: FAIL
  *   cxx_test: done <passed>/<total>
@@ -27,6 +32,7 @@
 #include <typeinfo>
 #include <stdexcept>
 #include <utility>
+#include "cxxdll.h"
 
 static int n_checks, n_passed;
 
@@ -117,6 +123,11 @@ __attribute__((noinline)) static void throw_past_os2_handler()
 }
 
 // ── A second thread ────────────────────────────────────────────────────
+static void throw_exe_error(void)
+{
+    throw ExeError{17};
+}
+
 static volatile int thread_caught;
 static void APIENTRY thread_main(ULONG)
 {
@@ -242,6 +253,39 @@ int main(int argc, char **argv)
     check("DosCreateThread", DosCreateThread(&tid, thread_main, 0, 0, 0x10000) == NO_ERROR);
     DosWaitThread(&tid, DCWW_WAIT);
     check("an exception caught on a second thread", thread_caught == 1);
+
+    // ── Exceptions across a DLL (ADR-0107) ──────────────────────────────
+    try {
+        dll_throw(5);
+        check("an exception from a DLL, caught by its type", false);
+    } catch (const DllError &e) {
+        check("an exception from a DLL, caught by its type", e.code == 5 && std::strcmp(e.what(), "from the DLL") == 0);
+    }
+    try {
+        dll_throw(6);
+    } catch (const std::runtime_error &e) {
+        check("... and by a standard base class", std::strcmp(e.what(), "from the DLL") == 0);
+    }
+    check("the DLL catches the program's exception", dll_catch(throw_exe_error) == 17);
+    int dll_cleanups = 0;
+    try {
+        dll_pass(throw_exe_error, &dll_cleanups);
+        check("an exception passes a DLL frame", false);
+    } catch (const ExeError &e) {
+        check("an exception passes a DLL frame", e.value == 17);
+        check("... whose destructor ran", dll_cleanups == 1);
+    }
+    try {
+        dll_rethrow(throw_exe_error);
+    } catch (const ExeError &e) {
+        check("rethrown in the DLL", e.value == 17);
+    }
+    int many = 0;
+    for (int i = 0; i < 200; i++) {
+        try { dll_throw(i); } catch (const DllError &e) { many += e.code == i; }
+    }
+    check("200 exceptions from the DLL, each freed by its runtime", many == 200);
+    check("both runtimes count no uncaught exception", std::uncaught_exceptions() == 0 && dll_uncaught() == 0);
 
     std::printf("cxx_test: built by %s\n",
 #ifdef __clang__

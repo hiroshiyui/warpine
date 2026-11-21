@@ -433,6 +433,10 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             3 => "WrpLocalTime64",
             4 => "WrpMakeTime64",
             5 => "WrpBuiltinWindowProc",
+            7 => "WrpRegisterUnwindTables",
+            8 => "WrpDeregisterUnwindTables",
+            9 => "WrpQueryUnwindTables",
+            10 => "WrpQueryRuntimeBlock",
             _ => "?",
         },
 

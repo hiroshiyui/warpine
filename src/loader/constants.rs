@@ -571,6 +571,14 @@ pub const ENV_ADDR: u32 = SYSTEM_AREA_BASE + 0x1_2000;
 /// address in every 32-bit thread, each thread's page tables mapping it to
 /// the thread's own page.
 pub const TLM_PAGE: u32 = SYSTEM_AREA_BASE + 0x1_F000;
+/// The runtime block in each thread's thread-local page (ADR-0107): words
+/// every module of a process shares per thread, for the languages'
+/// run-time libraries (`WrpQueryRuntimeBlock`), past the words
+/// `DosAllocThreadLocalMemory` hands out. Zero when a thread starts.
+pub const RUNTIME_BLOCK: u32 = TLM_PAGE + 0x800;
+/// Size of the runtime block in bytes.
+pub const RUNTIME_BLOCK_SIZE: u32 = 64;
+const _: () = assert!(RUNTIME_BLOCK + RUNTIME_BLOCK_SIZE <= TLM_PAGE + PAGE_SIZE);
 /// A 4 KB page.
 pub const PAGE_SIZE: u32 = 4096;
 const _: () = assert!(IDT_HANDLER_BASE < TIB_BASE && TLM_PAGE > ENV_ADDR);

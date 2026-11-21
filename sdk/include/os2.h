@@ -20,5 +20,6 @@
 #include <os2/errors.h>
 #include <os2/sub.h>
 #include <os2/pm.h>
+#include <os2/warpine.h>
 
 #endif /* WARPINE_OS2_H */

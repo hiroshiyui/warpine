@@ -88,6 +88,40 @@ impl super::Loader {
         clock::unix_to_local(secs).filter(|lt| (WRP_MIN_YEAR..=WRP_MAX_YEAR).contains(&lt.year))
     }
 
+    /// `WrpRegisterUnwindTables(begin)` (WARPINE.7, ADR-0107): the
+    /// `.eh_frame` records starting at `begin` (ending with a zero word)
+    /// are the unwind tables of the module whose object holds `begin`.
+    /// `ERROR_INVALID_ADDRESS` when no module of the process holds it.
+    pub fn wrp_register_unwind_tables(&self, begin: u32) -> u32 {
+        if self.shared.dll_mgr.lock_or_recover().register_unwind_tables(begin) { NO_ERROR } else { ERROR_INVALID_ADDRESS }
+    }
+
+    /// `WrpDeregisterUnwindTables(begin)` (WARPINE.8): forget them
+    /// (a DLL's runtime ends; freeing the DLL forgets them too).
+    pub fn wrp_deregister_unwind_tables(&self, begin: u32) -> u32 {
+        if self.shared.dll_mgr.lock_or_recover().deregister_unwind_tables(begin) { NO_ERROR } else { ERROR_INVALID_ADDRESS }
+    }
+
+    /// `WrpQueryUnwindTables(pc, pBegin)` (WARPINE.9): the unwind tables
+    /// of the module whose code holds `pc`, for an unwinder that reached
+    /// another module's frame. `ERROR_INVALID_ADDRESS` when that module
+    /// registered none (or no module holds `pc`).
+    pub fn wrp_query_unwind_tables(&self, pc: u32, p_begin: u32) -> u32 {
+        if p_begin == 0 { return ERROR_INVALID_PARAMETER; }
+        let Some(begin) = self.shared.dll_mgr.lock_or_recover().unwind_tables_for(pc) else { return ERROR_INVALID_ADDRESS };
+        if self.guest_write::<u32>(p_begin, begin).is_none() { return ERROR_INVALID_PARAMETER; }
+        NO_ERROR
+    }
+
+    /// `WrpQueryRuntimeBlock(ppBlock)` (WARPINE.10, ADR-0107): the address
+    /// of the calling thread's runtime block, `RUNTIME_BLOCK_SIZE` bytes
+    /// that every module of the process shares on that thread (the same
+    /// address on every thread, mapped to each thread's own page).
+    pub fn wrp_query_runtime_block(&self, pp_block: u32) -> u32 {
+        if pp_block == 0 || self.guest_write::<u32>(pp_block, RUNTIME_BLOCK).is_none() { return ERROR_INVALID_PARAMETER; }
+        NO_ERROR
+    }
+
     /// `WrpTime64` (WARPINE.1).
     pub fn wrp_time64(&self, p_time: u32) -> u32 {
         debug!("  WrpTime64");
@@ -144,6 +178,56 @@ impl super::Loader {
 
 #[cfg(test)]
 mod tests {
+    use crate::loader::managers::LoadedDll;
+
+    const OUT: u32 = 0x0010_0000;
+
+    /// A loader whose program has objects at 64 KB and 128 KB, and a DLL
+    /// (handle 0x1001) with one at 0x0200_0000.
+    fn with_modules() -> Loader {
+        let l = Loader::new_mock();
+        let mut d = l.shared.dll_mgr.lock_or_recover();
+        d.exe_objects = vec![(0x1_0000, 0x1000), (0x2_0000, 0x1000)];
+        d.register(LoadedDll { name: "X".into(), handle: 0x1001, object_bases: vec![0x0200_0000],
+                               object_sizes: vec![0x2000], exports_by_ordinal: Default::default(),
+                               exports_by_name: Default::default(), ref_count: 1, initterm_addr: None, is_builtin: false });
+        drop(d);
+        l
+    }
+
+    #[test]
+    fn unwind_tables_are_found_by_an_address_in_their_module() {
+        let l = with_modules();
+        assert_eq!(l.wrp_register_unwind_tables(0x2_0100), NO_ERROR, "the program's tables, in its data object");
+        assert_eq!(l.wrp_register_unwind_tables(0x0200_0800), NO_ERROR, "the DLL's");
+        assert_eq!(l.wrp_register_unwind_tables(0x0300_0000), ERROR_INVALID_ADDRESS, "in no module");
+        assert_eq!(l.wrp_query_unwind_tables(0x1_0010, OUT), NO_ERROR, "code of the program");
+        assert_eq!(l.guest_read::<u32>(OUT), Some(0x2_0100));
+        assert_eq!(l.wrp_query_unwind_tables(0x0200_0010, OUT), NO_ERROR, "code of the DLL");
+        assert_eq!(l.guest_read::<u32>(OUT), Some(0x0200_0800));
+        assert_eq!(l.wrp_query_unwind_tables(0x0400_0000, OUT), ERROR_INVALID_ADDRESS);
+        assert_eq!(l.wrp_query_unwind_tables(0x1_0010, 0), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.wrp_deregister_unwind_tables(0x0200_0800), NO_ERROR);
+        assert_eq!(l.wrp_deregister_unwind_tables(0x0200_0800), ERROR_INVALID_ADDRESS, "already gone");
+        assert_eq!(l.wrp_query_unwind_tables(0x0200_0010, OUT), ERROR_INVALID_ADDRESS);
+    }
+
+    #[test]
+    fn freeing_a_dll_forgets_its_unwind_tables() {
+        let l = with_modules();
+        assert_eq!(l.wrp_register_unwind_tables(0x0200_0800), NO_ERROR);
+        assert!(l.shared.dll_mgr.lock_or_recover().decrement_refcount(0x1001).is_some());
+        assert_eq!(l.wrp_query_unwind_tables(0x0200_0010, OUT), ERROR_INVALID_ADDRESS);
+    }
+
+    #[test]
+    fn the_runtime_block_lies_in_the_thread_local_page_past_its_words() {
+        let l = Loader::new_mock();
+        assert_eq!(l.wrp_query_runtime_block(OUT), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(OUT), Some(RUNTIME_BLOCK));
+        assert_eq!(l.wrp_query_runtime_block(0), ERROR_INVALID_PARAMETER);
+    }
+
     /// The _DLL_InitTerm routines waiting run as one chain (WARPINE.6,
     /// DosLoadModule); DosLoadModule's handle is written only when every
     /// one said TRUE.

@@ -1,6 +1,6 @@
 # ADR-0103: A C++ runtime for the SDK: the Itanium C++ ABI, a DWARF unwinder, and OS/2 exception handlers
 
-- **Status:** Accepted; builds on ADR-0095, ADR-0096, ADR-0101
+- **Status:** Accepted; builds on ADR-0095, ADR-0096, ADR-0101; amended by ADR-0107 (exceptions across modules)
 - **Date:** 2026-11-21
 - **Sources:**
   - The Itanium C++ ABI: run-time type information (section 2.9), the exception-handling ABI (levels I and II), `__cxa_atexit`, the guard variables, `__dynamic_cast`.
@@ -53,7 +53,7 @@ M4's second part: C++ programs from g++ and clang++. Both compilers emit code fo
 
 ## Warpine's choices (unverified)
 
-- **One runtime per module:** each EXE and DLL links its own copy and unwinds only its own frames. An exception must not leave the module that threw it.
+- **One runtime per module:** each EXE and DLL links its own copy and unwinds only its own frames. An exception must not leave the module that threw it. (ADR-0107 lifts this: the copies find each other's frames and share the per-thread state.)
 - **API callbacks:** an exception must not cross a call into Warpine either, such as a window procedure called from `WinDispatchMsg`: the unwinder ends there and the program terminates.
 - **OS/2 exceptions do not run C++ destructors:** traps and `DosRaiseException` go through OS/2's handlers only.
 - **Foreign exceptions:** an exception class not thrown by this runtime is caught only by `catch (...)`.

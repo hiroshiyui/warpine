@@ -886,7 +886,7 @@ Not yet available: SOM objects on the stack in C++, the initializer control bloc
 
 WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size and state (and a frame's normal and icon positions) are kept in the user profile under an application and key name, in Warpine's own record. Restoring a minimized or maximized frame sets its normal position, then the state. Presentation parameters are not kept. The rest of PMWP (Workplace Shell objects) is not built in.
 
-### WARPINE — Warpine's own extensions (4 APIs)
+### WARPINE — Warpine's own extensions (9 APIs)
 
 `WARPINE.DLL` is not an OS/2 module: a program that can be recompiled loads it with `DosLoadModule("WARPINE")` (which fails on OS/2, so it can fall back) and finds the calls with `DosQueryProcAddr` by name or ordinal. They are `_System` (`APIENTRY`) calls returning an `APIRET`, and they take a signed 64-bit count of seconds since 1970-01-01 00:00 UTC (`long long`) on the session clock:
 
@@ -897,8 +897,14 @@ WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size an
 | 3 | `WrpLocalTime64(const long long *ptime, DATETIME *pdt)` | seconds → local `DATETIME` (hundredths 0) |
 | 4 | `WrpMakeTime64(const DATETIME *pdt, long long *ptime)` | local `DATETIME` → seconds (hundredths, weekday and time zone ignored) |
 | 5 | `WrpBuiltinWindowProc(HWND, ULONG, MPARAM, MPARAM)` | the window procedure of the built-in classes; programs get its address from `WinSubclassWindow`, `WinQueryWindowPtr(QWP_PFNWP)` or `WinQueryClassInfo` (see Subclassing) |
+| 7 | `WrpRegisterUnwindTables(PVOID pBegin)` | the C++ unwind tables at `pBegin` (`.eh_frame` records ending with a zero word) belong to the module holding `pBegin` (ADR-0107); `ERROR_INVALID_ADDRESS` outside every module |
+| 8 | `WrpDeregisterUnwindTables(PVOID pBegin)` | forget them (freeing the DLL also does) |
+| 9 | `WrpQueryUnwindTables(PVOID pCode, PVOID *ppBegin)` | the tables of the module whose code holds `pCode`; `ERROR_INVALID_ADDRESS` when it registered none |
+| 10 | `WrpQueryRuntimeBlock(PULONG *ppBlock)` | the calling thread's runtime block: 64 bytes every module of the process shares on that thread, zero when it starts, at the same address on every thread; words 0–1 are the SDK's C++ runtime's |
 
 A null pointer, or a time whose year is outside 1–9999, is `ERROR_INVALID_PARAMETER`; a `DATETIME` that names no real date or time is `ERROR_TS_DATETIME`. Sample: `datetime_test`.
+
+Ordinals 7–10 serve the SDK's run-time libraries, which import them directly (`os2/warpine.h`); sample: `cxx_test` with `cxxdll.dll`.
 
 ### PMWIN (217 APIs)
 
@@ -1133,7 +1139,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 474 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 407 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 478 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 407 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1152,7 +1158,7 @@ Counts are taken from the static registry (`api_registry.rs`, 474 entries) and t
 | HELPMGR (no viewer) | registry | 6 | 0 | 6 |
 | PMSPL (no printers) | registry | 15 | 0 | 15 |
 | PMCTLS (standard dialogs) | registry | 5 | 0 | 5 |
-| WARPINE (Warpine's own extensions) | registry | 6 | 0 | 6 |
+| WARPINE (Warpine's own extensions) | registry | 10 | 0 | 10 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
 | SOM (the SOM runtime kernel) | registry | 113 | 3 | 116 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
@@ -1160,7 +1166,7 @@ Counts are taken from the static registry (`api_registry.rs`, 474 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 217 | 0 | 217 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **860** | **21** | **881** |
+| **Total** | | **864** | **21** | **885** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

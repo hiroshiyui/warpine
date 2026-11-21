@@ -396,6 +396,10 @@ impl ResourceManager {
     }
 }
 
+/// The key [`DllManager::module_key_at`] gives the program itself (DLL
+/// handles start at 0x1000).
+pub const EXE_MODULE_KEY: u32 = 0;
+
 /// A DLL module that has been loaded into guest memory.
 pub struct LoadedDll {
     /// Module name in UPPERCASE (e.g., "JPOS2DLL")
@@ -440,6 +444,9 @@ pub struct DllManager {
     /// The program's objects (base, size) and module name
     /// (DosQueryModFromEIP).
     pub exe_objects: Vec<(u32, u32)>,
+    /// The unwind tables each module's C++ runtime registered
+    /// (`WrpRegisterUnwindTables`, ADR-0107): module key → table start.
+    unwind_tables: HashMap<u32, u32>,
     pub exe_name: String,
 }
 
@@ -450,7 +457,7 @@ impl Default for DllManager {
 impl DllManager {
     pub fn new() -> Self {
         DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new(), host_files: HashMap::new(), pending_init: Vec::new(), pending_free: HashMap::new(),
-                     exe_objects: Vec::new(), exe_name: String::new() }
+                     exe_objects: Vec::new(), exe_name: String::new(), unwind_tables: HashMap::new() }
     }
 
     /// The loaded module whose object holds `address`: its handle, the
@@ -461,6 +468,35 @@ impl DllManager {
                 .find(|&(_, (&base, &size))| address >= base && address - base < size)
                 .map(|(i, (&base, _))| (d.handle, i as u32, address - base, d.name.clone()))
         })
+    }
+
+    /// The key of the module whose object holds `address`: a DLL's handle,
+    /// or [`EXE_MODULE_KEY`] for the program.
+    pub fn module_key_at(&self, address: u32) -> Option<u32> {
+        if let Some((handle, ..)) = self.find_object(address) { return Some(handle); }
+        self.exe_objects.iter().any(|&(base, size)| address >= base && address - base < size)
+            .then_some(EXE_MODULE_KEY)
+    }
+
+    /// Record the unwind tables at `begin` for the module holding them
+    /// (ADR-0107); `false` when no module holds `begin`.
+    pub fn register_unwind_tables(&mut self, begin: u32) -> bool {
+        match self.module_key_at(begin) {
+            Some(key) => { self.unwind_tables.insert(key, begin); true }
+            None => false,
+        }
+    }
+
+    /// Forget the unwind tables at `begin`; `false` when none were there.
+    pub fn deregister_unwind_tables(&mut self, begin: u32) -> bool {
+        let before = self.unwind_tables.len();
+        self.unwind_tables.retain(|_, &mut b| b != begin);
+        self.unwind_tables.len() != before
+    }
+
+    /// The unwind tables of the module whose code holds `pc`.
+    pub fn unwind_tables_for(&self, pc: u32) -> Option<u32> {
+        self.module_key_at(pc).and_then(|key| self.unwind_tables.get(&key).copied())
     }
 
     /// Module `handle` was loaded: its `_DLL_InitTerm` at `entry` is to run.
@@ -566,6 +602,7 @@ impl DllManager {
             self.dlls.remove(idx);
             self.paths.remove(&handle);
             self.host_files.remove(&handle);
+            self.unwind_tables.remove(&handle);
             Some((bases, initterm_addr))
         } else {
             None
