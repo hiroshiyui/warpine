@@ -1577,6 +1577,37 @@ fn a_programs_breakpoint_raises_xcpt_breakpoint() {
     }
 }
 
+/// mem_protect_test (ADR-0114): DosAllocMem / DosSetMem / DosQueryMem page
+/// states held by the page tables: reserved, read-only and decommitted
+/// pages fault, committed pages start zeroed, guard pages raise
+/// XCPT_GUARD_PAGE_VIOLATION once, the calls' errors, and a page made
+/// read-only faults on another thread whose TLB held it writable. At
+/// both rings.
+#[test]
+fn page_states_of_allocated_memory_hold() {
+    for ring in [RING_3, RING_0] {
+        if text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 33,
+                                &[("WARPINE_RING", ring)]).is_none() {
+            return;
+        }
+    }
+}
+
+/// stack_grow_test (ADR-0114): at ring 3 a thread's stack is sparse,
+/// grows as it is used (also by a frame larger than a page), and raises
+/// XCPT_UNABLE_TO_GROW_STACK near its bottom, which a handler leaves by
+/// longjmp; STACK_COMMITTED commits it whole. At ring 0 stacks are
+/// committed whole and only those checks run.
+#[test]
+fn thread_stacks_grow_and_run_out_at_ring_3() {
+    for (ring, min) in [(RING_3, 11), (RING_0, 6)] {
+        if text_checks_pass_env("samples/stack_grow_test/stack_grow_test.exe", "stack_grow_test", min,
+                                &[("WARPINE_RING", ring)]).is_none() {
+            return;
+        }
+    }
+}
+
 /// The checks a text-mode sample with `<prefix>: <name>: ok` lines
 /// reported, all passed, at least `min` of them, and exit code 0.
 fn assert_text_checks_pass(sample: &str, prefix: &str, min: usize) {

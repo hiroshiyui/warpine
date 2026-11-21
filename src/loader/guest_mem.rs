@@ -312,7 +312,7 @@ mod tests {
         // DosAllocMem the same way.
         l.guest_write_bytes(b, &[0xCD; 16]).unwrap();
         assert!(l.shared.mem_mgr.lock_or_recover().free(b));
-        assert_eq!(l.dos_alloc_mem(0x3000, 16), 0);
+        assert_eq!(l.dos_alloc_mem(0x3000, 16, super::super::constants::PAG_COMMIT | super::super::constants::PAG_READ | super::super::constants::PAG_WRITE), 0);
         let c = l.guest_read::<u32>(0x3000).unwrap();
         assert_eq!(c, b);
         assert!(l.guest_slice_mut(c, 16).unwrap().iter().all(|&x| x == 0));

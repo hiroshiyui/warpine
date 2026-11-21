@@ -76,45 +76,45 @@
 <!-- entry -->
 <g id="node3" class="node">
 <title>entry</title>
-<path fill="#bbdefb" stroke="black" d="M5100.05,-1204.91C5100.05,-1204.91 4659.95,-1204.91 4659.95,-1204.91 4653.95,-1204.91 4647.95,-1198.91 4647.95,-1192.91 4647.95,-1192.91 4647.95,-1180.91 4647.95,-1180.91 4647.95,-1174.91 4653.95,-1168.91 4659.95,-1168.91 4659.95,-1168.91 5100.05,-1168.91 5100.05,-1168.91 5106.05,-1168.91 5112.05,-1174.91 5112.05,-1180.91 5112.05,-1180.91 5112.05,-1192.91 5112.05,-1192.91 5112.05,-1198.91 5106.05,-1204.91 5100.05,-1204.91"/>
-<text xml:space="preserve" text-anchor="start" x="4658.75" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Start&#45;up: PM, VIO window, full screen or headless; the Landlock sandbox (ADR&#45;0111)</text>
-<text xml:space="preserve" text-anchor="start" x="4833.12" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">main.rs, api.rs, sandbox.rs</text>
+<path fill="#bbdefb" stroke="black" d="M5019.05,-1204.91C5019.05,-1204.91 4578.95,-1204.91 4578.95,-1204.91 4572.95,-1204.91 4566.95,-1198.91 4566.95,-1192.91 4566.95,-1192.91 4566.95,-1180.91 4566.95,-1180.91 4566.95,-1174.91 4572.95,-1168.91 4578.95,-1168.91 4578.95,-1168.91 5019.05,-1168.91 5019.05,-1168.91 5025.05,-1168.91 5031.05,-1174.91 5031.05,-1180.91 5031.05,-1180.91 5031.05,-1192.91 5031.05,-1192.91 5031.05,-1198.91 5025.05,-1204.91 5019.05,-1204.91"/>
+<text xml:space="preserve" text-anchor="start" x="4577.75" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Start&#45;up: PM, VIO window, full screen or headless; the Landlock sandbox (ADR&#45;0111)</text>
+<text xml:space="preserve" text-anchor="start" x="4752.12" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">main.rs, api.rs, sandbox.rs</text>
 </g>
 <!-- formats -->
 <g id="node4" class="node">
 <title>formats</title>
-<path fill="#bbdefb" stroke="black" d="M4884.8,-1121.15C4884.8,-1121.15 4755.2,-1121.15 4755.2,-1121.15 4749.2,-1121.15 4743.2,-1115.15 4743.2,-1109.15 4743.2,-1109.15 4743.2,-1097.15 4743.2,-1097.15 4743.2,-1091.15 4749.2,-1085.15 4755.2,-1085.15 4755.2,-1085.15 4884.8,-1085.15 4884.8,-1085.15 4890.8,-1085.15 4896.8,-1091.15 4896.8,-1097.15 4896.8,-1097.15 4896.8,-1109.15 4896.8,-1109.15 4896.8,-1115.15 4890.8,-1121.15 4884.8,-1121.15"/>
-<text xml:space="preserve" text-anchor="start" x="4769.38" y="-1103.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Executable formats</text>
-<text xml:space="preserve" text-anchor="start" x="4754" y="-1095.05" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">lx.rs, lx/header.rs, ne.rs, ne/header.rs</text>
+<path fill="#bbdefb" stroke="black" d="M4755.8,-1121.15C4755.8,-1121.15 4626.2,-1121.15 4626.2,-1121.15 4620.2,-1121.15 4614.2,-1115.15 4614.2,-1109.15 4614.2,-1109.15 4614.2,-1097.15 4614.2,-1097.15 4614.2,-1091.15 4620.2,-1085.15 4626.2,-1085.15 4626.2,-1085.15 4755.8,-1085.15 4755.8,-1085.15 4761.8,-1085.15 4767.8,-1091.15 4767.8,-1097.15 4767.8,-1097.15 4767.8,-1109.15 4767.8,-1109.15 4767.8,-1115.15 4761.8,-1121.15 4755.8,-1121.15"/>
+<text xml:space="preserve" text-anchor="start" x="4640.38" y="-1103.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Executable formats</text>
+<text xml:space="preserve" text-anchor="start" x="4625" y="-1095.05" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">lx.rs, lx/header.rs, ne.rs, ne/header.rs</text>
 </g>
 <!-- entry&#45;&gt;formats -->
 <g id="edge1" class="edge">
 <title>entry&#45;&gt;formats</title>
-<path fill="none" stroke="#455a64" d="M4867.28,-1168.57C4859.16,-1157.51 4848.49,-1142.97 4839.34,-1130.5"/>
-<polygon fill="#455a64" stroke="#455a64" points="4842.34,-1128.68 4833.6,-1122.68 4836.7,-1132.82 4842.34,-1128.68"/>
-<text xml:space="preserve" text-anchor="middle" x="4865.22" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">parse</text>
+<path fill="none" stroke="#455a64" d="M4776.1,-1168.57C4760.63,-1156.86 4740.01,-1141.25 4722.93,-1128.33"/>
+<polygon fill="#455a64" stroke="#455a64" points="4725.16,-1125.62 4715.08,-1122.38 4720.94,-1131.2 4725.16,-1125.62"/>
+<text xml:space="preserve" text-anchor="middle" x="4763.09" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">parse</text>
 </g>
 <!-- loading -->
 <g id="node5" class="node">
 <title>loading</title>
-<path fill="#bbdefb" stroke="black" d="M5538.18,-1122.41C5538.18,-1122.41 4933.82,-1122.41 4933.82,-1122.41 4927.82,-1122.41 4921.82,-1116.41 4921.82,-1110.41 4921.82,-1110.41 4921.82,-1095.89 4921.82,-1095.89 4921.82,-1089.89 4927.82,-1083.89 4933.82,-1083.89 4933.82,-1083.89 5538.18,-1083.89 5538.18,-1083.89 5544.18,-1083.89 5550.18,-1089.89 5550.18,-1095.89 5550.18,-1095.89 5550.18,-1110.41 5550.18,-1110.41 5550.18,-1116.41 5544.18,-1122.41 5538.18,-1122.41"/>
-<text xml:space="preserve" text-anchor="start" x="4932.62" y="-1107.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Loading and guest memory: objects, fixups, GDT / IDT, imports, page tables (ADR&#45;0088), the guests&#39; ring (ADR&#45;0113)</text>
-<text xml:space="preserve" text-anchor="start" x="5090.5" y="-1099.05" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/lx_loader.rs, loader/ne_exec.rs, loader/descriptors.rs, loader/guest_mem.rs</text>
-<text xml:space="preserve" text-anchor="start" x="5181.25" y="-1091.05" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/paging.rs, loader/ring.rs</text>
+<path fill="#bbdefb" stroke="black" d="M5537.68,-1122.41C5537.68,-1122.41 4804.32,-1122.41 4804.32,-1122.41 4798.32,-1122.41 4792.32,-1116.41 4792.32,-1110.41 4792.32,-1110.41 4792.32,-1095.89 4792.32,-1095.89 4792.32,-1089.89 4798.32,-1083.89 4804.32,-1083.89 4804.32,-1083.89 5537.68,-1083.89 5537.68,-1083.89 5543.68,-1083.89 5549.68,-1089.89 5549.68,-1095.89 5549.68,-1095.89 5549.68,-1110.41 5549.68,-1110.41 5549.68,-1116.41 5543.68,-1122.41 5537.68,-1122.41"/>
+<text xml:space="preserve" text-anchor="start" x="4803.12" y="-1107.2" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Loading and guest memory: objects, fixups, GDT / IDT, imports, page tables (ADR&#45;0088), the guests&#39; ring (ADR&#45;0113), page states (ADR&#45;0114)</text>
+<text xml:space="preserve" text-anchor="start" x="5025.5" y="-1099.05" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/lx_loader.rs, loader/ne_exec.rs, loader/descriptors.rs, loader/guest_mem.rs</text>
+<text xml:space="preserve" text-anchor="start" x="5086.25" y="-1091.05" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/paging.rs, loader/ring.rs, loader/vmem.rs</text>
 </g>
 <!-- entry&#45;&gt;loading -->
 <g id="edge2" class="edge">
 <title>entry&#45;&gt;loading</title>
-<path fill="none" stroke="#455a64" d="M4955.93,-1168.47C5010.8,-1155.87 5085.21,-1138.78 5143.54,-1125.38"/>
-<polygon fill="#455a64" stroke="#455a64" points="5144.17,-1128.83 5153.13,-1123.18 5142.6,-1122.01 5144.17,-1128.83"/>
-<text xml:space="preserve" text-anchor="middle" x="5077.67" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">load</text>
+<path fill="none" stroke="#455a64" d="M4878.35,-1168.47C4935.8,-1155.84 5013.76,-1138.71 5074.76,-1125.3"/>
+<polygon fill="#455a64" stroke="#455a64" points="5075.46,-1128.73 5084.47,-1123.17 5073.95,-1121.9 5075.46,-1128.73"/>
+<text xml:space="preserve" text-anchor="middle" x="5005.15" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">load</text>
 </g>
 <!-- loading&#45;&gt;program -->
 <g id="edge3" class="edge">
 <title>loading&#45;&gt;program</title>
-<path fill="none" stroke="#455a64" d="M5550.48,-1090.92C5721.33,-1082.56 5914.21,-1068.82 5997,-1047.39 6019.49,-1041.57 6043.08,-1031.07 6062.19,-1021.29"/>
-<polygon fill="#455a64" stroke="#455a64" points="6063.74,-1024.43 6070.97,-1016.68 6060.49,-1018.23 6063.74,-1024.43"/>
-<text xml:space="preserve" text-anchor="middle" x="5999.33" y="-1057.34" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">map pages, apply fixups</text>
+<path fill="none" stroke="#455a64" d="M5550.02,-1090.39C5725.38,-1082.23 5913.15,-1068.84 5997,-1047.39 6019.51,-1041.63 6043.1,-1031.13 6062.2,-1021.35"/>
+<polygon fill="#455a64" stroke="#455a64" points="6063.76,-1024.49 6070.98,-1016.73 6060.5,-1018.29 6063.76,-1024.49"/>
+<text xml:space="preserve" text-anchor="middle" x="5995.28" y="-1057.34" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">map pages, apply fixups</text>
 </g>
 <!-- vcpu&#45;&gt;program -->
 <g id="edge8" class="edge">
@@ -284,9 +284,9 @@
 <!-- core -->
 <g id="node8" class="node">
 <title>core</title>
-<path fill="#bbdefb" stroke="black" d="M5517.68,-1204.91C5517.68,-1204.91 5228.32,-1204.91 5228.32,-1204.91 5222.32,-1204.91 5216.32,-1198.91 5216.32,-1192.91 5216.32,-1192.91 5216.32,-1180.91 5216.32,-1180.91 5216.32,-1174.91 5222.32,-1168.91 5228.32,-1168.91 5228.32,-1168.91 5517.68,-1168.91 5517.68,-1168.91 5523.68,-1168.91 5529.68,-1174.91 5529.68,-1180.91 5529.68,-1180.91 5529.68,-1192.91 5529.68,-1192.91 5529.68,-1198.91 5523.68,-1204.91 5517.68,-1204.91"/>
-<text xml:space="preserve" text-anchor="start" x="5227.12" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Loader core: Loader, SharedState, managers, constants</text>
-<text xml:space="preserve" text-anchor="start" x="5237.62" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/mod.rs, loader/managers.rs, loader/mutex_ext.rs, loader/constants.rs</text>
+<path fill="#bbdefb" stroke="black" d="M5501.68,-1204.91C5501.68,-1204.91 5212.32,-1204.91 5212.32,-1204.91 5206.32,-1204.91 5200.32,-1198.91 5200.32,-1192.91 5200.32,-1192.91 5200.32,-1180.91 5200.32,-1180.91 5200.32,-1174.91 5206.32,-1168.91 5212.32,-1168.91 5212.32,-1168.91 5501.68,-1168.91 5501.68,-1168.91 5507.68,-1168.91 5513.68,-1174.91 5513.68,-1180.91 5513.68,-1180.91 5513.68,-1192.91 5513.68,-1192.91 5513.68,-1198.91 5507.68,-1204.91 5501.68,-1204.91"/>
+<text xml:space="preserve" text-anchor="start" x="5211.12" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Loader core: Loader, SharedState, managers, constants</text>
+<text xml:space="preserve" text-anchor="start" x="5221.62" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/mod.rs, loader/managers.rs, loader/mutex_ext.rs, loader/constants.rs</text>
 </g>
 <!-- nls -->
 <g id="node10" class="node">

@@ -1148,8 +1148,9 @@ impl super::Loader {
     /// own stack and vCPU (an idle vCPU of an ended thread if there is one);
     /// returning from `pfn` lands on `EXIT_TRAP_ADDR` and ends the thread.
     /// `CREATE_SUSPENDED` starts it suspended (`DosResumeThread` lets it
-    /// run); `STACK_COMMITTED` changes nothing: Warpine's memory is always
-    /// committed. Other flag bits are ignored.
+    /// run). A thread's stack at ring 3 is sparse (`STACK_SPARSE`, ADR-0114):
+    /// committed as it grows, `XCPT_UNABLE_TO_GROW_STACK` near its bottom;
+    /// `STACK_COMMITTED` commits it whole. Other flag bits are ignored.
     pub fn dos_create_thread(&self, vcpu_id: u32, ptid_ptr: u32, pfn: u32, param: u32, flags: u32, cb_stack: u32) -> u32 {
         use super::threads::ThreadMemory;
         let stack_size = if cb_stack == 0 { DEFAULT_THREAD_STACK } else { cb_stack };
@@ -1236,6 +1237,12 @@ impl super::Loader {
         }
 
         let mut new_vcpu = vcpu;
+        // A sparse stack (ADR-0114), unless asked for committed whole.
+        // Only a thread at ring 3 can grow one: at ring 0 a fault on the
+        // stack has no other stack to be delivered on (a triple fault).
+        if paging != 0 && self.guest_ring() == 3 && flags & STACK_COMMITTED == 0 {
+            self.sparse_thread_stack(stack_base, stack_size);
+        }
         self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64, paging);
         // Fresh registers: a reused vCPU must not carry the old thread's.
         let new_regs = super::vm_backend::GuestRegs {
@@ -1328,19 +1335,6 @@ impl super::Loader {
         0
     }
 
-    pub fn dos_alloc_mem(&self, ppb: u32, cb: u32) -> u32 {
-        debug!("DosAllocMem(ppb=0x{:08X}, cb=0x{:08X} [{}])", ppb, cb, cb);
-        // Committed memory is zero (a reused block is cleared).
-        match self.alloc_zeroed(cb) {
-            Some(addr) => {
-                debug!("  -> allocated at 0x{:08X}", addr);
-                self.guest_write::<u32>(ppb, addr);
-                0
-            },
-            None => 8,
-        }
-    }
-
     /// DosFreeMem (ordinal 304).
     pub fn dos_free_mem(&self, pb: u32) -> u32 {
         // A block of the shared arena is let go; it is gone once no
@@ -1350,6 +1344,8 @@ impl super::Loader {
         }
         let freed = self.shared.mem_mgr.lock_or_recover().free_block(pb);
         let Some(size) = freed else { return ERROR_INVALID_ADDRESS };
+        // Its pages are present and writable again (ADR-0114).
+        self.free_page_states(pb);
         // A shared block's name is free again.
         self.shared.shmem_mgr.lock_or_recover().remove(pb);
         // So are suballocation pools in it that were never unset.
@@ -2179,7 +2175,7 @@ mod tests {
     fn test_dos_alloc_and_free_mem() {
         let loader = Loader::new_mock();
         let ppb = 0x2000u32;
-        assert_eq!(loader.dos_alloc_mem(ppb, 4096), 0);
+        assert_eq!(loader.dos_alloc_mem(ppb, 4096, PAG_COMMIT | PAG_READ | PAG_WRITE), 0);
         let addr = loader.guest_read::<u32>(ppb).unwrap();
         assert_ne!(addr, 0);
         assert_eq!(loader.dos_free_mem(addr), 0);

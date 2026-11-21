@@ -244,26 +244,6 @@ impl super::Loader {
         }
     }
 
-    /// DosSetMem (ordinal 305): commit/decommit pages.
-    /// All memory is already committed in our flat model.
-    pub fn dos_set_mem(&self, _pb: u32, _cb: u32, _flag: u32) -> u32 {
-        NO_ERROR
-    }
-
-    /// DosQueryMem (ordinal 306): query memory region attributes.
-    pub fn dos_query_mem(&self, pb: u32, pcb: u32, p_flag: u32) -> u32 {
-        debug!("  DosQueryMem(pb=0x{:08X})", pb);
-        // Return page-aligned size and committed+read+write flags
-        if pcb != 0 {
-            self.guest_write::<u32>(pcb, 4096);
-        }
-        if p_flag != 0 {
-            // PAG_COMMIT=0x10, PAG_READ=0x01, PAG_WRITE=0x02
-            self.guest_write::<u32>(p_flag, 0x13);
-        }
-        NO_ERROR
-    }
-
     // ── Step 3: Codepage and Country Info ──
 
     /// DosQueryCp (ordinal 291): get active codepage.

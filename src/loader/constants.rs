@@ -1064,12 +1064,20 @@ pub const NPSS_WAIT: u8 = 0x01;
 /// `sizeof(PIPESEMSTATE)`: two BYTEs and two USHORTs.
 pub const PIPESEMSTATE_SIZE: u32 = 6;
 
-/// `DosAllocSharedMem` / `DosGiveSharedMem` flags.
+/// Memory flags (`bsememf.h`): `DosAllocMem`, `DosSetMem`, `DosQueryMem`,
+/// `DosAllocSharedMem` / `DosGiveSharedMem`.
 pub const PAG_READ: u32 = 0x0001;
 pub const PAG_WRITE: u32 = 0x0002;
 pub const PAG_EXECUTE: u32 = 0x0004;
 pub const PAG_GUARD: u32 = 0x0008;
 pub const PAG_COMMIT: u32 = 0x0010;
+pub const PAG_DECOMMIT: u32 = 0x0020;
+pub const PAG_DEFAULT: u32 = 0x0400;
+pub const PAG_SHARED: u32 = 0x2000;
+pub const PAG_FREE: u32 = 0x4000;
+pub const PAG_BASE: u32 = 0x0001_0000;
+/// The access bits (`fPERM`).
+pub const FPERM: u32 = PAG_EXECUTE | PAG_READ | PAG_WRITE;
 pub const OBJ_TILE: u32 = 0x0040;
 pub const OBJ_GETTABLE: u32 = 0x0100;
 pub const OBJ_GIVEABLE: u32 = 0x0200;
@@ -1844,6 +1852,8 @@ pub const XCPT_READ_ACCESS:    u32 = 0x0000_0001;
 pub const XCPT_WRITE_ACCESS:   u32 = 0x0000_0002;
 /// The page-fault error code's write bit (Intel SDM vol. 3, 4.7).
 pub const PF_ERROR_WRITE: u32 = 1 << 1;
+/// The page-fault exception's vector (#PF).
+pub const PAGE_FAULT_VECTOR: u32 = 14;
 /// `DosUnwindException`'s own report record, and the target that means
 /// the whole chain (`phandler` NULL).
 pub const XCPT_UNWIND: u32 = 0xC000_0026;

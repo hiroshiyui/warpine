@@ -64,6 +64,7 @@ mod lx_loader;
 mod ne_exec;
 mod descriptors;
 mod ring;
+mod vmem;
 pub(crate) mod paging;
 pub(crate) mod track;
 pub(crate) mod exit_report;
@@ -460,6 +461,13 @@ pub struct SharedState {
     pub tlm: Mutex<paging::TlmArea>,
     /// The paging arena's blocks in use (`paging.rs`, ADR-0113).
     pub paging_arena: Mutex<paging::PagingArena>,
+    /// Whether the process page tables are written (`paging.rs`, ADR-0114).
+    pub process_tables_ready: AtomicBool,
+    /// The page states of `DosAllocMem` allocations (`vmem.rs`, ADR-0114).
+    pub vmem: Mutex<vmem::PageMap>,
+    /// Counted up when pages lose access: every vCPU flushes its TLB once
+    /// it sees a new value (`vmem.rs`).
+    pub tlb_epoch: std::sync::atomic::AtomicU64,
     /// The read ends of children's exit reports, by host pid (`exit_report.rs`).
     pub exit_reports: Mutex<std::collections::HashMap<u32, std::fs::File>>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
@@ -604,6 +612,9 @@ impl Loader {
             thread_slots: Default::default(),
             tlm: Default::default(),
             paging_arena: Default::default(),
+            process_tables_ready: AtomicBool::new(false),
+            vmem: Default::default(),
+            tlb_epoch: Default::default(),
             exit_reports: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
@@ -719,6 +730,9 @@ impl Loader {
             thread_slots: Default::default(),
             tlm:          Default::default(),
             paging_arena: Default::default(),
+            process_tables_ready: AtomicBool::new(false),
+            vmem: Default::default(),
+            tlb_epoch: Default::default(),
             exit_reports: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),

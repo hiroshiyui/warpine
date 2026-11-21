@@ -93,14 +93,27 @@ const RING0_OFFSET: u32 = 4 * PAGE_SIZE;
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
 
-/// The paging arena (ADR-0113): where every thread's paging block lies,
-/// from the page after the ring-0 window to the end of the 4 MB the TLM
-/// table maps. Its pages are supervisor-only in every thread's tables, so
-/// a guest at ring 3 reaches no block, its own or another thread's.
+/// The paging arena (ADR-0113): from the page after the ring-0 window to
+/// the end of the 4 MB the TLM table maps. Its pages are supervisor-only
+/// in every thread's tables, so a guest at ring 3 reaches nothing in it.
+/// It starts with the process's page tables for the allocator's region
+/// (ADR-0114), then holds every thread's paging block.
 pub const PAGING_ARENA_BASE: u32 = RING0_WINDOW + PAGE_SIZE;
 pub const PAGING_ARENA_END: u32 = (TLM_CHUNK + 1) << LARGE_PAGE_SHIFT;
-/// Blocks the arena holds: the most 32-bit threads a process can have.
-pub const PAGING_BLOCKS: u32 = (PAGING_ARENA_END - PAGING_ARENA_BASE) / PAGING_BLOCK_SIZE;
+/// The allocator's region in 4 MB chunks: the directory entries that lead
+/// to the process tables instead of large pages (ADR-0114).
+pub const ALLOC_FIRST_CHUNK: u32 = DYNAMIC_ALLOC_BASE >> LARGE_PAGE_SHIFT;
+pub const ALLOC_CHUNKS: u32 = (SHARED_ARENA_BASE - DYNAMIC_ALLOC_BASE) >> LARGE_PAGE_SHIFT;
+const _: () = assert!(DYNAMIC_ALLOC_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT
+    && SHARED_ARENA_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT);
+/// The process tables: one page table per allocator chunk, shared by all
+/// of a process's threads, so a change of a page's state reaches them all.
+pub const PROCESS_TABLES: u32 = PAGING_ARENA_BASE;
+pub const PROCESS_TABLES_SIZE: u32 = ALLOC_CHUNKS * PAGE_SIZE;
+/// Where the paging blocks start, after the process tables.
+pub const PAGING_BLOCKS_BASE: u32 = PROCESS_TABLES + PROCESS_TABLES_SIZE;
+/// Blocks the arena holds: the most threads a process can have.
+pub const PAGING_BLOCKS: u32 = (PAGING_ARENA_END - PAGING_BLOCKS_BASE) / PAGING_BLOCK_SIZE;
 const _: () = assert!(PAGING_ARENA_BASE >> LARGE_PAGE_SHIFT == TLM_CHUNK && PAGING_BLOCKS >= 64);
 /// The 4 MB holding the API thunks (`MAGIC_API_BASE`): read-only, so no
 /// guest rewrites a thunk (at ring 0 too, with CR0.WP).
@@ -121,6 +134,32 @@ pub fn supervisor_only(page: u32) -> bool {
         || (PAGING_ARENA_BASE..PAGING_ARENA_END).contains(&page)
 }
 
+/// What a process-table entry lets the guest do with its page (ADR-0114).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageAccess {
+    /// Not present: reserved but not committed, or a guard page.
+    None,
+    Read,
+    ReadWrite,
+}
+
+/// The process-table entry for the allocator page holding `addr`.
+pub fn process_pte(addr: u32, access: PageAccess) -> u32 {
+    let page = addr & !(PAGE_SIZE - 1);
+    match access {
+        PageAccess::None => page,
+        PageAccess::Read => page | PTE_PRESENT | PTE_USER | PTE_ACCESSED,
+        PageAccess::ReadWrite => page | PTE_FLAGS,
+    }
+}
+
+/// Where the process-table entry of the page holding `addr` lies; None
+/// outside the allocator's region.
+pub fn process_pte_at(addr: u32) -> Option<u32> {
+    (DYNAMIC_ALLOC_BASE..SHARED_ARENA_BASE).contains(&addr)
+        .then(|| PROCESS_TABLES + ((addr - DYNAMIC_ALLOC_BASE) >> PAGE_SHIFT) * 4)
+}
+
 /// Which blocks of the paging arena are in use (pure bookkeeping).
 #[derive(Debug)]
 pub struct PagingArena {
@@ -138,7 +177,7 @@ impl PagingArena {
     pub fn alloc(&mut self) -> Option<u32> {
         let slot = self.used.iter().position(|&u| !u)?;
         self.used[slot] = true;
-        Some(PAGING_ARENA_BASE + slot as u32 * PAGING_BLOCK_SIZE)
+        Some(PAGING_BLOCKS_BASE + slot as u32 * PAGING_BLOCK_SIZE)
     }
 
     /// Give back the block at `base`; false for an address that is no
@@ -147,7 +186,7 @@ impl PagingArena {
         if !valid_block(base) {
             return false;
         }
-        let slot = ((base - PAGING_ARENA_BASE) / PAGING_BLOCK_SIZE) as usize;
+        let slot = ((base - PAGING_BLOCKS_BASE) / PAGING_BLOCK_SIZE) as usize;
         std::mem::replace(&mut self.used[slot], false)
     }
 }
@@ -184,6 +223,10 @@ const PAGE_SHIFT: u32 = 12;
 
 /// Control-register bits.
 pub const CR0_PG: u64 = 1 << 31;
+/// CR3's page-level write-through bit: Warpine toggles it to make KVM
+/// flush a vCPU's TLB (ADR-0114); the directory's address is the rest.
+pub const CR3_PWT: u64 = 1 << 3;
+pub const CR3_ADDRESS: u64 = !0xFFF;
 /// Write protect: ring 0 cannot write a read-only page either (ADR-0113).
 pub const CR0_WP: u64 = 1 << 16;
 pub const CR4_PSE: u64 = 1 << 4;
@@ -210,6 +253,8 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             put(4 * i, (base + LOW_TABLE_OFFSET) | PTE_FLAGS);
         } else if i == STUB_CHUNK {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE);
+        } else if (ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS).contains(&i) {
+            put(4 * i, (PROCESS_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS);
         } else {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
         }
@@ -244,16 +289,16 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
 const TABLES_SIZE: u32 = TLM_OFFSET;
 
 /// Whether `base` can be a paging block: one of the paging arena's
-/// blocks ([`PAGING_ARENA_BASE`], every [`PAGING_BLOCK_SIZE`] bytes).
+/// blocks ([`PAGING_BLOCKS_BASE`], every [`PAGING_BLOCK_SIZE`] bytes).
 pub fn valid_block(base: u32) -> bool {
-    base.checked_sub(PAGING_ARENA_BASE)
+    base.checked_sub(PAGING_BLOCKS_BASE)
         .is_some_and(|off| off.is_multiple_of(PAGING_BLOCK_SIZE) && off / PAGING_BLOCK_SIZE < PAGING_BLOCKS)
 }
 
 /// The thread-local page of the paging block at `cr3`; None for an
 /// address that cannot be a block.
 pub fn tlm_page_of(cr3: u64) -> Option<u32> {
-    let base = u32::try_from(cr3).ok().filter(|&b| valid_block(b))?;
+    let base = u32::try_from(cr3 & CR3_ADDRESS).ok().filter(|&b| valid_block(b))?;
     Some(base + TLM_OFFSET)
 }
 
@@ -360,7 +405,7 @@ impl super::Loader {
             return PagingStatus::Off;
         }
         match own {
-            Some(base) if sregs.cr3 == base as u64 => PagingStatus::Intact,
+            Some(base) if sregs.cr3 & CR3_ADDRESS == base as u64 => PagingStatus::Intact,
             _ => PagingStatus::ForeignCr3(sregs.cr3),
         }
     }
@@ -381,12 +426,28 @@ impl super::Loader {
     /// Allocate and fill a thread's paging block; its address (the CR3
     /// value), or None when there is no memory.
     pub(crate) fn alloc_paging_block(&self, tib: u32) -> Option<u32> {
+        self.ensure_process_tables();
         let base = self.shared.paging_arena.lock_or_recover().alloc()?;
         if self.guest_write_bytes(base, &paging_block(base, tib)).is_none() {
             self.shared.paging_arena.lock_or_recover().free(base);
             return None;
         }
         Some(base)
+    }
+
+    /// Write the process tables (ADR-0114) once, before the first thread's
+    /// block: every page of the allocator's region present and writable,
+    /// as the large pages they replace were; `vmem.rs` changes them.
+    pub(crate) fn ensure_process_tables(&self) {
+        if self.shared.process_tables_ready.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let tables: Vec<u8> = (0..ALLOC_CHUNKS * ENTRIES)
+            .flat_map(|i| ((DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT)) | PTE_FLAGS).to_le_bytes())
+            .collect();
+        if self.guest_write_bytes(PROCESS_TABLES, &tables).is_none() {
+            warn!("the process page tables could not be written");
+        }
     }
 
     /// Give back a thread's paging block (from [`Self::alloc_paging_block`]).
@@ -440,7 +501,7 @@ mod tests {
     /// Every address maps to itself, except the thread-local page.
     #[test]
     fn the_tables_map_everything_one_to_one_but_the_thread_local_page() {
-        const BASE: u32 = PAGING_ARENA_BASE + 3 * PAGING_BLOCK_SIZE;
+        const BASE: u32 = PAGING_BLOCKS_BASE + 3 * PAGING_BLOCK_SIZE;
         let b = paging_block(BASE, TIB_BASE);
         assert_eq!(b.len(), PAGING_BLOCK_SIZE as usize);
         let chunk = TLM_CHUNK << LARGE_PAGE_SHIFT;
@@ -473,13 +534,18 @@ mod tests {
     /// view it did not have unpaged.
     #[test]
     fn no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page() {
-        const BASE: u32 = PAGING_ARENA_BASE;
+        const BASE: u32 = PAGING_BLOCKS_BASE;
         let b = paging_block(BASE, TIB_BASE);
         for j in 0..ENTRIES {
             let e = entry(&b, LOW_TABLE_OFFSET + 4 * j);
             assert!(e == 0 || e & !0xFFF == j << PAGE_SHIFT, "low table entry {j}");
         }
-        for i in (1..ENTRIES).filter(|&i| i != TLM_CHUNK) {
+        let alloc = ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS;
+        for i in alloc.clone() {
+            assert_eq!(entry(&b, 4 * i), (PROCESS_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS,
+                       "allocator chunk {i}: through its process table");
+        }
+        for i in (1..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i)) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
             let flags = if i == STUB_CHUNK { PDE_READ_ONLY } else { PTE_FLAGS };
@@ -509,7 +575,7 @@ mod tests {
     /// stack itself starts zeroed (ADR-0113).
     #[test]
     fn the_ring0_page_holds_the_threads_tss_and_stack() {
-        const BASE: u32 = PAGING_ARENA_BASE + 5 * PAGING_BLOCK_SIZE;
+        const BASE: u32 = PAGING_BLOCKS_BASE + 5 * PAGING_BLOCK_SIZE;
         let b = paging_block(BASE, TIB_BASE);
         let tss = |off: u32| entry(&b, RING0_OFFSET + off);
         assert_eq!(tss(TSS_ESP0_OFFSET), RING0_WINDOW + PAGE_SIZE, "ESP0: the top of the ring-0 page");
@@ -528,20 +594,51 @@ mod tests {
     /// value holds; nothing overflows.
     #[test]
     fn only_the_arenas_blocks_are_accepted() {
-        let last = PAGING_ARENA_BASE + (PAGING_BLOCKS - 1) * PAGING_BLOCK_SIZE;
-        assert!(valid_block(PAGING_ARENA_BASE));
+        let last = PAGING_BLOCKS_BASE + (PAGING_BLOCKS - 1) * PAGING_BLOCK_SIZE;
+        assert!(valid_block(PAGING_BLOCKS_BASE));
         assert!(valid_block(last));
         assert!(last + PAGING_BLOCK_SIZE <= PAGING_ARENA_END);
-        for bad in [0, TLM_PAGE, PAGING_ARENA_BASE - PAGE_SIZE, PAGING_ARENA_BASE + PAGE_SIZE, PAGING_ARENA_BASE + 1,
+        for bad in [0, TLM_PAGE, PAGING_ARENA_BASE, PROCESS_TABLES, PAGING_BLOCKS_BASE - PAGE_SIZE,
+                    PAGING_BLOCKS_BASE + PAGE_SIZE, PAGING_BLOCKS_BASE + 1,
                     last + PAGING_BLOCK_SIZE, PAGING_ARENA_END, DYNAMIC_ALLOC_BASE, !0xFFF, u32::MAX] {
             assert!(!valid_block(bad), "{bad:#x}");
-            assert_eq!(tlm_page_of(bad as u64), None, "{bad:#x}");
+            // CR3's low 12 bits are not part of the address.
+            if bad & 0xFFF == 0 {
+                assert_eq!(tlm_page_of(bad as u64), None, "{bad:#x}");
+            }
         }
-        assert_eq!(tlm_page_of(1u64 << 32 | PAGING_ARENA_BASE as u64), None, "CR3 above 4 GB");
+        assert_eq!(tlm_page_of(1u64 << 32 | PAGING_BLOCKS_BASE as u64), None, "CR3 above 4 GB");
+        assert_eq!(tlm_page_of(PAGING_BLOCKS_BASE as u64 | CR3_PWT), Some(PAGING_BLOCKS_BASE + TLM_OFFSET),
+                   "CR3's write-through bit (a TLB flush) is not part of the address");
         assert_eq!(tlm_page_of(u64::MAX), None);
         assert_eq!(block_of_tlm_page(0), None);
         assert_eq!(block_of_tlm_page(u32::MAX), None);
-        assert_eq!(block_of_tlm_page(PAGING_ARENA_BASE + TLM_OFFSET), Some(PAGING_ARENA_BASE));
+        assert_eq!(block_of_tlm_page(PAGING_BLOCKS_BASE + TLM_OFFSET), Some(PAGING_BLOCKS_BASE));
+    }
+
+    /// The process tables (ADR-0114) map the allocator's region page by
+    /// page, present and writable, and lie in the supervisor-only arena
+    /// before the blocks; the entry helpers address and fill them.
+    #[test]
+    fn the_process_tables_map_the_allocators_region() {
+        assert_eq!(ALLOC_CHUNKS * (1 << LARGE_PAGE_SHIFT), SHARED_ARENA_BASE - DYNAMIC_ALLOC_BASE);
+        assert!(supervisor_only(PROCESS_TABLES) && supervisor_only(PAGING_BLOCKS_BASE - PAGE_SIZE));
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE), Some(PROCESS_TABLES));
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x234), Some(PROCESS_TABLES));
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x1234), Some(PROCESS_TABLES + 4));
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE - 1), Some(PAGING_BLOCKS_BASE - 4));
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE), None, "the shared arena keeps its large pages");
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE - 1), None);
+        let page = DYNAMIC_ALLOC_BASE + 0x5000;
+        assert_eq!(process_pte(page + 7, PageAccess::ReadWrite), page | PTE_FLAGS);
+        assert_eq!(process_pte(page, PageAccess::Read), page | PTE_PRESENT | PTE_USER | PTE_ACCESSED);
+        assert_eq!(process_pte(page, PageAccess::None) & PTE_PRESENT, 0);
+        let loader = super::super::Loader::new_mock();
+        loader.ensure_process_tables();
+        for addr in [DYNAMIC_ALLOC_BASE, page, SHARED_ARENA_BASE - PAGE_SIZE] {
+            let at = process_pte_at(addr).unwrap();
+            assert_eq!(loader.guest_read::<u32>(at), Some(addr | PTE_FLAGS), "{addr:#x}");
+        }
     }
 
     /// The arena hands out each block once, takes back only blocks in use,

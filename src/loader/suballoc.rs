@@ -443,7 +443,7 @@ mod tests {
     fn free_mem_without_unset_ends_the_pool() {
         let loader = super::super::Loader::new_mock();
         const PPB: u32 = 0x0000_1000;
-        assert_eq!(loader.dos_alloc_mem(PPB, 8192), NO_ERROR);
+        assert_eq!(loader.dos_alloc_mem(PPB, 8192, PAG_COMMIT | PAG_READ | PAG_WRITE), NO_ERROR);
         let base = loader.guest_read::<u32>(PPB).unwrap();
         assert_eq!(loader.dos_sub_set_mem(base, DOSSUB_INIT, 8192), NO_ERROR);
         assert_eq!(loader.dos_sub_set_mem(base, DOSSUB_INIT, 8192), ERROR_DOSSUB_OVERLAP);
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(loader.dos_free_mem(base), NO_ERROR);
         assert_eq!(loader.dos_sub_alloc_mem(base, base, 16), ERROR_DOSSUB_CORRUPTED);
         // The same memory again: a new pool can be set up there.
-        assert_eq!(loader.dos_alloc_mem(PPB, 8192), NO_ERROR);
+        assert_eq!(loader.dos_alloc_mem(PPB, 8192, PAG_COMMIT | PAG_READ | PAG_WRITE), NO_ERROR);
         let again = loader.guest_read::<u32>(PPB).unwrap();
         assert_eq!(again, base, "the freed block is handed out again");
         assert_eq!(loader.dos_sub_set_mem(again, DOSSUB_INIT, 8192), NO_ERROR);

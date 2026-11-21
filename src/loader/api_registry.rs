@@ -283,7 +283,7 @@ static REGISTRY: &[ApiEntry] = &[
 
     // ── DOSCALLS — memory ─────────────────────────────────────────────────
     ApiEntry { ordinal: 299, module: "DOSCALLS", name: "DosAllocMem",      argc: 2,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_alloc_mem(a[0],a[1])) },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_alloc_mem(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 300, module: "DOSCALLS", name: "DosAllocSharedMem", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_alloc_shared_mem(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 301, module: "DOSCALLS", name: "DosGetNamedSharedMem", argc: 3,

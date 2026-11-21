@@ -401,6 +401,8 @@ impl super::Loader {
             mem_mgr.free(mem.stack);
             mem_mgr.free(mem.tib);
             drop(mem_mgr);
+            // A sparse stack's pages are present and writable again.
+            self.free_page_states(mem.stack);
             if mem.paging != 0 {
                 self.free_paging_block(mem.paging);
             }
@@ -538,6 +540,8 @@ impl super::Loader {
         }
 
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
+        // The TLB epoch this vCPU's TLB is clean for (ADR-0114).
+        let mut tlb_epoch = self.shared.tlb_epoch.load(Ordering::Acquire);
         // Exits to memory past guest RAM in a row (see MMIO_STORM_LIMIT).
         let mut mmio_run: u32 = 0;
 
@@ -622,6 +626,13 @@ impl super::Loader {
                 }
             }
 
+            // Pages lost access since this vCPU last ran (ADR-0114):
+            // reload CR3 so that its TLB forgets them.
+            let epoch = self.shared.tlb_epoch.load(Ordering::Acquire);
+            if epoch != tlb_epoch {
+                tlb_epoch = epoch;
+                flush_tlb(&mut *vcpu);
+            }
             let res = vcpu.run();
             if let Err(e) = res {
                 let report = self.collect_crash_report(
@@ -937,6 +948,58 @@ impl super::Loader {
                             ss:     sregs.ss.selector,
                         };
 
+                        // A page fault in memory DosAllocMem allocated
+                        // (ADR-0114): a stale TLB entry runs the
+                        // instruction again; a guard page, now without its
+                        // guard, raises XCPT_GUARD_PAGE_VIOLATION, which
+                        // with no handler goes on where it faulted.
+                        if vector == PAGE_FAULT_VECTOR {
+                            let write = error_code & PF_ERROR_WRITE != 0;
+                            let addr = sregs.cr2 as u32;
+                            match self.page_fault_kind(addr, write) {
+                                Some(super::vmem::FaultKind::Retry) => {
+                                    let mut r = vcpu.get_regs().unwrap();
+                                    resume_at(&mut r, &fault_ctx);
+                                    vcpu.set_regs(&r).unwrap();
+                                    continue;
+                                }
+                                Some(super::vmem::FaultKind::Guard) => {
+                                    let access = if write { XCPT_WRITE_ACCESS } else { XCPT_READ_ACCESS };
+                                    let dispatch = if guest_stack_ok(regs.rsp) {
+                                        self.chain_dispatch(vcpu_id, fault_ctx.clone(), XCPT_GUARD_PAGE_VIOLATION, 0, &[access, addr])
+                                    } else { None };
+                                    if let Some(exc_dispatch) = dispatch {
+                                        setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch);
+                                    } else {
+                                        let mut r = vcpu.get_regs().unwrap();
+                                        resume_at(&mut r, &fault_ctx);
+                                        vcpu.set_regs(&r).unwrap();
+                                    }
+                                    continue;
+                                }
+                                // A thread's stack reached its bottom pages
+                                // (now committed, for the handler).
+                                Some(super::vmem::FaultKind::StackExhausted) => {
+                                    let dispatch = if guest_stack_ok(regs.rsp) {
+                                        self.chain_dispatch(vcpu_id, fault_ctx.clone(), XCPT_UNABLE_TO_GROW_STACK, 0, &[])
+                                    } else { None };
+                                    if let Some(exc_dispatch) = dispatch {
+                                        setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch);
+                                        continue;
+                                    }
+                                    let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::GuestException {
+                                        vector, error_code, fault_eip, fault_cs, fault_eflags,
+                                    });
+                                    self.dump_crash_report(&report);
+                                    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+                                        Some(end) => return end,
+                                        None => continue,
+                                    }
+                                }
+                                Some(super::vmem::FaultKind::Violation) | None => {}
+                            }
+                        }
+
                         // A handler call is built below the faulting stack:
                         // with no room there, no handler runs.
                         let dispatch = if guest_stack_ok(regs.rsp) {
@@ -1204,6 +1267,15 @@ impl super::Loader {
                                             // try the next handler in the chain.
                                             if next_handler == XCPT_CHAIN_END {
                                                 // Chain exhausted — unhandled exception.
+                                                // A guard page's default action (ADR-0114):
+                                                // the guard is gone; go on where it faulted.
+                                                if self.continues_by_default(exc_report) {
+                                                    debug!("  [VCPU {}] SEH: guard page, no handler took it: going on", vcpu_id);
+                                                    self.free_exception_records(guest_allocs);
+                                                    resume_at(&mut regs, &saved);
+                                                    vcpu.set_regs(&regs).unwrap();
+                                                    continue;
+                                                }
                                                 warn!("  [VCPU {}] SEH: unhandled exception (chain exhausted)", vcpu_id);
                                                 self.free_exception_records(guest_allocs);
                                                 let tc = self.termination_code(exc_report);
@@ -1790,6 +1862,35 @@ pub(crate) const MIN_GUEST_ESP: u64 = 0x2000;
 
 /// Whether the guest's stack pointer `esp` leaves room for the host's
 /// frames below it and its return address above it in guest memory.
+/// Make KVM drop the TLB of a paged vCPU (ADR-0114): a CR3 that differs
+/// only in its write-through bit makes KVM reload the vCPU's paging, and
+/// its translations with it; the next flush toggles it back.
+fn flush_tlb(vcpu: &mut dyn VcpuBackend) {
+    let Ok(mut sregs) = vcpu.get_sregs() else { return };
+    if sregs.cr0 & super::paging::CR0_PG == 0 {
+        return;
+    }
+    sregs.cr3 ^= super::paging::CR3_PWT;
+    if let Err(e) = vcpu.set_sregs(&sregs) {
+        warn!("TLB flush: {e}");
+    }
+}
+
+/// Point `regs` at `ctx`: the thread goes on where it faulted, with the
+/// registers it had there (EFLAGS as a program may set them).
+fn resume_at(regs: &mut super::vm_backend::GuestRegs, ctx: &FaultContext) {
+    regs.rip = u64::from(ctx.eip);
+    regs.rsp = u64::from(ctx.esp);
+    regs.rax = u64::from(ctx.eax);
+    regs.rbx = u64::from(ctx.ebx);
+    regs.rcx = u64::from(ctx.ecx);
+    regs.rdx = u64::from(ctx.edx);
+    regs.rsi = u64::from(ctx.esi);
+    regs.rdi = u64::from(ctx.edi);
+    regs.rbp = u64::from(ctx.ebp);
+    regs.rflags = super::ring::guest_eflags(ctx.eflags);
+}
+
 pub(crate) fn guest_stack_ok(esp: u64) -> bool {
     (MIN_GUEST_ESP..=u64::from(GUEST_MEM_SIZE) - 16).contains(&esp)
 }
