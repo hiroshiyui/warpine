@@ -62,7 +62,7 @@ _Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20; the CMD.EXE 
 - **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input; ANSI escape sequences in `VioWrtTTY` / `DosWrite` output (cursor, `cls`, colours), and output redirected to files with `DosDupHandle` (`echo text > file` from a shell).
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory between the processes of a session, `DosSub*` suballocation (bookkeeping kept by Warpine), guest physical memory manager.
-- **IPC and threads:** Event / mutex / muxwait semaphores with their queries, critical sections, DOS timers posting semaphores, exit lists (`DosExitList`), per-thread exception handlers, anonymous and named pipes (also between Warpine processes), and named message queues.
+- **IPC and threads:** Event / mutex / muxwait semaphores with their queries, critical sections, DOS timers posting semaphores, exit lists (`DosExitList`), per-thread exception handlers (`DosUnwindException` calling them with `EH_UNWINDING`; NULL pointers trap as on OS/2), anonymous and named pipes (also between Warpine processes), and named message queues.
 - **Process Management:** `DosExecPgm` and `WinStartApp` (the child gets its arguments, environment and inheritable pipe handles; a program cannot start Warpine processes more than 8 levels deep or keep more than 16 children, and `THREADS=` in `C:\CONFIG.SYS` bounds the threads of the whole session), DLLs found along `LIBPATH=` and BEGINLIBPATH / ENDLIBPATH, a starting environment from CONFIG.SYS's `SET` statements, `DosWaitChild`, `DosSearchPath`, `DosQueryModuleName`, directory tracking, system information queries.
 - **Profiles and help:** `Prf*` profile calls with OS2.INI / OS2SYS.INI on drive C: (in Warpine's own text format), and Help Manager instances so programs with online help start (no help viewer yet).
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
@@ -100,7 +100,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
-    api_registry.rs    Static sorted API thunk table (265 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (478 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     api_ring.rs        256-entry API call ring buffer for crash post-mortem
@@ -137,6 +137,8 @@ samples/               OS/2 sample applications and build scripts
   thread_test/         DosCreateThread/DosWaitThread
   thread_exit_test/    DosExit(EXIT_THREAD), DosWaitThread, the last thread ending the process
   xcpt_thread_test/    Per-thread exception-handler chains, DosRaiseException
+  xcpt_unwind_test/    DosUnwindException, longjmp out of a trap handler, NULL-pointer traps
+  wcxx_throw_test/     Open Watcom C++ exceptions running destructors (through DosUnwindException)
   exitlist_test/       DosExitList in the four ways a process ends
   semquery_test/       Semaphore queries, muxwait lists and their error codes
   kernel2_test/        Critical sections, DOS timers, DosSearchPath, DosQueryModuleName, suballocation
@@ -369,7 +371,7 @@ CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc
 ci/run.sh gcc                      # a CI matrix entry (watcom, gcc, clang) in the pinned image (ADR-0106)
 ```
 
-C++ works too, with exceptions and RTTI (ADR-0103): `os2.mk` gives `OS2_CXX` and `OS2_CXXFLAGS`, and a program links `libos2cxx.a` before `libos2c.a`.
+C++ works too, with exceptions and RTTI (ADR-0103): `os2.mk` gives `OS2_CXX` and `OS2_CXXFLAGS`, and a program links `libos2cxx.a` before `libos2c.a`. Exceptions pass between a program and its DLLs (ADR-0107), and an OS/2 exception handler may `throw`, so a trap unwinds the frames that trapped and runs their destructors (ADR-0110).
 ```bash
 make -C samples/cxx_test           # g++; or CC=clang for clang++
 cargo run -- samples/cxx_test/cxx_test.exe
@@ -407,7 +409,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 ### 10. Run tests and lint
 ```bash
 cargo test                        # 2250 unit tests (no KVM required)
-cargo test --test integration     # 204 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 
