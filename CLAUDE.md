@@ -86,7 +86,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 4. **PM.**
    - API threads rasterise into shared per-frame surfaces (`src/gui/surface.rs`); the GUI thread composites them (`src/gui/sdl_renderer.rs`, software or layered compositor).
    - Input waits in one system input queue and is routed when read (`pm_input.rs`, ADR-0051 / 0058).
-   - Each session has one desktop server process (`src/desktop/`, `src/gui/desktop_server.rs`; protocol version 8, ADR-0052–0057, 0067, 0068). `WARPINE_DESKTOP=local` keeps the desktop in-process.
+   - Each session has one desktop server process (`src/desktop/`, `src/gui/desktop_server.rs`; protocol version 9, ADR-0052–0057, 0067, 0068, 0108). `WARPINE_DESKTOP=local` keeps the desktop in-process.
 5. **Processes.** Each OS/2 process is its own Warpine host process (ADR-0020).
    - Shared memory goes through a sealed memfd arena (ADR-0049); shared semaphores through a memfd of slots (ADR-0050).
    - Named pipes are `AF_UNIX` sockets in a private session directory (ADR-0022).

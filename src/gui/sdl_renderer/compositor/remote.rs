@@ -20,7 +20,7 @@ use log::warn;
 
 use crate::desktop::client::DesktopLink;
 use crate::desktop::pixmap::{SharedPixmap, MAX_PIXMAP_DIM};
-use crate::desktop::proto::{Area, ClientMsg, Item, Update, MAX_DAMAGE, MAX_ITEMS};
+use crate::desktop::proto::{Activation, Area, ClientMsg, Item, Update, MAX_DAMAGE, MAX_ITEMS};
 use crate::gui::cursor::CursorMark;
 use crate::gui::damage::Rect;
 use crate::loader::MutexExt;
@@ -89,7 +89,7 @@ impl RemoteDesktop {
     }
 
     /// Bring the pictures up to date with `scene` and tell the server.
-    pub fn compose(&mut self, scene: &Scene, active: u32, raised: Vec<u32>, lowered: Vec<u32>) {
+    pub fn compose(&mut self, scene: &Scene, active: Activation, raised: Vec<u32>, lowered: Vec<u32>) {
         let mut items = Vec::new();
         let mut damage = Vec::new();
         for f in &scene.frames {

@@ -677,6 +677,11 @@ pub struct WindowManager {
     /// The session's active frame as the desktop server last said, which
     /// may be another program's (ADR-0052 phase B).
     pub session_active: u32,
+    /// The newest report of this program's active frame made to the
+    /// desktop server (ADR-0108; `pm_minmax.rs`).
+    pub activation_sent: crate::desktop::proto::Activation,
+    /// The active frame was activated again on purpose since that report.
+    pub activation_claimed: bool,
     /// Messages this program's threads send to other programs' windows,
     /// in progress (`pm_remote.rs`).
     pub remote_sends: super::pm_remote::RemoteSends,
@@ -819,6 +824,8 @@ impl WindowManager {
             lowered_frames: Vec::new(),
             handle_slot: None,
             session_active: 0,
+            activation_sent: Default::default(),
+            activation_claimed: false,
             remote_sends: Default::default(),
             enums: Default::default(),
             session_link: None,

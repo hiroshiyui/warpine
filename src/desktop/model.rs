@@ -10,11 +10,15 @@
 //!   a frame it names as raised goes to the top of the whole desktop, one it
 //!   names as lowered to the bottom, and a new frame appears on top.
 //! - **Activation.** One frame of the session is active. A client reports
-//!   its own active frame with every update and acknowledgement; when that
-//!   report *changes* to a frame, the frame becomes the session's active
-//!   one and the client that held activation before is told to give it up
-//!   (`Deactivate`). Reports that do not change are ignored, so a client
-//!   that has not yet seen its `Deactivate` cannot take activation back.
+//!   its own active frame with every update and acknowledgement, and in a
+//!   `Report` call when it changes (ADR-0108). Each report has a number;
+//!   when a *newer* report names a frame, the frame becomes the session's
+//!   active one, goes to the top, and the client that held activation
+//!   before is told to give it up (`Deactivate`, with the number of the
+//!   report that made it active). Older and repeated reports are ignored,
+//!   so a client that has not yet seen its `Deactivate` cannot take
+//!   activation back by repeating itself, while one that activates its
+//!   frame again on purpose sends a newer report and does.
 //! - **Input targets.** An open pop-up menu's client gets all input. A
 //!   client holding the pointer (a pressed button, or a capture it asked
 //!   for) gets the pointer; otherwise the pointer goes to the client whose
@@ -22,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use super::proto::{Area, Item, Update};
+use super::proto::{Activation, Area, Item, Update};
 
 /// A client, by its slot.
 pub type ClientId = u32;
@@ -37,8 +41,9 @@ struct Stacked {
 /// What a change to the model asks the server to do.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Effects {
-    /// Tell client `.0` that its frame `.1` is no longer active, frame `.2` is.
-    pub deactivate: Option<(ClientId, u32, u32)>,
+    /// Tell client `.0` that its frame `.1` is no longer active, frame `.2`
+    /// is; `.3` is the number of the client's report that made `.1` active.
+    pub deactivate: Option<(ClientId, u32, u32, u32)>,
     /// Desktop areas to redraw.
     pub damage: Vec<Area>,
 }
@@ -59,8 +64,8 @@ pub struct DesktopModel {
     items: HashMap<ClientId, Vec<Item>>,
     overlay: Option<(ClientId, Item)>,
     active: Option<(ClientId, u32)>,
-    /// Each client's last reported active frame.
-    reported: HashMap<ClientId, u32>,
+    /// Each client's newest report of its active frame.
+    reported: HashMap<ClientId, Activation>,
     /// Client holding the pointer: buttons held, or a capture.
     held_by: Option<ClientId>,
     buttons: u32,
@@ -164,27 +169,53 @@ impl DesktopModel {
     }
 
     /// Client `c` acknowledged input with `active` as its active frame.
-    pub fn acknowledged(&mut self, c: ClientId, active: u32, owns: impl Fn(u32) -> bool) -> Effects {
+    pub fn acknowledged(&mut self, c: ClientId, active: Activation, owns: impl Fn(u32) -> bool) -> Effects {
         self.report_active(c, active, &owns)
     }
 
-    fn report_active(&mut self, c: ClientId, active: u32, owns: &impl Fn(u32) -> bool) -> Effects {
+    /// Client `c` reported its active frame (`Report`, ADR-0108).
+    pub fn reported(&mut self, c: ClientId, active: Activation, owns: impl Fn(u32) -> bool) -> Effects {
+        let before = self.drawn();
+        let mut fx = self.report_active(c, active, &owns);
+        fx.damage = changed_extents(&before, &self.drawn());
+        fx
+    }
+
+    fn report_active(&mut self, c: ClientId, active: Activation, owns: &impl Fn(u32) -> bool) -> Effects {
         let mut fx = Effects::default();
-        let active = if owns(active) { active } else { 0 };
-        let previous = self.reported.insert(c, active);
-        if previous == Some(active) {
+        let active = if owns(active.frame) { active } else { Activation { frame: 0, ..active } };
+        if self.reported.get(&c).is_some_and(|prev| !active.is_newer_than(prev)) {
             return fx;
         }
-        if active != 0 {
+        self.reported.insert(c, active);
+        if active.frame != 0 {
             if let Some((pc, pf)) = self.active
                 && pc != c {
-                fx.deactivate = Some((pc, pf, active));
+                let seq = self.reported.get(&pc).map_or(0, |a| a.seq);
+                fx.deactivate = Some((pc, pf, active.frame, seq));
             }
-            self.active = Some((c, active));
+            self.active = Some((c, active.frame));
+            // The active window is on top: the client raised it, and a
+            // report may come before its next update says so.
+            self.raise_in_client_order(c, active.frame);
         } else if self.active.is_some_and(|(ac, _)| ac == c) {
             self.active = None;
         }
         fx
+    }
+
+    /// Raise client `c`'s frame `f` over every other client's, as an
+    /// update naming it raised does: `c`'s frames keep their own order in
+    /// the slots they then hold.
+    fn raise_in_client_order(&mut self, c: ClientId, f: u32) {
+        let Some(i) = self.stack.iter().position(|s| s.client == c && s.frame == f) else { return };
+        let order: Vec<u32> = self.stack.iter().filter(|s| s.client == c).map(|s| s.frame).collect();
+        let s = self.stack.remove(i);
+        self.stack.push(s);
+        let slots: Vec<usize> = self.stack.iter().enumerate().filter(|(_, s)| s.client == c).map(|(i, _)| i).collect();
+        for (slot, &frame) in slots.iter().zip(order.iter()) {
+            self.stack[*slot] = Stacked { client: c, frame };
+        }
     }
 
     /// Client `c` is gone: its pictures go, and what it held.
@@ -281,8 +312,17 @@ mod tests {
         Item { frame, pixmap: frame, x, y: 0, parts: vec![Area::new(0, 0, 100, 100)] }
     }
 
+    /// An update whose report of the active frame is the client's first.
     fn upd(active: u32, raised: &[u32], items: Vec<Item>) -> Update {
+        upd_n(act(active, 1), raised, items)
+    }
+
+    fn upd_n(active: Activation, raised: &[u32], items: Vec<Item>) -> Update {
         Update { active, raised: raised.to_vec(), lowered: vec![], items, damage: vec![], overlay: None }
+    }
+
+    fn act(frame: u32, seq: u32) -> Activation {
+        Activation { frame, seq }
     }
 
     /// Client c owns frames with c in their high bits, as slots do.
@@ -331,23 +371,53 @@ mod tests {
     }
 
     #[test]
-    fn activation_moves_on_a_changed_report_only() {
+    fn activation_moves_on_a_newer_report_only() {
         let mut m = DesktopModel::new();
         assert_eq!(m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1)).deactivate, None);
         assert_eq!(m.active(), Some((1, A1)));
         let fx = m.update(2, &upd(B1, &[], vec![item(B1, 200)]), owner(2));
-        assert_eq!(fx.deactivate, Some((1, A1, B1)));
+        assert_eq!(fx.deactivate, Some((1, A1, B1, 1)), "with the number of client 1's report");
         assert_eq!(m.key_target(), Some(2));
-        // Client 1 still reports A1 before it has seen Deactivate: no change.
+        // Client 1 still repeats its report before it has seen Deactivate:
+        // no change.
         assert_eq!(m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1)).deactivate, None);
         assert_eq!(m.active(), Some((2, B1)));
-        // Then 0; later a click activates A1 again (a changed report).
-        m.acknowledged(1, 0, owner(1));
-        assert_eq!(m.acknowledged(1, A1, owner(1)).deactivate, Some((2, B1, A1)));
+        // Then 0; later a click activates A1 again (a newer report).
+        m.acknowledged(1, act(0, 2), owner(1));
+        assert_eq!(m.acknowledged(1, act(A1, 3), owner(1)).deactivate, Some((2, B1, A1, 1)));
         assert_eq!(m.key_target(), Some(1));
+        // An older report, overtaken by a newer one, changes nothing.
+        assert_eq!(m.acknowledged(1, act(0, 2), owner(1)).deactivate, None);
+        assert_eq!(m.active(), Some((1, A1)));
         // The active client reporting no active frame leaves none.
-        m.acknowledged(1, 0, owner(1));
+        m.acknowledged(1, act(0, 4), owner(1));
         assert_eq!(m.active(), None);
+    }
+
+    /// ADR-0108: a client that activates the frame it last reported again,
+    /// before it has seen the server's Deactivate, takes activation back
+    /// with a newer report; the Deactivate it then reads names the older
+    /// report, so the client can tell that it is stale.
+    #[test]
+    fn activating_the_same_frame_again_is_a_newer_report() {
+        let mut m = DesktopModel::new();
+        m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1));
+        assert_eq!(m.update(2, &upd(B1, &[], vec![item(B1, 200)]), owner(2)).deactivate, Some((1, A1, B1, 1)));
+        assert_eq!(order(&m), vec![A1, B1]);
+        let fx = m.reported(1, act(A1, 2), owner(1));
+        assert_eq!(fx.deactivate, Some((2, B1, A1, 1)));
+        assert_eq!(m.active(), Some((1, A1)));
+        assert_eq!(order(&m), vec![B1, A1], "the active frame goes on top");
+        assert!(!fx.damage.is_empty(), "its picture moved up");
+        // Client 2 repeats its report: still client 1's.
+        assert_eq!(m.update(2, &upd(B1, &[], vec![item(B1, 200)]), owner(2)).deactivate, None);
+        assert_eq!(m.active(), Some((1, A1)));
+        // Report numbers wrap around.
+        m.reported(2, act(B1, 0x7FFF_FFFF), owner(2));
+        assert_eq!(m.active(), Some((2, B1)));
+        m.reported(2, act(B1, 0xFFFF_FFFE), owner(2));
+        m.reported(2, act(0, 0), owner(2));
+        assert_eq!(m.active(), None, "0 comes after 0xFFFF_FFFE");
     }
 
     #[test]
@@ -388,7 +458,7 @@ mod tests {
         u.overlay = Some(Item { frame: 0, pixmap: 9, x: 300, y: 300, parts: vec![Area::new(0, 0, 10, 10)] });
         m.update(2, &u, owner(2));
         assert_eq!(m.route_pointer(10, 10, None, None), Some(2));
-        m.acknowledged(1, 0, owner(1));
+        m.acknowledged(1, act(0, 2), owner(1));
         assert_eq!(m.key_target(), Some(2));
         assert_eq!(order(&m).last(), Some(&0), "drawn last");
         m.update(2, &upd(B1, &[], vec![item(B1, 50)]), owner(2));

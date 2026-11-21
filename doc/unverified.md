@@ -181,7 +181,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - an inclusive target in `GpiWCBitBlt` / `GpiDrawBits`;
   - image fonts ignoring angle and shear under `CM_MODE1`;
   - whether `WinDrawText` / `WinFillRect` follow the transforms.
-- **Desktop server**: the handling of a stalled client (later fix packs are said to time out).
+- **Desktop server**: the handling of a stalled client (later fix packs are said to time out). Activation reports (ADR-0108): which activations are claims (`WinSetActiveWindow`, a switch, a click, `SWP_ACTIVATE`, the VIO window again), a click on the active frame counted as one, a round trip to the server after an API call that changed the active frame.
 
 ## Kernel and processes
 

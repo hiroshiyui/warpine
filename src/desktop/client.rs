@@ -56,6 +56,15 @@ pub trait Responder: Send + Sync {
     /// program: the reply, or `None` when it is given later through
     /// [`DesktopLink::answer`] (a sent message, run by the window's thread).
     fn answer(&self, id: u64, hwnd: u32, call: &WinCall) -> Option<WinReply>;
+
+    /// Take the server's word on the session's activation (`Deactivate`,
+    /// `Active`) at once, in the order it came in with the answers to this
+    /// program's calls (ADR-0108): a program whose call activated another
+    /// program's window is no longer active when the call returns. False
+    /// when not taken here: the message then waits in the inbox.
+    fn take_activation(&self, _msg: &ServerMsg) -> bool {
+        false
+    }
 }
 
 /// Called when the answer to a call arrives (or the link is lost).
@@ -203,6 +212,12 @@ impl DesktopLink {
                             conn.shutdown();
                         }
                         continue;
+                    }
+                    Some(m @ (ServerMsg::Deactivate { .. } | ServerMsg::Active { .. })) => {
+                        let r = responder.lock_or_recover().clone();
+                        if !r.is_some_and(|r| r.take_activation(&m)) {
+                            inbox.lock_or_recover().push_back(m);
+                        }
                     }
                     Some(m) => inbox.lock_or_recover().push_back(m),
                     None => {
@@ -452,6 +467,53 @@ mod tests {
         assert!(started.elapsed() < CALL_TIMEOUT, "a lost link ends the wait at once");
         t.join().unwrap();
         assert!(link.calls.0.lock().unwrap().waiting.is_empty());
+    }
+
+    /// Takes activation messages, recording them.
+    struct Activations(Mutex<Vec<ServerMsg>>);
+
+    impl Responder for Activations {
+        fn answer(&self, _id: u64, _hwnd: u32, _call: &WinCall) -> Option<WinReply> {
+            Some(WinReply::Failed)
+        }
+        fn take_activation(&self, msg: &ServerMsg) -> bool {
+            self.0.lock().unwrap().push(msg.clone());
+            true
+        }
+    }
+
+    /// ADR-0108: Deactivate and Active, sent before the answer to a call,
+    /// are taken by the time the call returns; without a responder taking
+    /// them they wait in the inbox.
+    #[test]
+    fn activation_is_taken_before_the_answer_after_it() {
+        let (client, server) = Conn::pair().unwrap();
+        let t = std::thread::spawn(move || {
+            let _ = server.recv().unwrap(); // Hello
+            server.send(&ServerMsg::Welcome { version: PROTOCOL_VERSION, slot: 0, width: 1, height: 1 }.encode(),
+                        None).unwrap();
+            for _ in 0..2 {
+                let (p, _) = server.recv().unwrap().unwrap();
+                let Ok(ClientMsg::Call { id, call: WinCall::Activate, .. }) = ClientMsg::decode(&p) else { panic!("{p:?}") };
+                server.send(&ServerMsg::Deactivate { frame: 0x10_1000, new_active: 0x20_1000, seq: 3 }.encode(), None)
+                    .unwrap();
+                server.send(&ServerMsg::Active { frame: 0x20_1000 }.encode(), None).unwrap();
+                server.send(&ServerMsg::Answered { id, reply: WinReply::Value(1) }.encode(), None).unwrap();
+            }
+            server
+        });
+        let link = DesktopLink::handshake(client).unwrap();
+        let taken = Arc::new(Activations(Mutex::new(Vec::new())));
+        link.set_responder(taken.clone());
+        assert_eq!(link.call(0x20_1000, WinCall::Activate), Some(WinReply::Value(1)));
+        assert_eq!(*taken.0.lock().unwrap(), vec![
+            ServerMsg::Deactivate { frame: 0x10_1000, new_active: 0x20_1000, seq: 3 },
+            ServerMsg::Active { frame: 0x20_1000 }]);
+        assert!(link.take().is_empty(), "not in the inbox as well");
+        link.set_responder(Arc::new(Echo));
+        assert_eq!(link.call(0x20_1000, WinCall::Activate), Some(WinReply::Value(1)));
+        assert_eq!(link.take().len(), 2, "Echo takes none: the GUI thread does");
+        drop(t.join().unwrap());
     }
 
     #[test]

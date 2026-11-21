@@ -330,11 +330,46 @@ impl WindowManager {
     /// The desktop server made `new_active`, another program's frame, the
     /// active window (ADR-0052): `frame`, active here until now, is not —
     /// `WM_ACTIVATE` FALSE to it, and its title bar drawn inactive.
-    pub fn deactivate_frame(&mut self, frame: u32, new_active: u32) {
+    ///
+    /// `seq` is the number of this program's report that made `frame`
+    /// active (ADR-0108). A program that has reported since, or activated
+    /// the frame again and not yet reported it, keeps it: the server takes
+    /// its newer report, so this `Deactivate` is stale.
+    pub fn deactivate_frame(&mut self, frame: u32, new_active: u32, seq: u32) {
         if self.focused_hwnd != frame || frame == 0 { return; }
+        if self.activation_changed() || self.activation_sent.seq != seq { return; }
         self.focused_hwnd = 0;
         self.post_msg(self.frame_msg_target(frame), WM_ACTIVATE, 0, new_active);
         self.mark_dirty(frame);
+    }
+
+    /// Make `frame` the active frame on purpose (`WinSetActiveWindow`, a
+    /// click, a switch, `SWP_ACTIVATE`): the next report of the active
+    /// frame to the desktop server is a new one even when `frame` was
+    /// already active here, since the server may have given activation to
+    /// another program since this program's last report (ADR-0108).
+    pub fn claim_activation(&mut self, frame: u32) {
+        self.focused_hwnd = frame;
+        self.activation_claimed = true;
+    }
+
+    /// Whether the active frame changed, or was claimed, since the last
+    /// report to the desktop server.
+    pub fn activation_changed(&self) -> bool {
+        self.activation_claimed || self.focused_hwnd != self.activation_sent.frame
+    }
+
+    /// The report of the active frame to send the desktop server now: the
+    /// last one again, or, after a change, a new one with the next number.
+    pub fn activation_report(&mut self) -> crate::desktop::proto::Activation {
+        if self.activation_changed() {
+            self.activation_sent = crate::desktop::proto::Activation {
+                frame: self.focused_hwnd,
+                seq: self.activation_sent.seq.wrapping_add(1),
+            };
+            self.activation_claimed = false;
+        }
+        self.activation_sent
     }
 
     /// Hide `frame` (`WM_SYSCOMMAND(SC_HIDE)`, its hide button): the frames
@@ -610,6 +645,40 @@ mod tests {
         // The last frame that is not minimized stays active when minimized.
         assert!(wm.set_minmax(f3, SWP_MINIMIZE));
         assert_eq!(wm.focused_hwnd, f3);
+    }
+
+    /// ADR-0108: reports of the active frame are numbered; a frame
+    /// activated again on purpose is a new report; a Deactivate answering
+    /// an older report, or arriving before a claim was reported, is stale.
+    #[test]
+    fn reports_of_the_active_frame_and_stale_deactivations() {
+        use crate::desktop::proto::Activation;
+        let (mut wm, frame, client) = frame();
+        wm.z_push_top(frame);
+        wm.focused_hwnd = frame;
+        assert!(wm.activation_changed());
+        assert_eq!(wm.activation_report(), Activation { frame, seq: 1 });
+        assert!(!wm.activation_changed());
+        assert_eq!(wm.activation_report(), Activation { frame, seq: 1 }, "repeated, not renumbered");
+        // Activated again before the server's Deactivate (for report 1)
+        // was read: a claim, so that Deactivate is stale.
+        assert!(wm.set_active_window(frame));
+        assert!(wm.activation_changed(), "claimed");
+        wm.deactivate_frame(frame, 0x20_1000, 1);
+        assert_eq!(wm.focused_hwnd, frame, "stale before the claim is reported");
+        assert_eq!(wm.activation_report(), Activation { frame, seq: 2 });
+        wm.deactivate_frame(frame, 0x20_1000, 1);
+        assert_eq!(wm.focused_hwnd, frame, "stale: it answers report 1");
+        assert!(drain(&wm, client).iter().all(|m| m.0 != WM_ACTIVATE || m.1 != 0), "no WM_ACTIVATE FALSE");
+        // The Deactivate for the newest report is taken.
+        wm.deactivate_frame(frame, 0x20_1000, 2);
+        assert_eq!(wm.focused_hwnd, 0);
+        assert_eq!(drain(&wm, client), vec![(WM_ACTIVATE, 0, 0x20_1000)]);
+        assert_eq!(wm.activation_report(), Activation { frame: 0, seq: 3 });
+        // Numbers wrap around.
+        wm.activation_sent.seq = u32::MAX;
+        wm.claim_activation(frame);
+        assert_eq!(wm.activation_report(), Activation { frame, seq: 0 });
     }
 
     #[test]

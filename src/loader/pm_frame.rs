@@ -622,7 +622,7 @@ impl Loader {
 
         // VDR-E1: SWP_ACTIVATE — update focused_hwnd.
         if fl & SWP_ACTIVATE != 0 && wm.frame_to_client.contains_key(&hwnd) {
-            wm.focused_hwnd = hwnd;
+            wm.claim_activation(hwnd);
             wm.z_push_top(hwnd);
         }
 

@@ -256,7 +256,7 @@ impl WindowManager {
         if !is_frame { return false; }
         if let Some(w) = self.get_window_mut(frame) { w.visible = true; }
         let prev = self.focused_hwnd;
-        self.focused_hwnd = frame;
+        self.claim_activation(frame);
         self.z_push_top(frame);
         self.mark_all_dirty();
         if prev != frame {

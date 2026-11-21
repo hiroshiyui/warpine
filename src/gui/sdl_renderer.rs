@@ -904,7 +904,7 @@ impl SdlRenderer {
             let existing = wm.vio_frame;
             if existing != 0 && wm.get_window(existing).is_some() {
                 wm.z_push_top(existing);
-                wm.focused_hwnd = existing;
+                wm.claim_activation(existing);
                 existing
             } else {
                 wm.create_vio_frame(title, cols, rows)
@@ -1441,8 +1441,8 @@ impl SdlRenderer {
                     drop(wm);
                     if !go_on { return false; }
                 }
-                ServerMsg::Deactivate { frame, new_active } => {
-                    shared.window_mgr.lock_or_recover().deactivate_frame(frame, new_active);
+                ServerMsg::Deactivate { frame, new_active, seq } => {
+                    shared.window_mgr.lock_or_recover().deactivate_frame(frame, new_active, seq);
                 }
                 ServerMsg::Resized { width, height } => {
                     self.resize_desktop(width, height);
@@ -1509,7 +1509,7 @@ impl SdlRenderer {
         let mut dirty_frames: HashSet<u32> = HashSet::new();
         let mut chrome_changed: HashSet<u32> = HashSet::new();
         let mut cursor_marks: HashMap<u32, CursorMark> = HashMap::new();
-        let (active, raised, lowered): (u32, Vec<u32>, Vec<u32>);
+        let (active, raised, lowered): (crate::desktop::proto::Activation, Vec<u32>, Vec<u32>);
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
             if wm.dirty.is_empty() && !self.force_full && !self.overlay_changed {
@@ -1528,7 +1528,7 @@ impl SdlRenderer {
                 }
             }
             let focused = wm.focused_hwnd;
-            active = focused;
+            active = wm.activation_report();
             raised = std::mem::take(&mut wm.raised_frames);
             lowered = std::mem::take(&mut wm.lowered_frames);
             let title_colors = TitleColors::of(&wm.sys_colors);
@@ -2581,11 +2581,17 @@ fn activate_on_arrival(shared: &Arc<SharedState>, hwnd: u32) {
     let frame = wm.client_to_frame(hwnd);
     let frame = if wm.is_frame(frame) { frame } else { hwnd };
     let prev = wm.focused_hwnd;
-    if !wm.is_frame(frame) || prev == frame {
+    if !wm.is_frame(frame) {
+        return;
+    }
+    if prev == frame {
+        // Clicked again: the desktop server may have given activation to
+        // another program meanwhile (ADR-0108).
+        wm.claim_activation(frame);
         return;
     }
     wm.pin_pending_input();
-    wm.focused_hwnd = frame;
+    wm.claim_activation(frame);
     wm.z_push_top(frame);
     if prev != 0 && wm.get_window(prev).is_some() {
         wm.post_msg(wm.frame_msg_target(prev), WM_ACTIVATE, 0, frame);

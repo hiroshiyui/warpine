@@ -370,9 +370,11 @@ impl WindowManager {
     }
 
     /// Tell the desktop server that its input event `token` was taken.
-    pub fn ack_input(&self, token: u64) {
+    pub fn ack_input(&mut self, token: u64) {
+        if self.input_ack.is_none() { return; }
+        let active = self.activation_report();
         if let Some(ack) = &self.input_ack {
-            ack(token, self.focused_hwnd);
+            ack(token, active);
         }
     }
 
@@ -756,10 +758,15 @@ impl WindowManager {
     /// active, then TRUE to this one (each to a standard frame's client).
     fn activate_by_click(&mut self, frame: u32) {
         let prev = self.focused_hwnd;
-        if !self.is_frame(frame) || prev == frame {
+        if !self.is_frame(frame) {
             return;
         }
-        self.focused_hwnd = frame;
+        // Activated again: the desktop server may have given activation to
+        // another program meanwhile (ADR-0108).
+        self.claim_activation(frame);
+        if prev == frame {
+            return;
+        }
         self.z_push_top(frame);
         if prev != 0 && self.get_window(prev).is_some() {
             self.post_msg(self.frame_msg_target(prev), WM_ACTIVATE, 0, frame);
@@ -813,7 +820,7 @@ impl Default for QueuedInput {
 
 /// How a process acknowledges the desktop server's input: `(token, active
 /// frame)`. Called with the window manager locked.
-pub type InputAck = std::sync::Arc<dyn Fn(u64, u32) + Send + Sync>;
+pub type InputAck = std::sync::Arc<dyn Fn(u64, crate::desktop::proto::Activation) + Send + Sync>;
 
 /// The system input queue itself (a field of `WindowManager`).
 pub type InputQueue = VecDeque<QueuedInput>;
@@ -821,7 +828,12 @@ pub type InputQueue = VecDeque<QueuedInput>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desktop::proto::Activation;
     use crate::loader::constants::WM_BUTTON2UP;
+
+    fn act(frame: u32, seq: u32) -> Activation {
+        Activation { frame, seq }
+    }
 
     /// Two frames with clients on two queues, and an entry field in the
     /// first client. Returns `(wm, [hmq1, hmq2], [f1, c1, f2, c2], entry)`.
@@ -1225,7 +1237,7 @@ mod tests {
         assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
         assert!(acks.lock().unwrap().is_empty(), "one of its events still waits");
         assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
-        assert_eq!(*acks.lock().unwrap(), vec![(7, f1)]);
+        assert_eq!(*acks.lock().unwrap(), vec![(7, act(f1, 1))], "its first report of the active frame");
         // Peeking does not acknowledge; a dropped event does.
         wm.input_tag = Some(8);
         wm.post_input(InputEvent::Key { mp1: 2, mp2: 0 });
@@ -1236,7 +1248,7 @@ mod tests {
         assert_eq!(acks.lock().unwrap().len(), 1);
         assert!(take(&mut wm, q1).is_some());
         assert_eq!(take(&mut wm, q1), None, "the move over no window is dropped");
-        assert_eq!(acks.lock().unwrap()[1..], [(8, f1), (9, f1)]);
+        assert_eq!(acks.lock().unwrap()[1..], [(8, act(f1, 1)), (9, act(f1, 1))], "repeated");
     }
 
     #[test]

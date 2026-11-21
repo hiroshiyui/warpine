@@ -87,6 +87,10 @@ impl super::Loader {
             }
         };
 
+        // A change of the active frame is the desktop server's before the
+        // program goes on (ADR-0108).
+        self.report_activation();
+
         // Push to ring buffer unconditionally (populated even in release/info builds).
         self.shared.api_ring.lock_or_recover().push(ApiCallRecord {
             ordinal,

@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -90,11 +90,29 @@ pub struct Item {
     pub parts: Vec<Area>,
 }
 
+/// A client's report of its active frame (ADR-0108): the frame (0 if
+/// none) and the report's number. The client numbers its reports in
+/// order, and a frame it activates again on purpose is a new report even
+/// when it was the frame of the last one, so that the server can tell an
+/// old report from a new one and the client a stale `Deactivate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Activation {
+    pub frame: u32,
+    pub seq: u32,
+}
+
+impl Activation {
+    /// Whether this report came after `other` (numbers wrap around).
+    pub fn is_newer_than(&self, other: &Activation) -> bool {
+        (self.seq.wrapping_sub(other.seq) as i32) > 0
+    }
+}
+
 /// What a client shows now.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Update {
-    /// Its active frame, 0 if none.
-    pub active: u32,
+    /// Its active frame.
+    pub active: Activation,
     /// Frames brought to the top since the last update, in that order.
     pub raised: Vec<u32>,
     /// Frames sent to the bottom since the last update, in that order.
@@ -136,6 +154,10 @@ pub enum WinCall {
     Show { show: bool },
     /// `WinSetActiveWindow`.
     Activate,
+    /// To the server: the caller's active frame changed (ADR-0108). Made
+    /// by a program's API thread, which waits for the answer, so that the
+    /// server takes the change before anything the program does next.
+    Report(Activation),
     /// `WinSendMsg`: the window's thread runs its window procedure; the
     /// answer is the procedure's result. Waits for as long as that takes.
     Send { msg: u32, mp1: u32, mp2: u32 },
@@ -287,7 +309,7 @@ pub enum ClientMsg {
     Update(Update),
     /// Input event `token` was taken; `active` is the client's active
     /// frame now.
-    Ack { token: u64, active: u32 },
+    Ack { token: u64, active: Activation },
     Clipboard(String),
     /// Keep the pointer while a button is not held (a drag).
     Capture(bool),
@@ -339,8 +361,9 @@ pub enum ServerMsg {
     /// Handle this input and acknowledge `token` once it is taken.
     Input { token: u64, input: Input },
     /// Frame `frame` is no longer the active window: `new_active`, another
-    /// client's, is.
-    Deactivate { frame: u32, new_active: u32 },
+    /// client's, is. `seq` is the number of the client's report that made
+    /// `frame` active; a client that has reported since ignores it.
+    Deactivate { frame: u32, new_active: u32, seq: u32 },
     Resized { width: u32, height: u32 },
     Clipboard(String),
     /// Send what you show now, then `FlushDone { token }`.
@@ -412,6 +435,10 @@ impl Writer {
         self.u16(parts.len() as u16);
         for p in parts { self.area(p); }
     }
+    fn activation(&mut self, a: &Activation) {
+        self.u32(a.frame);
+        self.u32(a.seq);
+    }
     fn handles(&mut self, hs: &[u32]) {
         self.handles_max(hs, MAX_RAISED);
     }
@@ -438,6 +465,7 @@ impl Writer {
             }
             WinCall::Show { show } => { self.u8(tag::CALL_SHOW); self.bool(*show); }
             WinCall::Activate => self.u8(tag::CALL_ACTIVATE),
+            WinCall::Report(a) => { self.u8(tag::CALL_REPORT); self.activation(a); }
             WinCall::Send { msg, mp1, mp2 } => { self.u8(tag::CALL_SEND); self.u32(*msg); self.u32(*mp1); self.u32(*mp2); }
             WinCall::SetText { text } => { self.u8(tag::CALL_SETTEXT); self.text(text); }
             WinCall::Children => self.u8(tag::CALL_CHILDREN),
@@ -560,6 +588,9 @@ impl<'a> Reader<'a> {
         let parts = (0..n).map(|_| self.area()).collect::<Result<_, _>>()?;
         Ok(Item { frame, pixmap, x, y, parts })
     }
+    fn activation(&mut self) -> Result<Activation, DecodeError> {
+        Ok(Activation { frame: self.u32()?, seq: self.u32()? })
+    }
     fn handles(&mut self) -> Result<Vec<u32>, DecodeError> {
         self.handles_max(MAX_RAISED)
     }
@@ -589,6 +620,7 @@ impl<'a> Reader<'a> {
                                                   cx: self.coord()?, cy: self.coord()?, fl: self.u32()? },
             tag::CALL_SHOW => WinCall::Show { show: self.bool()? },
             tag::CALL_ACTIVATE => WinCall::Activate,
+            tag::CALL_REPORT => WinCall::Report(self.activation()?),
             tag::CALL_SEND => WinCall::Send { msg: self.u32()?, mp1: self.u32()?, mp2: self.u32()? },
             tag::CALL_SETTEXT => WinCall::SetText { text: self.text()? },
             tag::CALL_CHILDREN => WinCall::Children,
@@ -703,6 +735,7 @@ mod tag {
     pub const CALL_CLIENTS: u8 = 12;
     pub const CALL_STACKING: u8 = 13;
     pub const CALL_DDE_TARGETS: u8 = 14;
+    pub const CALL_REPORT: u8 = 15;
     pub const CALL_SWITCH_ADD: u8 = 20;
     pub const CALL_SWITCH_CHANGE: u8 = 21;
     pub const CALL_SWITCH_REMOVE: u8 = 22;
@@ -756,7 +789,7 @@ impl ClientMsg {
             ClientMsg::DropPixmap { id } => { w = Writer::new(tag::DROP_PIXMAP); w.u32(*id); }
             ClientMsg::Update(u) => {
                 w = Writer::new(tag::UPDATE);
-                w.u32(u.active);
+                w.activation(&u.active);
                 w.handles(&u.raised);
                 w.handles(&u.lowered);
                 let items = &u.items[..u.items.len().min(MAX_ITEMS)];
@@ -770,7 +803,7 @@ impl ClientMsg {
                     Some(it) => { w.bool(true); w.item(it); }
                 }
             }
-            ClientMsg::Ack { token, active } => { w = Writer::new(tag::ACK); w.u64(*token); w.u32(*active); }
+            ClientMsg::Ack { token, active } => { w = Writer::new(tag::ACK); w.u64(*token); w.activation(active); }
             ClientMsg::Clipboard(s) => { w = Writer::new(tag::CLIPBOARD); w.text(s); }
             ClientMsg::Capture(on) => { w = Writer::new(tag::CAPTURE); w.bool(*on); }
             ClientMsg::Pointer(p) => {
@@ -802,7 +835,7 @@ impl ClientMsg {
             tag::NEW_PIXMAP => ClientMsg::NewPixmap { id: r.u32()?, width: r.u32()?, height: r.u32()? },
             tag::DROP_PIXMAP => ClientMsg::DropPixmap { id: r.u32()? },
             tag::UPDATE => {
-                let active = r.u32()?;
+                let active = r.activation()?;
                 let raised = r.handles()?;
                 let lowered = r.handles()?;
                 let n = r.count(MAX_ITEMS)?;
@@ -812,7 +845,7 @@ impl ClientMsg {
                 let overlay = if r.bool()? { Some(r.item()?) } else { None };
                 ClientMsg::Update(Update { active, raised, lowered, items, damage, overlay })
             }
-            tag::ACK => ClientMsg::Ack { token: r.u64()?, active: r.u32()? },
+            tag::ACK => ClientMsg::Ack { token: r.u64()?, active: r.activation()? },
             tag::CLIPBOARD => ClientMsg::Clipboard(r.text()?),
             tag::CAPTURE => ClientMsg::Capture(r.bool()?),
             tag::POINTER => ClientMsg::Pointer(match r.u8()? {
@@ -873,8 +906,8 @@ impl ServerMsg {
                     }
                 }
             }
-            ServerMsg::Deactivate { frame, new_active } => {
-                w = Writer::new(tag::DEACTIVATE); w.u32(*frame); w.u32(*new_active);
+            ServerMsg::Deactivate { frame, new_active, seq } => {
+                w = Writer::new(tag::DEACTIVATE); w.u32(*frame); w.u32(*new_active); w.u32(*seq);
             }
             ServerMsg::Resized { width, height } => { w = Writer::new(tag::RESIZED); w.u32(*width); w.u32(*height); }
             ServerMsg::Clipboard(s) => { w = Writer::new(tag::S_CLIPBOARD); w.text(s); }
@@ -917,7 +950,7 @@ impl ServerMsg {
                 };
                 ServerMsg::Input { token, input }
             }
-            tag::DEACTIVATE => ServerMsg::Deactivate { frame: r.u32()?, new_active: r.u32()? },
+            tag::DEACTIVATE => ServerMsg::Deactivate { frame: r.u32()?, new_active: r.u32()?, seq: r.u32()? },
             tag::RESIZED => ServerMsg::Resized { width: r.u32()?, height: r.u32()? },
             tag::S_CLIPBOARD => ServerMsg::Clipboard(r.text()?),
             tag::FLUSH => ServerMsg::Flush { token: r.u64()? },
@@ -948,11 +981,11 @@ mod tests {
             ClientMsg::NewPixmap { id: 7, width: 640, height: 480 },
             ClientMsg::DropPixmap { id: 7 },
             ClientMsg::Update(Update {
-                active: 0x10_1000, raised: vec![0x10_1000], lowered: vec![0x10_1001], items: vec![item.clone()],
+                active: Activation { frame: 0x10_1000, seq: 7 }, raised: vec![0x10_1000], lowered: vec![0x10_1001], items: vec![item.clone()],
                 damage: vec![(3, Area::new(1, 2, 3, 4))], overlay: Some(item),
             }),
             ClientMsg::Update(Update::default()),
-            ClientMsg::Ack { token: u64::MAX, active: 0 },
+            ClientMsg::Ack { token: u64::MAX, active: Activation { frame: 0, seq: u32::MAX } },
             ClientMsg::Clipboard("Grüße 日本".into()),
             ClientMsg::Capture(true),
             ClientMsg::Pointer(Pointer::Hidden),
@@ -968,6 +1001,7 @@ mod tests {
             ClientMsg::Call { id: 5, hwnd: 0x20_1000, call: WinCall::SetPos { behind: 3, x: -1, y: 2, cx: 30, cy: 40,
                                                                              fl: 0x8B } },
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Activate },
+            ClientMsg::Call { id: 6, hwnd: SERVER_ADDRESS, call: WinCall::Report(Activation { frame: 0x20_1000, seq: 3 }) },
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Show { show: false } },
             ClientMsg::Call { id: 7, hwnd: 0x20_1000, call: WinCall::Send { msg: 0x1002, mp1: 4, mp2: 5 } },
             ClientMsg::Call { id: 8, hwnd: 0x20_1000, call: WinCall::SetText { text: "Größe".into() } },
@@ -1016,7 +1050,7 @@ mod tests {
             ServerMsg::Input { token: 4, input: Input::Text("é".into()) },
             ServerMsg::Input { token: 5, input: Input::Wheel { x: 10, y: 20, steps: -3 } },
             ServerMsg::Input { token: 6, input: Input::Drop { x: 3, y: 4, paths: vec!["/home/u/a b.txt".into(), "ü".into()] } },
-            ServerMsg::Deactivate { frame: 5, new_active: 6 },
+            ServerMsg::Deactivate { frame: 5, new_active: 6, seq: 7 },
             ServerMsg::Resized { width: 800, height: 600 },
             ServerMsg::Clipboard(String::new()),
             ServerMsg::Flush { token: 8 },
@@ -1064,7 +1098,7 @@ mod tests {
         assert_eq!(ServerMsg::decode(&[1, 0, 1, 0, 0, 0]), Err(DecodeError::UnknownTag(1)));
         // A count over its limit.
         let mut p = vec![4, 0]; // UPDATE
-        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&[0; 8]); // its activation
         p.extend_from_slice(&((MAX_RAISED + 1) as u16).to_le_bytes());
         assert_eq!(ClientMsg::decode(&p), Err(DecodeError::TooMany));
         // Text that is not UTF-8, and text over its limit.
@@ -1125,7 +1159,7 @@ mod tests {
     #[test]
     fn the_largest_update_fits_in_a_packet() {
         let item = Item { frame: 1, pixmap: 1, x: 0, y: 0, parts: vec![Area::default(); MAX_PARTS] };
-        let u = Update { active: 1, raised: vec![1; MAX_RAISED], lowered: vec![1; MAX_RAISED],
+        let u = Update { active: Activation { frame: 1, seq: 1 }, raised: vec![1; MAX_RAISED], lowered: vec![1; MAX_RAISED],
                          items: vec![item.clone(); MAX_ITEMS],
                          damage: vec![(1, Area::default()); MAX_DAMAGE], overlay: Some(item) };
         assert!(ClientMsg::Update(u).encode().len() <= MAX_MESSAGE);

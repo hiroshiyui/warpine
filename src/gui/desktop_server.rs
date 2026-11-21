@@ -494,6 +494,12 @@ impl Server {
             ClientMsg::Call { id, hwnd, call } if hwnd == SERVER_ADDRESS => {
                 // About the session: answered here (calls.rs).
                 let reply = match call {
+                    // The caller's active frame changed (ADR-0108).
+                    WinCall::Report(active) => {
+                        let fx = self.model.reported(slot, active, owns);
+                        self.apply(fx);
+                        WinReply::Value(self.model.active().map_or(0, |(_, f)| f))
+                    }
                     WinCall::Clients | WinCall::Stacking =>
                         server_answer(&call, self.clients.keys().copied(), self.model.stacking()),
                     // PM coordinates (bottom-left origin) to the desktop's.
@@ -536,9 +542,9 @@ impl Server {
     }
 
     fn apply(&mut self, fx: Effects) {
-        if let Some((client, frame, new_active)) = fx.deactivate
+        if let Some((client, frame, new_active, seq)) = fx.deactivate
             && let Some(c) = self.clients.get(&client) {
-            c.send(&ServerMsg::Deactivate { frame, new_active });
+            c.send(&ServerMsg::Deactivate { frame, new_active, seq });
         }
         self.damage.extend(fx.damage);
         let active = self.model.active().map_or(0, |(_, f)| f);

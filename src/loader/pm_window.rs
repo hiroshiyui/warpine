@@ -148,7 +148,7 @@ impl WindowManager {
             return false;
         }
         let prev = self.focused_hwnd;
-        self.focused_hwnd = frame;
+        self.claim_activation(frame);
         self.z_push_top(frame);
         if prev != frame {
             if prev != 0 {

@@ -86,7 +86,7 @@ use super::pm_types::{handle_in_slot, WindowManager};
 use super::pm_win::bound_window_geometry;
 use super::{ApiResult, Loader};
 use crate::desktop::client::{CallState, CallWaker, Responder};
-use crate::desktop::proto::{slot_address, WinCall, WinReply, WindowInfo, MAX_COORD, MAX_HANDLES, SERVER_ADDRESS};
+use crate::desktop::proto::{slot_address, ServerMsg, WinCall, WinReply, WindowInfo, MAX_COORD, MAX_HANDLES, SERVER_ADDRESS};
 
 // The SWP of WM_MINMAXFRAME is passed in a chained call's block.
 const _: () = assert!(SWP_STRUCT_SIZE <= CHAIN_BLOCK_BYTES);
@@ -803,6 +803,24 @@ impl Loader {
             && matches!(link.call(hwnd, WinCall::Activate), Some(WinReply::Value(_)))
     }
 
+    /// Report a change of this program's active frame to the desktop
+    /// server and wait until it took it (ADR-0108): after every API call,
+    /// so that the server has it before the program does anything else (a
+    /// program that activates a frame and then tells another program so
+    /// through shared memory must not be overtaken by that program's
+    /// activation). The server answers with the session's active frame.
+    pub(crate) fn report_activation(&self) {
+        let Some(link) = self.shared.desktop_link.get() else { return };
+        let report = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            if !wm.activation_changed() { return; }
+            wm.activation_report()
+        };
+        if let Some(WinReply::Value(active)) = link.call(SERVER_ADDRESS, WinCall::Report(report)) {
+            self.shared.window_mgr.lock_or_recover().session_active = active;
+        }
+    }
+
     /// The slots of the other programs on the session's desktop (none
     /// without a desktop server).
     pub(super) fn other_programs(&self) -> Vec<u32> {
@@ -849,6 +867,18 @@ impl Loader {
 }
 
 impl Responder for Loader {
+    /// The server's word on activation, taken by the link's reader thread
+    /// in order with the answers to this program's calls (ADR-0108).
+    fn take_activation(&self, msg: &ServerMsg) -> bool {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        match *msg {
+            ServerMsg::Deactivate { frame, new_active, seq } => wm.deactivate_frame(frame, new_active, seq),
+            ServerMsg::Active { frame } => wm.session_active = frame,
+            _ => return false,
+        }
+        true
+    }
+
     /// A call another program makes on window `hwnd` of this one: only on
     /// windows of this program's slot that exist. A sent message is queued
     /// for the window's thread, which answers it later.
@@ -930,7 +960,19 @@ impl Loader {
                 self.shared.window_mgr.lock_or_recover().show_window(hwnd, show);
                 WinReply::Value(1)
             }
-            WinCall::Activate => value(self.shared.window_mgr.lock_or_recover().set_active_window(hwnd)),
+            WinCall::Activate => {
+                let (done, report) = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let done = wm.set_active_window(hwnd);
+                    (done, wm.activation_changed().then(|| wm.activation_report()))
+                };
+                // Reported before the answer goes back, on the same link, so
+                // the server takes it before the caller goes on (ADR-0108).
+                if let (Some(report), Some(link)) = (report, self.shared.desktop_link.get()) {
+                    link.notify(SERVER_ADDRESS, WinCall::Report(report));
+                }
+                value(done)
+            }
             WinCall::SetText { ref text } => {
                 self.set_window_text(hwnd, text.clone());
                 WinReply::Value(1)

@@ -132,7 +132,8 @@ disassembly.
   - the server composites in software only;
   - a crashed server ends the session's PM programs instead of their reconnecting;
   - a program that stops reading input delays everyone for `INPUT_STALL` (5 s);
-  - pointers larger than 128 × 128 show as the arrow.
+  - pointers larger than 128 × 128 show as the arrow;
+  - the clipboard between programs is asynchronous: a program's text reaches the others through its GUI thread and the server's broadcast, so another program told by other means that it changed can still read the old text (the race ADR-0108 fixed for activation).
 - [ ] **Codepages**: decide whether `WinSetCp(0)` means "the process codepage" (it is rejected now).
 
 ### Graphics
