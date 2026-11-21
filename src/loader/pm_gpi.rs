@@ -137,7 +137,10 @@ const FM_OFF_LASTCHAR:       u32 = 132; // SHORT
 const FM_OFF_DEFAULTCHAR:    u32 = 134; // SHORT
 const FM_OFF_BREAKCHAR:      u32 = 136; // SHORT
 const FM_OFF_NOMINALPOINTSIZE: u32 = 138; // SHORT
-const FM_SIZE:               u32 = 208; // total struct size
+/// The whole structure: after sFamilyClass and lMatch (204) come
+/// FamilyNameAtom, FaceNameAtom and a 12-byte PANOSE, which Warpine leaves
+/// zero (no atoms, no PANOSE classification).
+const FM_SIZE:               u32 = 228;
 
 impl super::Loader {
     pub(crate) fn handle_pmgpi_call(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {

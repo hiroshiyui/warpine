@@ -10,7 +10,9 @@
  *   - an exception on thread 1 reaches A only, one on thread 2 B only,
  *   - XCPT_CONTINUE_EXECUTION returns from DosRaiseException with NO_ERROR
  *     and the caller's registers intact,
- *   - DosUnsetExceptionHandler on thread 2 leaves thread 1's chain alone.
+ *   - DosUnsetExceptionHandler on thread 2 leaves thread 1's chain alone,
+ *   - the handler's CONTEXTRECORD has the raising thread's CS, SS and a
+ *     stack pointer on its stack, at the offsets <bsexcpt.h> gives them.
  *
  * Each check is written to stdout:
  *
@@ -39,6 +41,17 @@ static volatile ULONG b_prev;          /* B's prev_structure after registering *
 static volatile ULONG b_raise_rc;
 static volatile ULONG b_kept;          /* a value thread 2 keeps across the raise */
 static HEV ready, go;
+static volatile ULONG a_cs, a_ss, a_esp, a_flags;   /* from A's first CONTEXTRECORD */
+
+#ifdef __WATCOMC__
+static ULONG read_cs( void );
+#pragma aux read_cs = "xor eax, eax" "mov ax, cs" value [eax];
+static ULONG read_ss( void );
+#pragma aux read_ss = "xor eax, eax" "mov ax, ss" value [eax];
+#else
+static ULONG read_cs( void ) { ULONG v = 0; __asm__ volatile( "mov %%cs, %w0" : "+r"( v ) ); return v; }
+static ULONG read_ss( void ) { ULONG v = 0; __asm__ volatile( "mov %%ss, %w0" : "+r"( v ) ); return v; }
+#endif
 
 /* ---------- output (no C library stdio) ---------- */
 
@@ -92,7 +105,12 @@ static ULONG APIENTRY handler_a( PEXCEPTIONREPORTRECORD rep, PEXCEPTIONREGISTRAT
                                  PCONTEXTRECORD ctx, PVOID unused )
 {
     if( rep->ExceptionNum == TEST_XCPT ) {
-        hits_a++;
+        if( hits_a++ == 0 ) {
+            a_cs = ctx->ctx_SegCs;
+            a_ss = ctx->ctx_SegSs;
+            a_esp = ctx->ctx_RegEsp;
+            a_flags = ctx->ContextFlags;
+        }
         return XCPT_CONTINUE_EXECUTION;
     }
     return XCPT_CONTINUE_SEARCH;
@@ -161,6 +179,11 @@ int main( void )
     check( "raise on thread 1 returns NO_ERROR", rc, NO_ERROR );
     check( "A handled thread 1's exception", hits_a, 1 );
     check( "thread 1's local kept across the raise", kept == 0x5A5A1234UL, TRUE );
+    check( "the context has the integer, control and segment registers", a_flags & 7, 7 );
+    check( "the context's CS is the program's", a_cs, read_cs() );
+    check( "the context's SS is the program's", a_ss, read_ss() );
+    check( "the context's ESP is on thread 1's stack",
+           a_esp != 0 && a_esp < (ULONG)&kept && (ULONG)&kept - a_esp < 0x10000, TRUE );
 
     check( "DosCreateThread", DosCreateThread( &tid, second, 0x7777, 0, STACK_SIZE ), NO_ERROR );
     DosWaitEventSem( ready, SEM_INDEFINITE_WAIT );

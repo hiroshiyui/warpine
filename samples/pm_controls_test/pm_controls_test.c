@@ -51,6 +51,7 @@ static void check(const char *lbl, int ok, int *pass, int *fail)
 }
 
 /* ---------- control IDs and timer ---------- */
+#define TITLE        "PM Built-in Controls Test"
 #define ID_STATIC    101
 #define ID_BUTTON    102
 #define ID_ENTRY     103
@@ -200,7 +201,7 @@ MRESULT EXPENTRY ClientWndProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
         GpiSetColor(hps, CLR_BLACK);
         pt.x = 10;
         pt.y = rcl.yTop - 20;
-        GpiCharStringAt(hps, &pt, 30, "PM Built-in Controls Test");
+        GpiCharStringAt(hps, &pt, sizeof(TITLE) - 1, TITLE);
 
         WinEndPaint(hps);
         return 0;

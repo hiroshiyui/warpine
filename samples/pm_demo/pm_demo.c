@@ -55,7 +55,7 @@ static void draw_scene( HWND hwnd, HPS hps )
     GpiSetColor( hps, CLR_BLACK );
     pt.x = 20;
     pt.y = rcl.yTop - 30;
-    GpiCharStringAt( hps, &pt, 28, "Warpine PM Demo - Phase 3" );
+    GpiCharStringAt( hps, &pt, 25, "Warpine PM Demo - Phase 3" );
 
     /* Draw a filled red box */
     GpiSetColor( hps, CLR_RED );
@@ -142,7 +142,7 @@ static void draw_scene( HWND hwnd, HPS hps )
     GpiSetColor( hps, CLR_BLACK );
     pt.x = 40;
     pt.y = rcl.yTop - 320;
-    GpiCharStringAt( hps, &pt, 37, "DRO_OUTLINEFILL box with text inside" );
+    GpiCharStringAt( hps, &pt, 36, "DRO_OUTLINEFILL box with text inside" );
 
     /* Yellow filled box at bottom */
     GpiSetColor( hps, CLR_YELLOW );

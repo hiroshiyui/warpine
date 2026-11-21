@@ -192,7 +192,25 @@ impl WarpineTarget {
         self.cached_regs  = info.regs.clone();
         self.cached_sregs = info.sregs.clone();
     }
+
+    /// The vCPU's stop at the entry point, which it reports before the
+    /// client attaches: its registers are what the client reads first, and
+    /// taking it keeps the first `continue` from returning it as a new stop.
+    fn take_initial_stop(&mut self, wait: Duration) {
+        let guard = self.gdb_state.stopped.lock().unwrap();
+        let (mut stopped, _) = self.gdb_state.stop_cond
+            .wait_timeout_while(guard, wait, |s| s.is_none())
+            .unwrap();
+        if let Some(info) = stopped.take() {
+            drop(stopped);
+            self.update_cache(&info);
+        }
+    }
 }
+
+/// How long the stub waits for the vCPU to stop at the entry point after
+/// a client attaches.
+const INITIAL_STOP_WAIT_SECS: u64 = 5;
 
 // ── Target trait ─────────────────────────────────────────────────────────────
 
@@ -454,6 +472,7 @@ pub fn launch_gdb_stub(shared: Arc<super::SharedState>, port: u16) {
         let _ = stream.set_nodelay(true);
 
         let mut target = WarpineTarget::new(gdb_state, shared);
+        target.take_initial_stop(Duration::from_secs(INITIAL_STOP_WAIT_SECS));
         let gdb = GdbStub::new(stream);
 
         match gdb.run_blocking::<GdbBlockingEventLoop>(&mut target) {

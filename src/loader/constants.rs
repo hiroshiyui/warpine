@@ -1797,27 +1797,33 @@ pub const CONTEXT_INTEGER:  u32 = 0x0002; // EAX, EBX, ECX, EDX, ESI, EDI, EBP
 pub const CONTEXT_SEGMENTS: u32 = 0x0004; // DS, ES, FS, GS
 pub const CONTEXT_FULL: u32 = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
 
-// CONTEXTRECORD guest layout — byte offsets from record base
-// Offsets 0x04–0x8B are FPU env/save area (zeroed; not emulated here).
+// CONTEXTRECORD guest layout — byte offsets from record base, as the
+// Control Program Reference's <bsexcpt.h> declares it: the flags, the
+// floating-point environment (ctx_env, 7 ULONGs) and register stack
+// (ctx_stack, 8 packed 10-byte FPREGs), then the segment and integer
+// registers. The floating-point area is zeroed (not emulated). Until
+// 2026-11-21 Warpine had 0x88 bytes of floating-point area, which put
+// every register 0x1C bytes past where programs read it (ADR-0101).
 pub const CTX_FLAGS:  u32 = 0x00;
-pub const CTX_GS:     u32 = 0x8C;
-pub const CTX_FS:     u32 = 0x90;
-pub const CTX_ES:     u32 = 0x94;
-pub const CTX_DS:     u32 = 0x98;
-pub const CTX_EDI:    u32 = 0x9C;
-pub const CTX_ESI:    u32 = 0xA0;
-pub const CTX_EAX:    u32 = 0xA4;
-pub const CTX_EBX:    u32 = 0xA8;
-pub const CTX_ECX:    u32 = 0xAC;
-pub const CTX_EDX:    u32 = 0xB0;
-pub const CTX_EBP:    u32 = 0xB4;
-pub const CTX_EIP:    u32 = 0xB8;
-pub const CTX_CS:     u32 = 0xBC;
-pub const CTX_EFLAGS: u32 = 0xC0;
-pub const CTX_ESP:    u32 = 0xC4;
-pub const CTX_SS:     u32 = 0xC8;
-/// Total size of the CONTEXTRECORD guest structure (0xCC bytes).
-pub const CONTEXT_RECORD_SIZE: u32 = 0xCC;
+pub const CTX_FPU_ENV: u32 = 0x04;
+pub const CTX_GS:     u32 = 0x70;
+pub const CTX_FS:     u32 = 0x74;
+pub const CTX_ES:     u32 = 0x78;
+pub const CTX_DS:     u32 = 0x7C;
+pub const CTX_EDI:    u32 = 0x80;
+pub const CTX_ESI:    u32 = 0x84;
+pub const CTX_EAX:    u32 = 0x88;
+pub const CTX_EBX:    u32 = 0x8C;
+pub const CTX_ECX:    u32 = 0x90;
+pub const CTX_EDX:    u32 = 0x94;
+pub const CTX_EBP:    u32 = 0x98;
+pub const CTX_EIP:    u32 = 0x9C;
+pub const CTX_CS:     u32 = 0xA0;
+pub const CTX_EFLAGS: u32 = 0xA4;
+pub const CTX_ESP:    u32 = 0xA8;
+pub const CTX_SS:     u32 = 0xAC;
+/// Total size of the CONTEXTRECORD guest structure (0xB0 bytes).
+pub const CONTEXT_RECORD_SIZE: u32 = 0xB0;
 
 // EXCEPTIONREPORTRECORD guest layout — byte offsets
 pub const ERR_NUM:    u32 = 0x00; // ExceptionNum (XCPT_* code)

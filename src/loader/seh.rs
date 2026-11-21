@@ -74,8 +74,8 @@ impl super::Loader {
 
     /// Write a `CONTEXTRECORD` into guest memory at `addr` from a `FaultContext`.
     pub(crate) fn write_context_record(&self, addr: u32, ctx: &FaultContext) {
-        // Zero the FPU env/save area (offsets 0x04–0x8B).
-        for off in (0x04..0x8Cu32).step_by(4) {
+        // Zero the floating-point environment and register stack.
+        for off in (CTX_FPU_ENV..CTX_GS).step_by(4) {
             self.guest_write::<u32>(addr + off, 0).unwrap();
         }
         self.guest_write::<u32>(addr + CTX_FLAGS,  CONTEXT_FULL).unwrap();
