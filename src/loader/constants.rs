@@ -3,6 +3,11 @@
 pub const MAGIC_API_BASE: u64 = 0x01000000;
 pub const EXIT_TRAP_ADDR: u32 = 0x010003FF;
 pub const CALLBACK_RET_TRAP: u32 = 0x010003FE;
+/// The return address of an exception handler Warpine calls (dispatch
+/// and unwind, ADR-0110): a callback return like `CALLBACK_RET_TRAP`, but
+/// one an unwinder can recognise, so that it steps from the handler into
+/// the context it was called for (its CONTEXTRECORD argument).
+pub const XCPT_RET_TRAP: u32 = 0x010003FD;
 pub const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
 /// Size of the guest's memory (guest physical = linear; no paging).
 pub const GUEST_MEM_SIZE: u32 = 0x1000_0000; // 256 MB
@@ -124,6 +129,13 @@ pub const SYSTEM_AREA_SIZE: u32 = 0x0004_0000;
 /// Where an EXE's objects may lie: from 64 KB (page 0 and OS/2's low
 /// 64 KB stay out) up to the API thunks.
 pub const EXE_AREA_START: u32 = 0x0001_0000;
+/// The FS window (ADR-0110): right after the system area, a page each
+/// 32-bit thread's tables map to its own TIB's page. Selector 0x18 has
+/// this base, so a program that reloads FS (Open Watcom's `longjmp`
+/// does) still reaches its TIB, as with OS/2's per-thread TIB selector.
+pub const FS_WINDOW: u32 = SYSTEM_AREA_BASE + SYSTEM_AREA_SIZE;
+const _: () = assert!(FS_WINDOW >> 22 == TLM_PAGE >> 22 && FS_WINDOW.is_multiple_of(PAGE_SIZE)
+                      && FS_WINDOW + PAGE_SIZE <= DYNAMIC_ALLOC_BASE);
 pub const EXE_AREA_END: u32 = MAGIC_API_BASE as u32;
 
 // GDT tiling: 16-bit segment descriptors covering the guest address space
@@ -1798,6 +1810,18 @@ pub const EH_NONCONTINUABLE: u32 = 0x0000_0001;
 pub const EH_UNWINDING:      u32 = 0x0000_0002;
 pub const EH_EXIT_UNWIND:    u32 = 0x0000_0004;
 pub const EH_NESTED_CALL:    u32 = 0x0000_0010;
+
+// XCPT_ACCESS_VIOLATION's ExceptionInfo[0]: how the address was accessed.
+pub const XCPT_UNKNOWN_ACCESS: u32 = 0x0000_0000;
+pub const XCPT_READ_ACCESS:    u32 = 0x0000_0001;
+pub const XCPT_WRITE_ACCESS:   u32 = 0x0000_0002;
+/// The page-fault error code's write bit (Intel SDM vol. 3, 4.7).
+pub const PF_ERROR_WRITE: u32 = 1 << 1;
+/// `DosUnwindException`'s own report record, and the target that means
+/// the whole chain (`phandler` NULL).
+pub const XCPT_UNWIND: u32 = 0xC000_0026;
+pub const XCPT_INVALID_UNWIND_TARGET: u32 = 0xC000_0028;
+pub const UNWIND_ALL: u32 = 0;
 
 // CONTEXTRECORD.ContextFlags bits
 pub const CONTEXT_CONTROL:  u32 = 0x0001; // CS, EIP, EFLAGS, SS, ESP

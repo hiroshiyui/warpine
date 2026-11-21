@@ -198,8 +198,10 @@ impl super::Loader {
         self.guest_write::<u64>(GDT_BASE + 8, Self::make_gdt_entry(0, 0xFFFFF, 0x9B, 0xCF)).unwrap();
         // Entry 2 (selector 0x10): 32-bit data — base=0, limit=4GB, read/write
         self.guest_write::<u64>(GDT_BASE + 16, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
-        // Entry 3 (selector 0x18): FS data — base set via sregs
-        self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
+        // Entry 3 (selector 0x18): FS data — the FS window, which each
+        // thread's tables map to its own TIB (ADR-0110): reloading FS keeps
+        // the thread's TIB, as OS/2's per-thread TIB selector does.
+        self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(FS_WINDOW, PAGE_SIZE - 1, 0x93, 0x40)).unwrap();
         // Entry 4 (selector 0x20): 16-bit data alias — base=0, limit=0xFFFF, byte granular.
         // Used as SS by 16-bit thunk code when it loads a 16-bit stack segment.
         self.guest_write::<u64>(GDT_BASE + 32, Self::make_gdt_entry(0, 0xFFFF, 0x93, 0x00)).unwrap();

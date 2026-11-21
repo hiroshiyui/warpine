@@ -3,16 +3,19 @@
 //! Guest paging for thread-local memory (ADR-0088).
 //!
 //! 32-bit guest threads run with 32-bit paging (`CR0.PG`, `CR4.PSE`):
-//! - each thread has its own block of three pages: a page directory, one
-//!   page table and its thread-local page;
+//! - each thread has its own block of four pages: a page directory, two
+//!   page tables and its thread-local page;
 //! - the directory maps the whole 4 GB linear space one-to-one with 4 MB
 //!   pages, except the 4 MB holding `TLM_PAGE` (in the system area,
-//!   ADR-0094), which go through the page table;
-//! - the page table maps those 4 MB one-to-one too, except `TLM_PAGE`,
-//!   which leads to the thread's own page.
+//!   ADR-0094) and the first 4 MB, which go through the page tables;
+//! - the TLM table maps its 4 MB one-to-one too, except `TLM_PAGE`, which
+//!   leads to the thread's own page;
+//! - the low table maps the first 4 MB one-to-one but for the low 64 KB,
+//!   which are not present, as on OS/2: a null pointer, or one just past
+//!   it, traps as an access violation (ADR-0110).
 //!
-//! So every address means what it meant unpaged, and `TLM_PAGE` holds
-//! each thread's own words. EPT / NPT still bound the guest to its memory:
+//! So every address means what it meant unpaged but the low 64 KB, and
+//! `TLM_PAGE` holds each thread's own words. EPT / NPT still bound the guest to its memory:
 //! tables a guest damages can only map memory it could already reach.
 //! The host side translates `TLM_PAGE` the same way for the thread a vCPU
 //! thread runs (`guest_mem::set_thread_tlm_backing`).
@@ -67,13 +70,18 @@ pub fn start_paging_watch(shared: Arc<super::SharedState>) {
     }
 }
 
-/// Pages in a thread's paging block: directory, table, thread-local page.
-pub const PAGING_BLOCK_PAGES: u32 = 3;
+/// Pages in a thread's paging block: directory, TLM table, low table,
+/// thread-local page.
+pub const PAGING_BLOCK_PAGES: u32 = 4;
 /// Bytes of a thread's paging block.
 pub const PAGING_BLOCK_SIZE: u32 = PAGING_BLOCK_PAGES * PAGE_SIZE;
 /// Offsets of the parts in the block.
 const TABLE_OFFSET: u32 = PAGE_SIZE;
-const TLM_OFFSET: u32 = 2 * PAGE_SIZE;
+const LOW_TABLE_OFFSET: u32 = 2 * PAGE_SIZE;
+const TLM_OFFSET: u32 = 3 * PAGE_SIZE;
+/// The low addresses no 32-bit thread reaches (OS/2's low 64 KB, below
+/// every program's objects).
+pub const LOW_GUARD: u32 = EXE_AREA_START;
 
 /// Page-directory and page-table entry bits (Intel SDM vol. 3, 4.3).
 const PTE_PRESENT: u32 = 1 << 0;
@@ -93,6 +101,10 @@ const LARGE_PAGE_SHIFT: u32 = 22;
 const TLM_CHUNK: u32 = TLM_PAGE >> LARGE_PAGE_SHIFT;
 /// `TLM_PAGE`'s entry in the page table.
 const TLM_ENTRY: u32 = (TLM_PAGE >> PAGE_SHIFT) & (ENTRIES - 1);
+/// The FS window's entry in the page table (ADR-0110).
+const FS_ENTRY: u32 = (FS_WINDOW >> PAGE_SHIFT) & (ENTRIES - 1);
+// The two tables map different 4 MB, and the guard lies in the first.
+const _: () = assert!(TLM_CHUNK != 0 && LOW_GUARD < (1 << LARGE_PAGE_SHIFT) && LOW_GUARD.is_multiple_of(PAGE_SIZE));
 const PAGE_SHIFT: u32 = 12;
 
 /// Control-register bits.
@@ -105,9 +117,11 @@ pub const TLM_WORDS: u32 = 32;
 const _: () = assert!(RUNTIME_BLOCK >= TLM_PAGE + 4 * TLM_WORDS);
 pub const TLM_MAX_PER_CALL: u32 = 8;
 
-/// The paging block's contents for a block at `base`: the directory, the
-/// table and a zeroed thread-local page.
-pub fn paging_block(base: u32) -> Vec<u8> {
+/// The paging block's contents for a block at `base`, for the thread
+/// whose TIB is at `tib` (its page shows through the FS window; 0: the
+/// window is not present): the directory, the two tables and a zeroed
+/// thread-local page.
+pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
     let mut block = vec![0u8; PAGING_BLOCK_SIZE as usize];
     let mut put = |at: u32, entry: u32| {
         block[at as usize..at as usize + 4].copy_from_slice(&entry.to_le_bytes());
@@ -115,6 +129,8 @@ pub fn paging_block(base: u32) -> Vec<u8> {
     for i in 0..ENTRIES {
         if i == TLM_CHUNK {
             put(4 * i, (base + TABLE_OFFSET) | PTE_FLAGS);
+        } else if i == 0 {
+            put(4 * i, (base + LOW_TABLE_OFFSET) | PTE_FLAGS);
         } else {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
         }
@@ -122,13 +138,21 @@ pub fn paging_block(base: u32) -> Vec<u8> {
     for j in 0..ENTRIES {
         let page = (TLM_CHUNK << LARGE_PAGE_SHIFT) | (j << PAGE_SHIFT);
         let target = if j == TLM_ENTRY { base + TLM_OFFSET } else { page };
-        put(TABLE_OFFSET + 4 * j, target | PTE_FLAGS);
+        if j != FS_ENTRY {
+            put(TABLE_OFFSET + 4 * j, target | PTE_FLAGS);
+        } else if tib != 0 {
+            put(TABLE_OFFSET + 4 * j, (tib & !(PAGE_SIZE - 1)) | PTE_FLAGS);
+        }
+        let low = j << PAGE_SHIFT;
+        if low >= LOW_GUARD {
+            put(LOW_TABLE_OFFSET + 4 * j, low | PTE_FLAGS);
+        }
     }
     block
 }
 
 /// Bytes of a block Warpine rewrites to repair it: the directory and the
-/// table (the thread-local page keeps its words).
+/// tables (the thread-local page keeps its words).
 const TABLES_SIZE: u32 = TLM_OFFSET;
 
 /// Whether `base` can be a paging block: page-aligned and wholly inside
@@ -218,14 +242,15 @@ impl super::Loader {
         const AD: u32 = PTE_ACCESSED | PTE_DIRTY;
         let entries = |b: &[u8]| b.as_chunks::<4>().0.iter()
             .map(|e| u32::from_le_bytes(*e) | AD).collect::<Vec<u32>>();
+        let tib = super::guest_mem::thread_tib();
         valid_block(base) && self.guest_read_bytes(base, TABLES_SIZE as usize)
-            .is_some_and(|now| entries(&now) == entries(&paging_block(base)[..TABLES_SIZE as usize]))
+            .is_some_and(|now| entries(&now) == entries(&paging_block(base, tib)[..TABLES_SIZE as usize]))
     }
 
     /// Rewrite the directory and table of the block at `base` (its
     /// thread-local words stay); false for an address that is no block.
     pub(crate) fn repair_paging_block(&self, base: u32) -> bool {
-        valid_block(base) && self.guest_write_bytes(base, &paging_block(base)[..TABLES_SIZE as usize]).is_some()
+        valid_block(base) && self.guest_write_bytes(base, &paging_block(base, super::guest_mem::thread_tib())[..TABLES_SIZE as usize]).is_some()
     }
 
     /// The paging state of a vCPU with `sregs` on this host thread (whose
@@ -261,9 +286,9 @@ impl super::Loader {
 
     /// Allocate and fill a thread's paging block; its address (the CR3
     /// value), or None when there is no memory.
-    pub(crate) fn alloc_paging_block(&self) -> Option<u32> {
+    pub(crate) fn alloc_paging_block(&self, tib: u32) -> Option<u32> {
         let base = self.shared.mem_mgr.lock_or_recover().alloc(PAGING_BLOCK_SIZE)?;
-        if !valid_block(base) || self.guest_write_bytes(base, &paging_block(base)).is_none() {
+        if !valid_block(base) || self.guest_write_bytes(base, &paging_block(base, tib)).is_none() {
             self.shared.mem_mgr.lock_or_recover().free(base);
             return None;
         }
@@ -315,31 +340,43 @@ mod tests {
     #[test]
     fn the_tables_map_everything_one_to_one_but_the_thread_local_page() {
         const BASE: u32 = 0x0200_3000;
-        let b = paging_block(BASE);
+        let b = paging_block(BASE, TIB_BASE);
         assert_eq!(b.len(), PAGING_BLOCK_SIZE as usize);
         let chunk = TLM_CHUNK << LARGE_PAGE_SHIFT;
         assert_eq!(chunk, SYSTEM_AREA_BASE & !0x3F_FFFF, "the system area's 4 MB");
         assert_eq!(entry(&b, 4 * TLM_CHUNK), (BASE + TABLE_OFFSET) | PTE_FLAGS, "those 4 MB through the table");
-        assert_eq!(entry(&b, 0), PTE_FLAGS | PDE_LARGE, "the first 4 MB, one large page");
+        assert_eq!(entry(&b, 0), (BASE + LOW_TABLE_OFFSET) | PTE_FLAGS, "the first 4 MB through the low table");
+        for j in 0..ENTRIES {
+            let low = j << PAGE_SHIFT;
+            let want = if low < LOW_GUARD { 0 } else { low | PTE_FLAGS };
+            assert_eq!(entry(&b, LOW_TABLE_OFFSET + 4 * j), want, "low table entry {j}: the low 64 KB not present");
+        }
         assert_eq!(entry(&b, 4), 0x0040_0000 | PTE_FLAGS | PDE_LARGE);
         assert_eq!(entry(&b, 4 * 1023), 0xFFC0_0000 | PTE_FLAGS | PDE_LARGE);
         assert_eq!(entry(&b, TABLE_OFFSET), chunk | PTE_FLAGS, "the block's first page");
         let tib = (TIB_BASE >> PAGE_SHIFT) & (ENTRIES - 1);
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * tib), TIB_BASE | PTE_FLAGS, "the TIB");
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * TLM_ENTRY), (BASE + TLM_OFFSET) | PTE_FLAGS);
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * FS_ENTRY), TIB_BASE | PTE_FLAGS, "the FS window");
+        assert_eq!(entry(&paging_block(BASE, 0), TABLE_OFFSET + 4 * FS_ENTRY), 0, "no TIB: no window");
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * 1023), (chunk + 0x003F_F000) | PTE_FLAGS);
         assert!(b[TLM_OFFSET as usize..].iter().all(|&x| x == 0), "a zeroed thread-local page");
         assert_eq!(tlm_page_of(BASE as u64), Some(BASE + TLM_OFFSET));
     }
 
     /// No entry maps a page anywhere but to itself, except the
-    /// thread-local page, which maps into the block itself: paging gives
-    /// the guest no view it did not have unpaged.
+    /// thread-local page, which maps into the block itself, and the FS
+    /// window, which shows the thread's own TIB: paging gives the guest no
+    /// view it did not have unpaged.
     #[test]
     fn no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page() {
         const BASE: u32 = 0x0300_0000;
-        let b = paging_block(BASE);
-        for i in (0..ENTRIES).filter(|&i| i != TLM_CHUNK) {
+        let b = paging_block(BASE, TIB_BASE);
+        for j in 0..ENTRIES {
+            let e = entry(&b, LOW_TABLE_OFFSET + 4 * j);
+            assert!(e == 0 || e & !0xFFF == j << PAGE_SHIFT, "low table entry {j}");
+        }
+        for i in (1..ENTRIES).filter(|&i| i != TLM_CHUNK) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
             assert_eq!(e & 0xFFF, PTE_FLAGS | PDE_LARGE);
@@ -352,6 +389,8 @@ mod tests {
             if page == TLM_PAGE {
                 assert_eq!(target, BASE + TLM_OFFSET);
                 assert!(valid_block(target - TLM_OFFSET));
+            } else if page == FS_WINDOW {
+                assert_eq!(target, TIB_BASE, "the FS window shows the thread's TIB");
             } else {
                 assert_eq!(target, page, "table entry {j}");
             }
@@ -381,9 +420,10 @@ mod tests {
     #[test]
     fn damaged_tables_are_seen_and_repaired() {
         let loader = super::super::Loader::new_mock();
-        let base = loader.alloc_paging_block().expect("a paging block");
+        let base = loader.alloc_paging_block(TIB_BASE).expect("a paging block");
         let paged = |cr3: u64| super::super::vm_backend::GuestSregs { cr0: CR0_PG | 1, cr3, ..Default::default() };
         super::super::guest_mem::set_thread_tlm_backing(tlm_page_of(base as u64).unwrap());
+        super::super::guest_mem::set_thread_tib(TIB_BASE);
         assert!(loader.paging_block_intact(base));
         assert_eq!(loader.paging_status(&paged(base as u64)), PagingStatus::Intact);
         assert_eq!(loader.paging_status(&Default::default()), PagingStatus::Off);
@@ -404,6 +444,7 @@ mod tests {
         assert!(!loader.repair_paging_block(0x1000), "no block there");
         assert!(!loader.paging_block_intact(0x1000));
         super::super::guest_mem::set_thread_tlm_backing(0);
+        super::super::guest_mem::set_thread_tib(0);
     }
 
     #[test]
@@ -445,16 +486,18 @@ mod tests {
     #[test]
     fn host_accesses_follow_the_thread_local_page() {
         let loader = super::super::Loader::new_mock();
-        let block = loader.alloc_paging_block().expect("a paging block");
+        let block = loader.alloc_paging_block(TIB_BASE).expect("a paging block");
         let own = tlm_page_of(block as u64).unwrap();
         loader.guest_write::<u32>(TLM_PAGE, 0x1111).unwrap();
         super::super::guest_mem::set_thread_tlm_backing(own);
+        super::super::guest_mem::set_thread_tib(TIB_BASE);
         loader.guest_write::<u32>(TLM_PAGE + 4, 0x2222).unwrap();
         assert_eq!(loader.guest_read::<u32>(TLM_PAGE), Some(0), "this thread's page");
         assert_eq!(loader.guest_read::<u32>(own + 4), Some(0x2222));
         // An access that crosses the page's end is not translated.
         assert_eq!(loader.guest_read::<u64>(TLM_PAGE + PAGE_SIZE - 4).map(|v| v as u32), Some(0));
         super::super::guest_mem::set_thread_tlm_backing(0);
+        super::super::guest_mem::set_thread_tib(0);
         assert_eq!(loader.guest_read::<u32>(TLM_PAGE), Some(0x1111));
         assert_eq!(loader.guest_read::<u32>(TLM_PAGE + 4), Some(0));
     }
@@ -465,11 +508,12 @@ mod tests {
     fn a_guest_changing_its_paging_is_caught() {
         use super::super::vm_backend::mock::MockVcpu;
         let loader = super::super::Loader::new_mock();
-        let base = loader.alloc_paging_block().expect("a paging block");
+        let base = loader.alloc_paging_block(TIB_BASE).expect("a paging block");
         let mut vcpu = MockVcpu::new();
         loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, base);
         assert_eq!(loader.paging_violation(&vcpu), None, "no block known: an unpaged thread");
         super::super::guest_mem::set_thread_tlm_backing(tlm_page_of(base as u64).unwrap());
+        super::super::guest_mem::set_thread_tib(TIB_BASE);
         assert_eq!(loader.paging_violation(&vcpu), None, "as set up");
         vcpu.sregs.cr3 = 0xF000_0000;
         assert_eq!(loader.paging_violation(&vcpu), Some(PagingStatus::ForeignCr3(0xF000_0000)));
@@ -480,6 +524,7 @@ mod tests {
         loader.guest_write::<u32>(base + TABLE_OFFSET, 0).unwrap();
         assert_eq!(loader.paging_violation(&vcpu), Some(PagingStatus::Damaged));
         super::super::guest_mem::set_thread_tlm_backing(0);
+        super::super::guest_mem::set_thread_tib(0);
     }
 
     /// Host accesses near the thread-local page stay inside guest memory
@@ -503,5 +548,6 @@ mod tests {
             }
         }
         super::super::guest_mem::set_thread_tlm_backing(0);
+        super::super::guest_mem::set_thread_tib(0);
     }
 }

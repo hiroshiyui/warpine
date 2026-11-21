@@ -1,6 +1,6 @@
 # ADR-0103: A C++ runtime for the SDK: the Itanium C++ ABI, a DWARF unwinder, and OS/2 exception handlers
 
-- **Status:** Accepted; builds on ADR-0095, ADR-0096, ADR-0101; amended by ADR-0107 (exceptions across modules)
+- **Status:** Accepted; builds on ADR-0095, ADR-0096, ADR-0101; amended by ADR-0107 (exceptions across modules) and ADR-0110 (records unwound with `DosUnwindException`, exceptions thrown from OS/2 handlers unwind the trapping frames, unwind tables for every C++ function)
 - **Date:** 2026-11-21
 - **Sources:**
   - The Itanium C++ ABI: run-time type information (section 2.9), the exception-handling ABI (levels I and II), `__cxa_atexit`, the guard variables, `__dynamic_cast`.

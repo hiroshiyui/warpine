@@ -583,17 +583,28 @@ APIRET APIENTRY DosErrClass(ULONG code, PULONG pClass, PULONG pAction, PULONG pL
 #define XCPT_CONTINUE_SEARCH       0x00000000UL
 #define XCPT_CONTINUE_EXECUTION    0xFFFFFFFFUL
 #define XCPT_CHAIN_END             ((PEXCEPTIONREGISTRATIONRECORD)0xFFFFFFFFUL)
+#define END_OF_CHAIN               ((PEXCEPTIONREGISTRATIONRECORD)0xFFFFFFFFUL)
+/* DosUnwindException's phandler for the whole chain. */
+#define UNWIND_ALL                 0
+
+/* XCPT_ACCESS_VIOLATION's ExceptionInfo[0]; [1] is the address. */
+#define XCPT_UNKNOWN_ACCESS        0x00000000UL
+#define XCPT_READ_ACCESS           0x00000001UL
+#define XCPT_WRITE_ACCESS          0x00000002UL
 
 #define EH_NONCONTINUABLE  0x01
 #define EH_UNWINDING       0x02
 #define EH_EXIT_UNWIND     0x04
 #define EH_NESTED_CALL     0x10
 
+#define XCPT_FATAL_EXCEPTION           0xC0000000UL
 #define XCPT_GUARD_PAGE_VIOLATION      0x80000001UL
 #define XCPT_UNABLE_TO_GROW_STACK      0x80010001UL
 #define XCPT_ACCESS_VIOLATION          0xC0000005UL
 #define XCPT_IN_PAGE_ERROR             0xC0000006UL
 #define XCPT_ILLEGAL_INSTRUCTION       0xC000001CUL
+#define XCPT_UNWIND                    0xC0000026UL
+#define XCPT_INVALID_UNWIND_TARGET     0xC0000028UL
 #define XCPT_INVALID_LOCK_SEQUENCE     0xC000001DUL
 #define XCPT_FLOAT_DENORMAL_OPERAND    0xC0000094UL
 #define XCPT_FLOAT_DIVIDE_BY_ZERO      0xC0000095UL
@@ -664,14 +675,18 @@ typedef struct _CONTEXT {
 } CONTEXTRECORD, *PCONTEXTRECORD;
 
 struct _EXCEPTIONREGISTRATIONRECORD;
-typedef ULONG APIENTRY ERR(PEXCEPTIONREPORTRECORD, struct _EXCEPTIONREGISTRATIONRECORD *,
-                           PCONTEXTRECORD, PVOID);
-typedef ERR *PERR;
+/* An exception handler: _ERR is its function type and ERR a pointer to
+ * one, as in Open Watcom's <bsexcpt.h>, so `(ERR)handler` casts work.
+ * PERR is the same pointer (Warpine's earlier name). */
+typedef ULONG APIENTRY _ERR(PEXCEPTIONREPORTRECORD, struct _EXCEPTIONREGISTRATIONRECORD *,
+                            PCONTEXTRECORD, PVOID);
+typedef _ERR *ERR;
+typedef _ERR *PERR;
 
 /* Must live on the stack of the thread that registers it. */
 typedef struct _EXCEPTIONREGISTRATIONRECORD {
     struct _EXCEPTIONREGISTRATIONRECORD *prev_structure;
-    PERR ExceptionHandler;
+    _ERR *volatile ExceptionHandler;
 } EXCEPTIONREGISTRATIONRECORD, *PEXCEPTIONREGISTRATIONRECORD;
 
 APIRET APIENTRY DosSetExceptionHandler(PEXCEPTIONREGISTRATIONRECORD pERegRec);

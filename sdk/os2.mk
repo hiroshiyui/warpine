@@ -54,11 +54,15 @@ OS2_CFLAGS = $(OS2_BASEFLAGS) -nostdinc -isystem $(WARPINE_SDK)/include -isystem
 
 # C++ (ADR-0103): g++ beside gcc, clang++ beside clang (a path keeps its
 # directory), Warpine's C++ headers before the C ones, exceptions and
-# run-time type information on (exceptions bring their unwind tables).
+# run-time type information on, and unwind tables for every function
+# (ADR-0110): an exception thrown in an OS/2 exception handler unwinds
+# from the instruction that trapped, also through frames the compiler
+# thought could not throw (clang leaves those without tables otherwise).
 # Hosted, not freestanding: a freestanding clang++ mangles main.
 # Link $(OS2_LIBCXX) before $(OS2_LIBC).
 OS2_CXX ?= $(patsubst %gcc,%g++,$(patsubst %clang,%clang++,$(CC)))
-OS2_CXXFLAGS = $(filter-out -ffreestanding,$(OS2_BASEFLAGS)) -nostdinc -nostdinc++ -isystem $(WARPINE_SDK)/include/c++ \
+OS2_CXXFLAGS = $(filter-out -ffreestanding -fno-asynchronous-unwind-tables,$(OS2_BASEFLAGS)) \
+               -fasynchronous-unwind-tables -nostdinc -nostdinc++ -isystem $(WARPINE_SDK)/include/c++ \
                -isystem $(WARPINE_SDK)/include -isystem $(OS2_COMPILER_INCLUDE) \
                -std=gnu++17 -fexceptions -frtti
 

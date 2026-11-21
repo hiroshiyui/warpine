@@ -376,7 +376,11 @@ extern "C" _Unwind_Reason_Code __gxx_personality_v0(int version, _Unwind_Action 
     const unsigned char *lsda = reinterpret_cast<const unsigned char *>(_Unwind_GetLanguageSpecificData(ctx));
     if (!lsda) return _URC_CONTINUE_UNWIND;
     uint32_t func = _Unwind_GetRegionStart(ctx);
-    uint32_t ip = _Unwind_GetIP(ctx) - 1;
+    // A return address follows its call; the IP of a frame that trapped
+    // (ADR-0110) is the instruction itself.
+    int at_insn = 0;
+    uint32_t ip = _Unwind_GetIPInfo(ctx, &at_insn);
+    if (!at_insn) ip -= 1;
     lsda_info l;
     parse_lsda(lsda, func, &l);
 
@@ -398,8 +402,11 @@ extern "C" _Unwind_Reason_Code __gxx_personality_v0(int version, _Unwind_Action 
             break;
         }
     }
-    // Not in the table: the call may not throw (noexcept).
-    if (!found) return _URC_FATAL_PHASE1_ERROR;
+    // Not in the table: the call may not throw (noexcept). An instruction
+    // that trapped outside every call site (code built without
+    // -fnon-call-exceptions) has no cleanups to run: the unwind goes on
+    // past its frame (ADR-0110).
+    if (!found) return at_insn ? _URC_CONTINUE_UNWIND : _URC_FATAL_PHASE1_ERROR;
     if (!landing) return _URC_CONTINUE_UNWIND;
 
     // Walk the action chain: the first handler that matches, or whether

@@ -167,7 +167,7 @@ pub struct KbdKeyInfo {
 ///
 /// Used by `FrameKind::ExceptionHandler` to restore the full register state
 /// when an exception handler returns `XCPT_CONTINUE_EXECUTION`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct FaultContext {
     pub eax: u32, pub ebx: u32, pub ecx: u32, pub edx: u32,
     pub esi: u32, pub edi: u32, pub ebp: u32,
@@ -216,6 +216,10 @@ pub(crate) enum FrameKind {
     /// `target`. A FALSE reply lets the change happen
     /// (`WindowManager::finish_minmax`); the API caller then gets `ret`.
     MinMaxFrame { frame: u32, op: u32, target: pm_minmax::WinRect, ret: u32 },
+    /// An exception handler called by `DosUnwindException` with
+    /// `EH_UNWINDING` (`seh.rs`, ADR-0110): when it returns, its record
+    /// leaves the chain and the unwind goes on.
+    UnwindHandler { unwind: Box<seh::Unwind> },
     /// A modal dialog message loop (WinDlgBox / WinProcessDlg / WinMessageBox).
     ///
     /// After each message callback returns, the CALLBACK_RET_TRAP handler
@@ -331,6 +335,10 @@ pub(crate) enum ApiResult {
     /// returns: hooks, or the window procedures of a broadcast; `vcpu.rs`
     /// (`continue_call_chain`) then returns or runs the API again.
     CallChain(Box<pm_hook::CallChain>),
+    /// `DosUnwindException`: call the handlers of `Unwind` one by one
+    /// (`vcpu.rs` makes the calls, `seh.rs` the steps), then go on where
+    /// it says.
+    Unwind(Box<seh::Unwind>),
     /// Invoke an OS/2 exception handler as a guest callback.
     ///
     /// Emitted by `DosRaiseException` and by the IDT exception dispatch path.

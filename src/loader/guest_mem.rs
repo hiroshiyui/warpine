@@ -30,6 +30,24 @@ pub fn thread_tlm_backing() -> u32 {
     TLM_BACKING.with(|b| b.get())
 }
 
+thread_local! {
+    /// The TIB of the guest thread this host thread runs (0: none known):
+    /// what `DosGetInfoBlocks` returns, and the page its tables' FS window
+    /// shows (`paging.rs`, ADR-0110).
+    static THREAD_TIB: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Record the TIB of the guest thread this host thread runs. Set by the
+/// vCPU thread before it runs.
+pub fn set_thread_tib(tib: u32) {
+    THREAD_TIB.with(|t| t.set(tib));
+}
+
+/// The TIB of the guest thread this host thread runs (0: none known).
+pub fn thread_tib() -> u32 {
+    THREAD_TIB.with(|t| t.get())
+}
+
 /// The guest-physical address of an access of `len` bytes at `offset`: an
 /// access wholly inside the thread-local page goes to this thread's own
 /// page. One that only overlaps it is left as it is (unverified: the

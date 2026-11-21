@@ -313,7 +313,8 @@ impl super::Loader {
         }
         // The handlers' registration records were on the stack just reset:
         // empty this thread's chain (its own TIB, which FS points at).
-        self.guest_write::<u32>((sregs.fs.base as u32).wrapping_add(TIB_EXCHAIN_OFFSET), XCPT_CHAIN_END);
+        let tib = match super::guest_mem::thread_tib() { 0 => sregs.fs.base as u32, tib => tib };
+        self.guest_write::<u32>(tib.wrapping_add(TIB_EXCHAIN_OFFSET), XCPT_CHAIN_END);
         debug!("  calling exit-list routine {:#x}(tc={})", pfn, run.tc);
         regs.rip = pfn as u64;
         regs.rsp = sp as u64;

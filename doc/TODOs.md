@@ -278,7 +278,8 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
   - CI (ADR-0106): watch the first runs on GitHub (time and memory of the three entries), and consider caching the image and the crates;
   - tests that need a sample binary should skip when it is missing: in a clean worktree, 13 integration tests failed until the Open Watcom samples were built (a guard in `run_sample` and the golden helpers, rather than per test);
   - C++ exceptions through Warpine's callbacks (a window procedure that `WinDispatchMsg` called; across DLLs is done, ADR-0107);
-  - OS/2 exceptions running C++ destructors (an OS/2 handler per C++ frame, as compilers for OS/2 do);
+  - C code that can trap under a C++ catch needs `-fasynchronous-unwind-tables` (ADR-0110 turns it on for C++ and the C library only); decide whether `OS2_CFLAGS` should have it too;
+  - clang does not honour `-fnon-call-exceptions`: a trapping instruction's own frame gets no cleanups, and a caller clang proves cannot throw ends in `std::terminate` (ADR-0110);
   - a C++ standard library (strings, containers, streams);
 - [ ] **Ported-software tier**:
   - bitwiseworks GCC / LIBCn / LIBCx binaries as regression inputs (check licences);

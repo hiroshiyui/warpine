@@ -36,7 +36,7 @@ fn sample_path(path: impl AsRef<Path>) -> String {
     let compiler = compiler.strip_suffix("-pinned").unwrap_or(compiler);
     assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
     const NOT_BUILT: &[&str] = &["ne_hello", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "cxx_test",
-                                  "rust_hello", "shapes", "som_test"];
+                                  "rust_hello", "shapes", "som_test", "wcxx_throw_test"];
     let Some(rest) = path.strip_prefix("samples/") else { return path };
     let Some((dir, _)) = rest.split_once('/') else { return path };
     let lower = rest.to_ascii_lowercase();
@@ -1500,6 +1500,42 @@ fn test_exception_chains_are_per_thread() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// The checks a text-mode sample with `<prefix>: <name>: ok` lines
+/// reported, all passed, at least `min` of them, and exit code 0.
+fn assert_text_checks_pass(sample: &str, prefix: &str, min: usize) {
+    if !kvm_available() || !sample_exists(sample) { return; }
+    let (out, code) = run_sample(sample, 30);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with(&format!("{prefix}: ")) && !l.contains(": done")).collect();
+    assert!(checks.len() >= min, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("{prefix}: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// xcpt_unwind_test (ADR-0110): DosUnwindException calls the handlers
+/// above its target with EH_UNWINDING, newest first, and unlinks them
+/// (to a record, END_OF_CHAIN, UNWIND_ALL; a stray target refused);
+/// longjmp unwinds the handlers registered since setjmp; a handler leaves
+/// a NULL-pointer access violation by longjmp, three times over (FS still
+/// reaches the TIB after Open Watcom's longjmp reloads it); and
+/// DosRaiseException fills in ExceptionAddress. From Open Watcom, GCC
+/// and clang alike.
+#[test]
+fn test_dos_unwind_exception_longjmp_and_null_traps() {
+    assert_text_checks_pass("samples/xcpt_unwind_test/xcpt_unwind_test.exe", "xcpt_unwind_test", 28);
+}
+
+/// wcxx_throw_test (ADR-0110): Open Watcom's C++ runtime throws by
+/// DosRaiseException and unwinds by DosUnwindException, whose handler
+/// calls run the destructors: through three frames, a rethrow, an inner
+/// catch, past an OS/2 handler, after an access violation under a try.
+#[test]
+fn test_open_watcom_cxx_exceptions_run_destructors() {
+    assert_text_checks_pass("samples/wcxx_throw_test/wcxx_throw_test.exe", "wcxx_throw_test", 12);
+}
+
 /// thread_last_test: thread 1 ends with DosExit(EXIT_THREAD) while another
 /// thread runs; the process goes on until that last thread ends with
 /// DosExit(EXIT_THREAD, 5), whose result becomes the exit code.
@@ -1935,7 +1971,7 @@ fn test_cxx_from_gcc_and_clang() {
         assert!(out.contains(&format!("cxx_test: built by {cxx}")), "{cxx}:\n{out}");
         let done = out.lines().find_map(|l| l.strip_prefix("cxx_test: done ")).unwrap_or("");
         let (passed, total) = done.split_once('/').unwrap_or(("", "?"));
-        assert!(total.parse::<u32>().is_ok_and(|t| t >= 35) && passed == total, "{cxx}: done {done}\n{out}");
+        assert!(total.parse::<u32>().is_ok_and(|t| t >= 40) && passed == total, "{cxx}: done {done}\n{out}");
         assert!(out.ends_with("cxx_test: the global's destructor ran at exit\n"), "{cxx}: destructors at exit\n{out}");
         assert_eq!(code, 0, "{cxx}:\n{out}");
 

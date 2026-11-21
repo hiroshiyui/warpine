@@ -1170,7 +1170,7 @@ impl super::Loader {
         // The thread's page tables and thread-local page (paging.rs), when
         // the creating thread runs paged (32-bit programs do).
         let paging = if super::guest_mem::thread_tlm_backing() != 0 {
-            match self.alloc_paging_block() {
+            match self.alloc_paging_block(tib_addr) {
                 Some(p) => p,
                 None => {
                     let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
@@ -1316,8 +1316,13 @@ impl super::Loader {
     }
 
     pub fn dos_get_info_blocks(&self, vcpu: &dyn VcpuBackend, ptib: u32, ppib: u32) -> u32 {
-        let fs_base = vcpu.get_sregs().unwrap().fs.base;
-        if ptib != 0 { self.guest_write::<u32>(ptib, fs_base as u32); }
+        // The thread's TIB itself, not the FS window FS shows it through
+        // (ADR-0110).
+        let tib = match super::guest_mem::thread_tib() {
+            0 => vcpu.get_sregs().unwrap().fs.base as u32,
+            tib => tib,
+        };
+        if ptib != 0 { self.guest_write::<u32>(ptib, tib); }
         if ppib != 0 { self.guest_write::<u32>(ppib, PIB_BASE); }
         0
     }

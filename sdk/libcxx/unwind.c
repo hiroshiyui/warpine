@@ -19,7 +19,16 @@
  * OS/2 exception handlers (DosSetExceptionHandler) are registered in the
  * thread's chain at fs:[0], in records on the stack. Before control moves
  * to a landing pad, the records of the frames being left (below its stack
- * pointer) leave the chain, as unwinding through them on OS/2 would. */
+ * pointer) are unwound with DosUnwindException: their handlers are called
+ * with EH_UNWINDING and leave the chain, as on OS/2 (ADR-0110).
+ *
+ * Warpine calls an exception handler with the return address
+ * XCPT_RET_TRAP (os2/warpine.h). The unwinder steps from such a handler
+ * into the context it was called for, read from its CONTEXTRECORD
+ * argument, so an exception thrown in a handler unwinds the code that
+ * trapped. That frame's IP is the faulting instruction itself for a
+ * hardware exception or a signal (a "signal frame"), and a return address
+ * for one DosRaiseException raised. */
 #define INCL_DOSEXCEPTIONS
 #include <os2.h>
 #include <stddef.h>
@@ -27,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unwind.h>
+#include <os2/warpine.h>
 
 #define DWARF_REGS   9
 #define REG_EAX      0
@@ -42,6 +52,9 @@ struct _Unwind_Context {
     uint32_t lsda;
     uint32_t func_start;
     _Unwind_Personality_Fn personality;
+    /* reg[REG_EIP] is the instruction that trapped, not a return address
+     * (the context of an exception handler's call, ADR-0110). */
+    int signal_frame;
 };
 
 extern const unsigned char __EH_FRAME_BEGIN__[], __EH_FRAME_END__[];
@@ -465,7 +478,7 @@ static int frame_info(struct _Unwind_Context *ctx, struct frame_state *fs)
     struct fde f;
     /* A return address may be just past its call's function: look up the
      * call instruction instead. */
-    uint32_t pc = ctx->reg[REG_EIP] - 1;
+    uint32_t pc = ctx->reg[REG_EIP] - (ctx->signal_frame ? 0 : 1);
     if (!find_fde(pc, &f) || f.cie.ra_reg != REG_EIP) return 0;
     struct frame_state initial;
     memset(&initial, 0, sizeof initial);
@@ -483,6 +496,47 @@ static int frame_info(struct _Unwind_Context *ctx, struct frame_state *fs)
     ctx->func_start = f.start;
     ctx->personality = f.cie.personality;
     return 1;
+}
+
+/* Exception codes whose context IP is the instruction that trapped or was
+ * interrupted, not a return address: Warpine's hardware exceptions and
+ * signals. Any other code was raised by DosRaiseException, whose context
+ * IP is its return address. */
+static int trapped_at_ip(ULONG code)
+{
+    switch (code) {
+    case XCPT_ACCESS_VIOLATION: case XCPT_INTEGER_DIVIDE_BY_ZERO: case XCPT_INTEGER_OVERFLOW:
+    case XCPT_ILLEGAL_INSTRUCTION: case XCPT_PRIVILEGED_INSTRUCTION: case XCPT_DATATYPE_MISALIGNMENT:
+    case XCPT_BREAKPOINT: case XCPT_SINGLE_STEP: case XCPT_UNABLE_TO_GROW_STACK:
+    case XCPT_FLOAT_INVALID_OPERATION: case XCPT_FLOAT_DIVIDE_BY_ZERO: case XCPT_FLOAT_OVERFLOW:
+    case XCPT_FLOAT_UNDERFLOW: case XCPT_FLOAT_INEXACT_RESULT: case XCPT_FLOAT_DENORMAL_OPERAND:
+    case XCPT_FLOAT_STACK_CHECK: case XCPT_SIGNAL: case XCPT_FATAL_EXCEPTION:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* `ctx` has just stepped out of an exception handler Warpine called (its
+ * return address is XCPT_RET_TRAP; its CFA is where its arguments lie):
+ * go on from the context the handler was called for. */
+static int enter_trapped_context(struct _Unwind_Context *ctx)
+{
+    const uint32_t *args = (const uint32_t *)(uintptr_t)ctx->cfa;
+    const EXCEPTIONREPORTRECORD *rep = (const EXCEPTIONREPORTRECORD *)(uintptr_t)args[0];
+    const CONTEXTRECORD *c = (const CONTEXTRECORD *)(uintptr_t)args[2];
+    if (!rep || !c) return 0;
+    ctx->reg[0] = c->ctx_RegEax;
+    ctx->reg[1] = c->ctx_RegEcx;
+    ctx->reg[2] = c->ctx_RegEdx;
+    ctx->reg[3] = c->ctx_RegEbx;
+    ctx->reg[REG_ESP] = c->ctx_RegEsp;
+    ctx->reg[5] = c->ctx_RegEbp;
+    ctx->reg[6] = c->ctx_RegEsi;
+    ctx->reg[7] = c->ctx_RegEdi;
+    ctx->reg[REG_EIP] = c->ctx_RegEip;
+    ctx->signal_frame = trapped_at_ip(rep->ExceptionNum);
+    return ctx->reg[REG_EIP] != 0;
 }
 
 /* Move `ctx` to the caller of its frame, by the rules in `fs`. */
@@ -511,6 +565,8 @@ static int step(struct _Unwind_Context *ctx, const struct frame_state *fs)
     /* The caller's stack pointer is the frame's CFA. */
     ctx->reg[REG_ESP] = ctx->cfa;
     if (fs->reg[REG_EIP].how == RULE_SAME || fs->reg[REG_EIP].how == RULE_UNDEFINED) return 0;
+    ctx->signal_frame = 0;
+    if (ctx->reg[REG_EIP] == XCPT_RET_TRAP) return enter_trapped_context(ctx);
     return ctx->reg[REG_EIP] != 0;
 }
 
@@ -554,10 +610,15 @@ static __attribute__((noreturn)) void install(struct _Unwind_Context *ctx)
     memcpy(reg, ctx->reg, sizeof reg);
     /* The landing pad runs with the call's pushed arguments gone. */
     reg[REG_ESP] += ctx->args_size;
-    /* OS/2 handlers registered in the frames being left leave the chain. */
-    for (uint32_t head = exception_chain(); head != 0xFFFFFFFFu && head != 0 && head < reg[REG_ESP];
-         head = exception_chain()) {
-        if (DosUnsetExceptionHandler((PEXCEPTIONREGISTRATIONRECORD)(uintptr_t)head) != NO_ERROR) break;
+    /* OS/2 handlers registered in the frames being left (their records lie
+     * below the landing pad's stack) are unwound: called with EH_UNWINDING,
+     * then off the chain. The first record that stays is the target. */
+    uint32_t stay = exception_chain();
+    for (int n = 0; stay != 0xFFFFFFFFu && stay != 0 && stay < reg[REG_ESP] && n < 256; n++) {
+        stay = (uint32_t)(uintptr_t)((const EXCEPTIONREGISTRATIONRECORD *)(uintptr_t)stay)->prev_structure;
+    }
+    if (stay != exception_chain()) {
+        DosUnwindException((PEXCEPTIONREGISTRATIONRECORD)(uintptr_t)stay, NULL, NULL);
     }
     __warpine_unwind_install(reg);
 }
@@ -687,7 +748,7 @@ _Unwind_Ptr _Unwind_GetIP(struct _Unwind_Context *ctx) { return ctx->reg[REG_EIP
 
 _Unwind_Ptr _Unwind_GetIPInfo(struct _Unwind_Context *ctx, int *ip_before_insn)
 {
-    if (ip_before_insn) *ip_before_insn = 0;
+    if (ip_before_insn) *ip_before_insn = ctx->signal_frame;
     return ctx->reg[REG_EIP];
 }
 

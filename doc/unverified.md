@@ -213,6 +213,13 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - muxwait flags with neither or both `DCMW_*`;
   - a closed member giving `ERROR_INVALID_HANDLE`;
   - wait-all returning the last record's user value.
+- **Exceptions and traps** (ADR-0110):
+  - `DosUnwindException`: a record leaves the chain after its handler returns; handlers' results are ignored and nested unwinds not marked; `EH_EXIT_UNWIND` is never set; a target not on the chain is refused with `ERROR_INVALID_PARAMETER`, without unwinding; the report and context records are allocated per call;
+  - `DosRaiseException` sets `ExceptionAddress` to its return address;
+  - the low 64 KB are not present for 32-bit threads, and a page fault's `ExceptionInfo` is the access type and the address;
+  - FS shows the TIB through a window page after the system area, with a 4 KB limit; an unpaged thread keeps a direct FS base;
+  - frames of handlers left by `longjmp` are dropped at a later callback return above them;
+  - the SDK's unwinder treats hardware codes and `XCPT_SIGNAL` as signal frames, and lets an exception pass a trapping instruction outside every call site.
 - **Signals**:
   - the must-complete limit of 65535;
   - only thread 1's sections holding signals;

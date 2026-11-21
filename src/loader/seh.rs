@@ -22,6 +22,32 @@ use super::{ApiResult, FaultContext};
 use super::mutex_ext::MutexExt;
 use log::{debug, warn};
 
+/// Most records an unwind or a chain walk visits (a cycle in a damaged
+/// chain ends there).
+const MAX_CHAIN_WALK: usize = 256;
+
+/// A `DosUnwindException` in progress (ADR-0110).
+#[derive(Debug)]
+pub(crate) struct Unwind {
+    /// The record the unwind stops at (`XCPT_CHAIN_END`: the whole chain).
+    pub target: u32,
+    /// Where the thread goes on afterwards; 0: the call returns.
+    pub target_ip: u32,
+    /// The report record each handler gets, and whether Warpine made it.
+    pub report: u32,
+    pub own_report: bool,
+    /// The CONTEXTRECORD each handler gets: the caller's state.
+    pub ctx: u32,
+    /// The registers the thread goes on with (filled in by `vcpu.rs`).
+    pub resume: FaultContext,
+    /// Guest blocks to free at the end.
+    pub allocs: Vec<u32>,
+    /// The record whose handler is being called (`XCPT_CHAIN_END`: none).
+    pub current: u32,
+    /// Handlers called so far.
+    pub calls: usize,
+}
+
 /// Map an x86 exception vector + error code to an OS/2 XCPT_* exception code.
 pub fn xcpt_code_for_vector(vector: u32, _error_code: u32) -> u32 {
     match vector {
@@ -162,6 +188,7 @@ impl super::Loader {
         fault: FaultContext,
         vector: u32,
         error_code: u32,
+        fault_addr: u32,
     ) -> Option<ApiResult> {
         let xcpt_code = xcpt_code_for_vector(vector, error_code);
         let flags = if xcpt_code == XCPT_ACCESS_VIOLATION || xcpt_code == XCPT_FATAL_EXCEPTION {
@@ -170,8 +197,11 @@ impl super::Loader {
             0
         };
 
-        // Access violation passes the faulting address as a parameter.
-        let params: &[u32] = if vector == 14 { &[0, fault.eip] } else { &[] };
+        // A page fault's access violation says how the address was
+        // accessed and which address it was (ExceptionInfo[0], [1]).
+        let access = if error_code & PF_ERROR_WRITE != 0 { XCPT_WRITE_ACCESS } else { XCPT_READ_ACCESS };
+        let pf_params = [access, fault_addr];
+        let params: &[u32] = if vector == 14 { &pf_params } else { &[] };
         debug!("SEH: hardware exception vector={}", vector);
         self.chain_dispatch(vcpu_id, fault, xcpt_code, flags, params)
     }
@@ -231,9 +261,16 @@ impl super::Loader {
     /// Stops when `reg_rec == stop_at` (exclusive; if 0 walk entire chain).
     /// After walking, restores the stack to the target frame by setting
     /// `TIB_EXCHAIN` to `stop_at`.
-    pub(crate) fn dos_raise_exception(&self, vcpu_id: u32, p_exc_rec: u32) -> ApiResult {
+    pub(crate) fn dos_raise_exception(&self, vcpu: &dyn super::vm_backend::VcpuBackend, vcpu_id: u32, p_exc_rec: u32) -> ApiResult {
         debug!("  DosRaiseException(pExcRec=0x{:08X})", p_exc_rec);
         if p_exc_rec == 0 {
+            return ApiResult::Normal(ERROR_INVALID_PARAMETER);
+        }
+        // The exception happened where the call returns to: that is its
+        // ExceptionAddress, which Open Watcom's C++ runtime leaves 0 for
+        // the system to fill in and unwinds to later (ADR-0110).
+        let return_addr = vcpu.get_regs().ok().and_then(|r| self.guest_read::<u32>(r.rsp as u32));
+        if return_addr.and_then(|ra| self.guest_write::<u32>(p_exc_rec.wrapping_add(ERR_ADDR), ra)).is_none() {
             return ApiResult::Normal(ERROR_INVALID_PARAMETER);
         }
 
@@ -290,47 +327,102 @@ impl super::Loader {
         }
     }
 
-    /// `DosUnwindException` — walk the exception handler chain with EH_UNWINDING,
-    /// stopping at `p_reg_rec` (or the chain end if 0), then restore execution
-    /// at the target by popping TIB_EXCHAIN to `p_reg_rec`.
+    /// `DosUnwindException(phandler, pTargetIP, pERepRec)` (ADR-0110): the
+    /// handlers above `phandler` on the calling thread's chain are called
+    /// with `EH_UNWINDING`, newest first, and each leaves the chain when it
+    /// returns. `phandler` stays; `END_OF_CHAIN` or `UNWIND_ALL` (0) unwinds
+    /// the whole chain. Then the thread goes on at `pTargetIP` as if the call
+    /// had returned there (its registers and stack as at the return), or
+    /// returns when it is NULL. The report record the handlers get is
+    /// `pERepRec`, its flags with `EH_UNWINDING` added, or one Warpine makes
+    /// (`XCPT_UNWIND`). A `phandler` that is not on the chain is refused,
+    /// with nothing unwound.
     ///
-    /// The full unwind protocol is complex (involves calling each handler with
-    /// EH_UNWINDING so it can perform cleanup).  This implementation performs
-    /// the TIB chain truncation synchronously and delegates the handler-call
-    /// side to the caller's compiler-generated unwind tables (Watcom uses
-    /// setjmp/longjmp internally so this is usually sufficient).
-    pub(crate) fn dos_unwind_exception(
-        &self,
-        vcpu_id: u32,
-        p_reg_rec: u32,
-        _reserved: u32,
-        p_exc_rec: u32,
-        _data: u32,
-    ) -> u32 {
-        debug!("  DosUnwindException(pRegRec=0x{:08X}, pExcRec=0x{:08X})", p_reg_rec, p_exc_rec);
-
-        // Walk the chain calling handlers with EH_UNWINDING until we reach the target.
-        let Some(head) = self.exception_chain_addr(vcpu_id) else { return ERROR_INVALID_PARAMETER };
-        let mut cur = self.guest_read::<u32>(head).unwrap_or(XCPT_CHAIN_END);
-
-        let mut steps: usize = 0;
-        while cur != XCPT_CHAIN_END && cur != p_reg_rec {
-            steps += 1;
-            if steps > 256 {
-                warn!("SEH unwind: handler chain exceeds 256 entries — possible cycle; truncating");
-                break;
-            }
-            debug!("  DosUnwindException: skipping handler at 0x{:08X}", cur);
-            // NOTE: a full implementation would invoke each handler with EH_UNWINDING.
-            // For Watcom Open Watcom apps that use __try/__finally via setjmp this
-            // is handled by the C runtime before calling DosUnwindException, so the
-            // skip-and-truncate approach is sufficient for the common case.
-            cur = self.guest_read::<u32>(cur.wrapping_add(XERREC_PREV)).unwrap_or(XCPT_CHAIN_END);
+    /// The calls are made by `vcpu.rs` (`ApiResult::Unwind`), which knows
+    /// the caller's registers; this returns what it needs.
+    pub(crate) fn dos_unwind_exception(&self, vcpu_id: u32, p_target: u32, p_target_ip: u32, p_report: u32) -> ApiResult {
+        debug!("  DosUnwindException(phandler=0x{p_target:08X}, pTargetIP=0x{p_target_ip:08X}, pERepRec=0x{p_report:08X})");
+        let target = if p_target == UNWIND_ALL { XCPT_CHAIN_END } else { p_target };
+        let Some(head) = self.exception_chain_addr(vcpu_id) else { return ApiResult::Normal(ERROR_INVALID_PARAMETER) };
+        if target != XCPT_CHAIN_END && !self.chain_holds(head, target) {
+            warn!("  DosUnwindException: 0x{target:08X} is not on the chain");
+            return ApiResult::Normal(ERROR_INVALID_PARAMETER);
         }
+        let mut allocs = Vec::new();
+        let report = if p_report != 0 {
+            let flags = self.guest_read::<u32>(p_report.wrapping_add(ERR_FLAGS));
+            if flags.and_then(|f| self.guest_write::<u32>(p_report.wrapping_add(ERR_FLAGS), f | EH_UNWINDING)).is_none() {
+                return ApiResult::Normal(ERROR_INVALID_PARAMETER);
+            }
+            p_report
+        } else {
+            let Some(rec) = self.shared.mem_mgr.lock_or_recover().alloc(EXCEPTION_REPORT_SIZE) else {
+                return ApiResult::Normal(ERROR_NOT_ENOUGH_MEMORY);
+            };
+            allocs.push(rec);
+            // The address is the caller's; vcpu.rs fills it in.
+            self.write_exception_report(rec, XCPT_UNWIND, EH_UNWINDING, 0, &[]);
+            rec
+        };
+        let Some(ctx) = self.shared.mem_mgr.lock_or_recover().alloc(CONTEXT_RECORD_SIZE) else {
+            self.free_exception_records(allocs);
+            return ApiResult::Normal(ERROR_NOT_ENOUGH_MEMORY);
+        };
+        allocs.push(ctx);
+        ApiResult::Unwind(Box::new(Unwind {
+            target, target_ip: p_target_ip, report, own_report: p_report == 0, ctx,
+            resume: FaultContext::default(), allocs, current: XCPT_CHAIN_END, calls: 0,
+        }))
+    }
 
-        // Truncate the thread's chain to the target record.
-        if self.guest_write::<u32>(head, p_reg_rec).is_none() { return ERROR_INVALID_PARAMETER; }
-        NO_ERROR
+    /// Whether record `rec` is on the chain whose head is at `head`.
+    fn chain_holds(&self, head: u32, rec: u32) -> bool {
+        let mut cur = self.guest_read::<u32>(head).unwrap_or(XCPT_CHAIN_END);
+        for _ in 0..MAX_CHAIN_WALK {
+            if cur == rec { return true; }
+            if cur == XCPT_CHAIN_END { return false; }
+            match self.guest_read::<u32>(cur.wrapping_add(XERREC_PREV)) {
+                Some(prev) => cur = prev,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// The next handler `unwind` calls on thread `vcpu_id`: unlink the one
+    /// that just returned, then take the head if it is above the target.
+    /// `Some((handler, record))`, or None when the unwind is done.
+    pub(crate) fn unwind_step(&self, vcpu_id: u32, unwind: &mut Unwind) -> Option<(u32, u32)> {
+        let head = self.exception_chain_addr(vcpu_id)?;
+        if unwind.current != XCPT_CHAIN_END {
+            // The handler that returned leaves the chain (unless it took
+            // itself off already).
+            if self.guest_read::<u32>(head) == Some(unwind.current) {
+                let prev = self.guest_read::<u32>(unwind.current.wrapping_add(XERREC_PREV)).unwrap_or(XCPT_CHAIN_END);
+                self.guest_write::<u32>(head, prev);
+            }
+            unwind.current = XCPT_CHAIN_END;
+        }
+        loop {
+            let rec = self.guest_read::<u32>(head).unwrap_or(XCPT_CHAIN_END);
+            if rec == XCPT_CHAIN_END || rec == unwind.target {
+                return None;
+            }
+            if unwind.calls >= MAX_CHAIN_WALK {
+                warn!("SEH unwind: more than {MAX_CHAIN_WALK} handlers — a cycle? Stopping");
+                return None;
+            }
+            unwind.calls += 1;
+            let prev = self.guest_read::<u32>(rec.wrapping_add(XERREC_PREV)).unwrap_or(XCPT_CHAIN_END);
+            match self.guest_read::<u32>(rec.wrapping_add(XERREC_HANDLER)) {
+                Some(handler) if handler != 0 => {
+                    unwind.current = rec;
+                    return Some((handler, rec));
+                }
+                // No handler to call: the record just leaves.
+                _ => { self.guest_write::<u32>(head, prev); }
+            }
+        }
     }
 
     /// Address of the exception-handler chain head (`tib_pexchain`) of the
@@ -423,7 +515,7 @@ mod tests {
             eax: 0, ebx: 0, ecx: 0, edx: 0, esi: 0, edi: 0, ebp: 0, esp: 0x8000, eip: 0x1000,
             eflags: 2, cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
         };
-        match loader.try_hw_exception_dispatch(2, fault, 14, 0) {
+        match loader.try_hw_exception_dispatch(2, fault, 14, 0, 0) {
             Some(ApiResult::ExceptionDispatch { handler_addr, reg_rec, .. }) => {
                 assert_eq!((handler_addr, reg_rec), (0x5000, rec_t2));
             }
@@ -530,7 +622,7 @@ mod tests {
             esp: 0x1000, eip: 0xDEAD, eflags: 2,
             cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
         };
-        assert!(loader.try_hw_exception_dispatch(0, fault, 14, 0).is_none());
+        assert!(loader.try_hw_exception_dispatch(0, fault, 14, 0, 0).is_none());
     }
 
     #[test]
@@ -546,7 +638,7 @@ mod tests {
             esp: 0x1000, eip: 0xDEAD, eflags: 2,
             cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
         };
-        let result = loader.try_hw_exception_dispatch(0, fault, 14, 0);
+        let result = loader.try_hw_exception_dispatch(0, fault, 14, 0, 0);
         assert!(result.is_some());
         if let Some(ApiResult::ExceptionDispatch { handler_addr, next_handler, .. }) = result {
             assert_eq!(handler_addr, 0x5000);
@@ -578,27 +670,86 @@ mod tests {
         assert_eq!(out.cs, ctx.cs);
     }
 
-    // ── DosUnwindException ───────────────────────────────────────────────────
+    // ── DosUnwindException (ADR-0110) ────────────────────────────────────────
+
+    /// Records rec1 <- rec2 <- rec3 (the head) with handlers 0x1111, 0x2222
+    /// and 0x3333.
+    fn three_records(loader: &Loader) -> [u32; 3] {
+        init_tib_chain(loader);
+        let mut mem = loader.shared.mem_mgr.lock_or_recover();
+        let recs = [mem.alloc(16).unwrap(), mem.alloc(16).unwrap(), mem.alloc(16).unwrap()];
+        drop(mem);
+        for (i, &r) in recs.iter().enumerate() {
+            write_reg_rec(loader, r, 0, 0x1111 * (i as u32 + 1));
+            loader.dos_set_exception_handler(0, r);
+        }
+        recs
+    }
+
+    fn head(loader: &Loader) -> u32 {
+        loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap()
+    }
+
+    fn started(result: ApiResult) -> Box<super::Unwind> {
+        match result {
+            ApiResult::Unwind(u) => u,
+            other => panic!("expected an unwind, got {other:?}"),
+        }
+    }
 
     #[test]
-    fn test_dos_unwind_truncates_chain() {
+    fn an_unwind_calls_the_newer_handlers_newest_first_and_unlinks_each() {
         let loader = Loader::new_mock();
-        init_tib_chain(&loader);
-        let mut mem = loader.shared.mem_mgr.lock_or_recover();
-        let rec1 = mem.alloc(16).unwrap();
-        let rec2 = mem.alloc(16).unwrap();
-        drop(mem);
-        write_reg_rec(&loader, rec1, XCPT_CHAIN_END, 0x1111);
-        write_reg_rec(&loader, rec2, 0, 0x2222);
-        loader.dos_set_exception_handler(0, rec1);
-        loader.dos_set_exception_handler(0, rec2);
+        let [rec1, rec2, rec3] = three_records(&loader);
+        let mut u = started(loader.dos_unwind_exception(0, rec1, 0x4444, 0));
+        assert_eq!((u.target, u.target_ip, u.own_report), (rec1, 0x4444, true));
+        assert_eq!(loader.guest_read::<u32>(u.report + ERR_NUM), Some(XCPT_UNWIND));
+        assert_eq!(loader.guest_read::<u32>(u.report + ERR_FLAGS), Some(EH_UNWINDING));
+        assert_eq!(loader.unwind_step(0, &mut u), Some((0x3333, rec3)));
+        assert_eq!(head(&loader), rec3, "on the chain while its handler runs");
+        assert_eq!(loader.unwind_step(0, &mut u), Some((0x2222, rec2)));
+        assert_eq!(head(&loader), rec2);
+        assert_eq!(loader.unwind_step(0, &mut u), None);
+        assert_eq!(head(&loader), rec1, "the target stays");
+        loader.free_exception_records(std::mem::take(&mut u.allocs));
+    }
 
-        // Unwind to rec1 — chain should be truncated to rec1.
-        assert_eq!(loader.dos_unwind_exception(0, rec1, 0, 0, 0), NO_ERROR);
-        assert_eq!(
-            loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap(),
-            rec1
-        );
+    #[test]
+    fn the_whole_chain_is_unwound_for_end_of_chain_and_unwind_all() {
+        for target in [XCPT_CHAIN_END, UNWIND_ALL] {
+            let loader = Loader::new_mock();
+            three_records(&loader);
+            let mut u = started(loader.dos_unwind_exception(0, target, 0, 0));
+            let calls: Vec<u32> = std::iter::from_fn(|| loader.unwind_step(0, &mut u).map(|c| c.0)).collect();
+            assert_eq!(calls, vec![0x3333, 0x2222, 0x1111]);
+            assert_eq!(head(&loader), XCPT_CHAIN_END);
+        }
+    }
+
+    #[test]
+    fn a_given_report_gets_eh_unwinding_and_a_stray_target_is_refused() {
+        let loader = Loader::new_mock();
+        let [rec1, _, rec3] = three_records(&loader);
+        let report = loader.shared.mem_mgr.lock_or_recover().alloc(EXCEPTION_REPORT_SIZE).unwrap();
+        loader.write_exception_report(report, 0xE000_0001, EH_NONCONTINUABLE, 0, &[]);
+        let u = started(loader.dos_unwind_exception(0, rec1, 0, report));
+        assert_eq!((u.report, u.own_report), (report, false));
+        assert_eq!(loader.guest_read::<u32>(report + ERR_FLAGS), Some(EH_NONCONTINUABLE | EH_UNWINDING));
+        assert_eq!(loader.guest_read::<u32>(report + ERR_NUM), Some(0xE000_0001), "its code stays");
+        let stray = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+        assert!(matches!(loader.dos_unwind_exception(0, stray, 0, 0), ApiResult::Normal(ERROR_INVALID_PARAMETER)));
+        assert_eq!(head(&loader), rec3, "nothing unwound");
+    }
+
+    #[test]
+    fn a_record_without_a_handler_leaves_without_a_call() {
+        let loader = Loader::new_mock();
+        let [rec1, rec2, _] = three_records(&loader);
+        write_reg_rec(&loader, rec2, rec1, 0);
+        let mut u = started(loader.dos_unwind_exception(0, rec1, 0, 0));
+        assert_eq!(loader.unwind_step(0, &mut u).map(|c| c.0), Some(0x3333));
+        assert_eq!(loader.unwind_step(0, &mut u), None, "rec2 has no handler to call");
+        assert_eq!(head(&loader), rec1);
     }
 }
 

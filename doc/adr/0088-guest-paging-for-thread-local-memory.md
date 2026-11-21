@@ -1,6 +1,6 @@
 # ADR-0088: Guest paging for thread-local memory
 
-- **Status:** Accepted; its addresses amended by ADR-0094 (`TLM_PAGE` moved into the system area, the page table covering that 4 MB)
+- **Status:** Accepted; its addresses amended by ADR-0094 (`TLM_PAGE` moved into the system area, the page table covering that 4 MB) and ADR-0110 (a four-page block: the low 64 KB not present, the FS window to the thread's TIB)
 - **Date:** 2026-11-20
 - **Sources:**
   - IBM's *Control Program Programming Reference*: `DosAllocThreadLocalMemory` and `DosFreeThreadLocalMemory`. A thread-local memory area of 32 DWORDs; up to 8 DWORDs per call; one pointer that is the same for every thread, each thread seeing its own words through it.

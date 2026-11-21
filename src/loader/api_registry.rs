@@ -405,9 +405,9 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 355, module: "DOSCALLS", name: "DosUnsetExceptionHandler", argc: 1,
                handler: |l,_v,id,a| ApiResult::Normal(l.dos_unset_exception_handler(id,a[0])) },
     ApiEntry { ordinal: 356, module: "DOSCALLS", name: "DosRaiseException", argc: 1,
-               handler: |l,_v,id,a| l.dos_raise_exception(id,a[0]) },
-    ApiEntry { ordinal: 357, module: "DOSCALLS", name: "DosUnwindException", argc: 4,
-               handler: |l,_v,id,a| ApiResult::Normal(l.dos_unwind_exception(id,a[0],a[1],a[2],a[3])) },
+               handler: |l,v,id,a| l.dos_raise_exception(v,id,a[0]) },
+    ApiEntry { ordinal: 357, module: "DOSCALLS", name: "DosUnwindException", argc: 3,
+               handler: |l,_v,id,a| l.dos_unwind_exception(id,a[0],a[1],a[2]) },
 
     // ── DOSCALLS — process state / signals ───────────────────────────────
     ApiEntry { ordinal: 360, module: "DOSCALLS", name: "DosQueryModFromEIP", argc: 6,

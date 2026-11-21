@@ -42,10 +42,11 @@ LX_LINK=${LX_LINK:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/lx_link}
 OS2RC=${OS2RC:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/os2rc}
 
 # Not built here: the 16-bit NE program, the SDK's own samples (their
-# Makefiles build them with either compiler), the Rust guest, Open
-# Watcom's own sample, and the SOM samples whose classes come from the
-# SOM compiler's C++ and IDL output.
-SKIP=" ne_hello c_hello c_sdk_test c_pm_test c_gdb_test c_msg_test cxx_test rust_hello shapes som_test build "
+# Makefiles build them with either compiler), the Rust guest, the
+# samples only Open Watcom builds (shapes; wcxx_throw_test, Open Watcom
+# C++), and the SOM samples whose classes come from the SOM compiler's
+# C++ and IDL output.
+SKIP=" ne_hello c_hello c_sdk_test c_pm_test c_gdb_test c_msg_test cxx_test wcxx_throw_test rust_hello shapes som_test build "
 
 for tool in "$LX_LINK" "$OS2RC"; do
     [ -x "$tool" ] || { echo "build_sdk.sh: $tool is missing (cargo build --bin lx_link --bin os2rc)" >&2; exit 1; }

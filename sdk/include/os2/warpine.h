@@ -23,4 +23,12 @@ APIRET APIENTRY WrpQueryUnwindTables(PVOID pCode, PVOID *ppBegin);
 #define WRP_RUNTIME_CXX_WORD    0
 APIRET APIENTRY WrpQueryRuntimeBlock(PULONG *ppBlock);
 
+/* The return address of an exception handler Warpine calls (ADR-0110).
+ * An unwinder that reaches it steps from the handler into the context the
+ * handler was called for: its arguments are the report record, the
+ * registration record and the CONTEXTRECORD. So a C++ exception thrown in
+ * an OS/2 exception handler unwinds the frames of the code that trapped,
+ * running their destructors, to a catch above it. */
+#define XCPT_RET_TRAP  0x010003FDUL
+
 #endif

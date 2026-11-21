@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2246 unit tests (2160 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 208 integration tests
+cargo test                                 # 2250 unit tests (2164 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 210 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -64,7 +64,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 - **Every C sample from GCC or clang** (ADR-0101): `samples/build_sdk.sh gcc|clang [sample...]` builds into `samples/build/<cc>/`; `WARPINE_SAMPLES=gcc cargo test --test integration` runs the tests on those builds (Open Watcom's are the default). In tests, name sample paths through `sample_path` / `sample_exists`.
   - CI (ADR-0106): `ci/run.sh [watcom|gcc|clang]` runs the matrix entries of `.github/workflows/ci.yml` locally, in the pinned image of `vendor/setup_ci_image.sh` (cargo into `target/ci`, samples into `samples/build/ci-<cc>`).
   - Pinned compilers: `./vendor/setup_compilers.sh` (a Podman image from a Debian base pinned by digest, packages from a dated snapshot), then `CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc`. The container sees only the repository.
-- **C++** (ADR-0103): `$(OS2_CXX) $(OS2_CXXFLAGS)` from `os2.mk` (g++ / clang++, the SDK's `include/c++`), linked with `$(OS2_LIBCXX)` before `$(OS2_LIBC)`; exceptions, RTTI, `new` / `delete`, `__cxa_atexit` (see `samples/cxx_test`). Exceptions pass between the program and its DLLs (each module's runtime registers its unwind tables, and all share a per-thread runtime block: `WARPINE.7`–`10`, `os2/warpine.h`, ADR-0107), but must not cross a call into Warpine.
+- **C++** (ADR-0103): `$(OS2_CXX) $(OS2_CXXFLAGS)` from `os2.mk` (g++ / clang++, the SDK's `include/c++`), linked with `$(OS2_LIBCXX)` before `$(OS2_LIBC)`; exceptions, RTTI, `new` / `delete`, `__cxa_atexit` (see `samples/cxx_test`). Exceptions pass between the program and its DLLs (each module's runtime registers its unwind tables, and all share a per-thread runtime block: `WARPINE.7`–`10`, `os2/warpine.h`, ADR-0107), but must not cross a call into Warpine. An OS/2 exception handler may `throw`: the unwinder steps from its return address `XCPT_RET_TRAP` into the trapping context, so the trapping frames' destructors run (ADR-0110; C++ and the C library are built with `-fasynchronous-unwind-tables`). `setjmp.h`: `longjmp` unwinds the OS/2 handlers registered since `setjmp`.
 - **Source-level debugging** (ADR-0102): objects with DWARF (`-g`) make `lx-link` write `<output>.dbg`; `warpine --gdb 1234 prog.exe`, then `gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234'` (see `samples/c_gdb_test`). DLLs' companions come from the stub's library list, also after `DosLoadModule` (ADR-0104).
 - **Generators:** each has a test that fails when its output is stale.
   - `cargo run --bin gen_api -- check | validate-doc | check-headers`: `targets/os2api.def` is the single source of the ordinals; `check-headers` holds the SDK's headers to it (ADR-0096).
@@ -110,6 +110,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 | `SYSTEM_AREA_BASE` | `0x01800000` (256 KB) | Warpine's own structures, outside every program (ADR-0094): GDT, IDT, TIB, PIB, environment page, `TLM_PAGE`, information segments |
 | `TIB_BASE` / `PIB_BASE` | `0x01810000` / `0x01811000` | Thread 1's block and the process block, in the system area |
 | `TLM_PAGE` | `0x0181F000` | The thread-local memory page: each 32-bit thread's own page tables (`paging.rs`, ADR-0088) map it to the thread's own page |
+| `FS_WINDOW` | `0x01840000` | Mapped by each thread's tables to its own TIB; selector `0x18`'s base, so reloading FS keeps the TIB (ADR-0110). The low 64 KB are not present: NULL pointers trap |
 
 The PIB holds `pib_ulpid` at `+0x00`, `ulppid` at `+0x04`, `hmte` at `+0x08`, `pchcmd` at `+0x0C` and `pchenv` at `+0x10`.
 

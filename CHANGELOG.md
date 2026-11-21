@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **`DosUnwindException` works** (ADR-0110). It calls the handlers above its target with `EH_UNWINDING`, newest first, takes each off the chain, and goes on at `pTargetIP` (or returns). `END_OF_CHAIN` and `UNWIND_ALL` unwind the whole chain. Before, it only cut the chain. `DosRaiseException` now fills in `ExceptionAddress`.
+- **C++ exceptions from OS/2 traps** (ADR-0110). An OS/2 exception handler in a GCC or clang program may `throw`: the exception unwinds the frames that trapped, running their destructors, to a catch above them. C++ code and the SDK's C library are built with unwind tables for every function for this.
+- **`setjmp` / `longjmp` in the SDK** (`setjmp.h`). `longjmp` unwinds the OS/2 handlers registered since `setjmp`, as Open Watcom's does, so a handler may leave an exception by `longjmp`.
+- **Samples:** `xcpt_unwind_test` (28 checks, Open Watcom, GCC and clang) and `wcxx_throw_test` (Open Watcom C++, 12 checks); `cxx_test` has 40 checks.
 - **CI** (ADR-0106): `.github/workflows/ci.yml` runs three entries of `ci/matrix.sh` on every push and pull request:
   - `watcom`: every test, clippy and the generators on Open Watcom's samples;
   - `gcc` and `clang`: every C sample built by that compiler, then the integration tests on those builds.
@@ -87,6 +91,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
 
 ### Fixed
+- **Open Watcom C++ programs skipped their destructors** when an exception passed: their runtime unwinds through `DosUnwindException`, which called no handler (ADR-0110).
+- **NULL pointers did not trap.** 32-bit threads mapped the low 64 KB, so a NULL access read or wrote linear address 0 silently. It now raises `XCPT_ACCESS_VIOLATION` as on OS/2, whose `ExceptionInfo` gives the access type and the address (it gave the EIP). `rexx_api_test` had a `strlen(NULL)` this hid.
+- **Reloading FS lost the TIB.** Selector `0x18` had base 0, so after Open Watcom's `longjmp` (which reloads FS) the exception chain head and `DosGetInfoBlocks`' TIB were at address 0. FS now reaches each thread's TIB through a window page its tables map.
+- **The SDK's `ERR`** is a pointer to the handler type, as in Open Watcom's header, so `(ERR)handler` casts compile.
 - **CI's `gcc` and `clang` entries** failed on a fresh checkout: `build_sdk.sh` did not write `pm_pointer_test`'s pointer files (only its Open Watcom Makefile ran `make_ptr.py`), and two tests ran Open Watcom builds those entries do not have instead of skipping.
 - **Activation between programs could be lost** (ADR-0108). When a program activated its own frame just as another program's activation reached the desktop server, the server's `Deactivate` arrived afterwards and won, and both programs then disagreed with the server about which window was active (`pm_xproc_test` failed now and then under load). Reports of the active frame are now numbered (desktop protocol version 9). An API call's change is reported before the call returns, and a program ignores a `Deactivate` that answers an older report.
 - **`WARPINE_COUNTRY` decides the formats too.** The date order and separator, the clock, the currency and (without `WARPINE_CODEPAGE`) the codepage follow the country it names. Before, they followed the host's `LANG`, so the tests' pinned locale was not pinned: `pm_container_test`'s golden, recorded on a Japanese host, failed elsewhere. The golden is regenerated with country 1's dates (`03-09-2020`).

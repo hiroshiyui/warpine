@@ -130,7 +130,7 @@ impl super::Loader {
         let mut vcpu = self.vm.create_vcpu(0).unwrap();
         // Set up 32-bit flat segment registers, CR0/CR4, GDT, IDT, and
         // thread 1's page tables (thread-local memory, ADR-0088).
-        let cr3 = self.alloc_paging_block().unwrap_or_else(|| {
+        let cr3 = self.alloc_paging_block(TIB_BASE).unwrap_or_else(|| {
             log::warn!("no memory for thread 1's page tables; it runs unpaged");
             0
         });
@@ -245,7 +245,10 @@ impl super::Loader {
         sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1; sregs.cs.selector = 0x08;
         let mut ds = sregs.cs.clone(); ds.type_ = 3; ds.selector = 0x10;
         sregs.ds = ds.clone(); sregs.es = ds.clone(); sregs.gs = ds.clone(); sregs.ss = ds.clone();
-        let mut fs = ds; fs.base = tib_base; fs.limit = 0xFFF; fs.selector = 0x18; sregs.fs = fs;
+        // A paged thread sees its TIB through the FS window, as a reload
+        // of selector 0x18 would (ADR-0110); an unpaged one directly.
+        let fs_base = if cr3 != 0 { u64::from(FS_WINDOW) + (tib_base & 0xFFF) } else { tib_base };
+        let mut fs = ds; fs.base = fs_base; fs.limit = 0xFFF; fs.selector = 0x18; fs.g = 0; sregs.fs = fs;
         // PE=1 (protected mode), clear EM/TS to enable FPU, set NE for native FPU errors
         sregs.cr0 = (sregs.cr0 | 1 | (1 << 5)) & !(1u64 << 2) & !(1u64 << 3);
         // Also set CR4.OSFXSR to enable SSE instructions
@@ -270,7 +273,7 @@ impl super::Loader {
     /// free what Warpine allocated for it, keep its vCPU for reuse, wake
     /// `DosWaitThread`, and end the process when it was the last thread
     /// (or thread 1 returning from the program's entry point).
-    pub(crate) fn run_vcpu(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, _tib_base: u64) {
+    pub(crate) fn run_vcpu(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, tib_base: u64) {
         // Exit-list routines start from the thread's initial stack.
         let initial_esp = vcpu.get_regs().map_or(0, |r| r.rsp as u32);
         // Others may now kick this thread out of guest code.
@@ -280,6 +283,7 @@ impl super::Loader {
         // Only a CR3 that is a valid block counts (paging.rs).
         let paged = vcpu.get_sregs().ok().filter(|s| s.cr0 & super::paging::CR0_PG != 0);
         super::guest_mem::set_thread_tlm_backing(paged.and_then(|s| super::paging::tlm_page_of(s.cr3)).unwrap_or(0));
+        super::guest_mem::set_thread_tib(tib_base as u32);
         let end = self.vcpu_loop(&mut *vcpu, vcpu_id, initial_esp, false);
         self.end_thread(vcpu, vcpu_id, end, initial_esp);
     }
@@ -874,7 +878,7 @@ impl super::Loader {
                         // A handler call is built below the faulting stack:
                         // with no room there, no handler runs.
                         let dispatch = if guest_stack_ok(regs.rsp) {
-                            self.try_hw_exception_dispatch(vcpu_id, fault_ctx, vector, error_code)
+                            self.try_hw_exception_dispatch(vcpu_id, fault_ctx, vector, error_code, sregs.cr2 as u32)
                         } else { None };
                         match dispatch {
                             Some(exc_dispatch) => {
@@ -983,7 +987,13 @@ impl super::Loader {
                             }
                             return ThreadEnd::Thread(rc);
                         }
-                        if rip == CALLBACK_RET_TRAP as u64 {
+                        if rip == CALLBACK_RET_TRAP as u64 || rip == XCPT_RET_TRAP as u64 {
+                            // Exception and unwind handler calls the guest left
+                            // without returning (a handler that longjmp'd out):
+                            // a trap on a stack above where they were made
+                            // ends them (ADR-0110).
+                            let trap_esp = vcpu.get_regs().map_or(0, |r| r.rsp);
+                            drop_abandoned_handler_frames(self, &mut callback_stack, trap_esp);
                             if let Some(frame) = callback_stack.pop() {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let result = regs.rax as u32;
@@ -1100,6 +1110,10 @@ impl super::Loader {
                                             mem.free(base);
                                         }
                                         regs.rax = NO_ERROR as u64;
+                                    }
+                                    FrameKind::UnwindHandler { unwind } => {
+                                        drive_unwind(&mut *vcpu, self, vcpu_id, &mut callback_stack, unwind);
+                                        continue;
                                     }
                                     FrameKind::ExceptionHandler {
                                         saved, next_handler, exc_report, ctx_record, guest_allocs,
@@ -1399,6 +1413,29 @@ impl super::Loader {
                                     );
                                 }
                             }
+                            ApiResult::Unwind(mut unwind) => {
+                                // DosUnwindException: the caller's state, which
+                                // the handlers see and the thread goes on with
+                                // (at pTargetIP, or the return address).
+                                let regs = vcpu.get_regs().unwrap();
+                                let sregs = vcpu.get_sregs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for DosUnwindException return address");
+                                let caller = FaultContext {
+                                    eax: NO_ERROR, ebx: regs.rbx as u32, ecx: regs.rcx as u32, edx: regs.rdx as u32,
+                                    esi: regs.rsi as u32, edi: regs.rdi as u32, ebp: regs.rbp as u32,
+                                    esp: (regs.rsp + 4) as u32, eip: return_addr, eflags: regs.rflags as u32,
+                                    cs: sregs.cs.selector, ds: sregs.ds.selector, es: sregs.es.selector,
+                                    fs: sregs.fs.selector, gs: sregs.gs.selector, ss: sregs.ss.selector,
+                                };
+                                self.write_context_record(unwind.ctx, &caller);
+                                if unwind.own_report {
+                                    self.guest_write::<u32>(unwind.report + ERR_ADDR, return_addr);
+                                }
+                                let target_ip = unwind.target_ip;
+                                unwind.resume = FaultContext { eip: if target_ip != 0 { target_ip } else { return_addr }, ..caller };
+                                drive_unwind(&mut *vcpu, self, vcpu_id, &mut callback_stack, unwind);
+                            }
                             ApiResult::CallGuest { addr, hmod, phmod, object_bases } => {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
@@ -1560,13 +1597,78 @@ fn setup_exception_dispatch(
     // Build the handler call on the guest stack: 5 × u32 = 20 bytes.
     regs.rsp -= 20;
     let sp = regs.rsp as u32;
-    loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("SEH stack write OOB");
+    loader.guest_write::<u32>(sp,      XCPT_RET_TRAP).expect("SEH stack write OOB");
     loader.guest_write::<u32>(sp +  4, exc_report).expect("SEH stack write OOB");
     loader.guest_write::<u32>(sp +  8, reg_rec).expect("SEH stack write OOB");
     loader.guest_write::<u32>(sp + 12, ctx_record).expect("SEH stack write OOB");
     loader.guest_write::<u32>(sp + 16, 0).expect("SEH stack write OOB"); // pDispCtx
     regs.rip = handler_addr as u64;
     vcpu.set_regs(&regs).unwrap();
+}
+
+/// Go on with `unwind` (ADR-0110): call its next handler with the
+/// four exception-handler arguments under a `FrameKind::UnwindHandler`
+/// frame, below the caller's stack; or, when it is done, free its records
+/// and go on with the registers it resumes with.
+fn drive_unwind(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    vcpu_id: u32,
+    callback_stack: &mut Vec<CallbackFrame>,
+    mut unwind: Box<super::seh::Unwind>,
+) {
+    let mut regs = vcpu.get_regs().unwrap();
+    let r = unwind.resume.clone();
+    match loader.unwind_step(vcpu_id, &mut unwind) {
+        Some((handler, rec)) => {
+            let (report, ctx) = (unwind.report, unwind.ctx);
+            callback_stack.push(CallbackFrame {
+                saved_rip: r.eip as u64,
+                saved_rsp: r.esp as u64,
+                kind: FrameKind::UnwindHandler { unwind },
+            });
+            let sp = r.esp.wrapping_sub(20);
+            for (i, v) in [XCPT_RET_TRAP, report, rec, ctx, 0].into_iter().enumerate() {
+                loader.guest_write::<u32>(sp + 4 * i as u32, v).expect("unwind stack write OOB");
+            }
+            regs.rsp = sp as u64;
+            regs.rip = handler as u64;
+        }
+        None => {
+            loader.free_exception_records(std::mem::take(&mut unwind.allocs));
+            regs.rip = r.eip as u64;
+            regs.rsp = r.esp as u64;
+            regs.rax = r.eax as u64;
+            regs.rbx = r.ebx as u64;
+            regs.rcx = r.ecx as u64;
+            regs.rdx = r.edx as u64;
+            regs.rsi = r.esi as u64;
+            regs.rdi = r.edi as u64;
+            regs.rbp = r.ebp as u64;
+            regs.rflags = r.eflags as u64;
+        }
+    }
+    vcpu.set_regs(&regs).unwrap();
+}
+
+/// Drop the exception and unwind handler frames on top of `callback_stack`
+/// that the guest left without returning: a handler call is made below
+/// the stack it returns to, so a trap whose stack lies above that is
+/// another call's, and those frames' handlers are gone (a handler that
+/// longjmp'd out, ADR-0110). Their records are freed.
+fn drop_abandoned_handler_frames(loader: &super::Loader, callback_stack: &mut Vec<CallbackFrame>, trap_esp: u64) {
+    while let Some(top) = callback_stack.last()
+        && matches!(top.kind, FrameKind::ExceptionHandler { .. } | FrameKind::UnwindHandler { .. })
+        && trap_esp > top.saved_rsp
+    {
+        let Some(frame) = callback_stack.pop() else { break };
+        debug!("dropping an abandoned handler frame (returns to ESP 0x{:08X}, trap at 0x{:08X})", frame.saved_rsp, trap_esp);
+        match frame.kind {
+            FrameKind::ExceptionHandler { guest_allocs, .. } => loader.free_exception_records(guest_allocs),
+            FrameKind::UnwindHandler { mut unwind } => loader.free_exception_records(std::mem::take(&mut unwind.allocs)),
+            _ => {}
+        }
+    }
 }
 
 /// Drive the modal dialog message loop for WinDlgBox / WinProcessDlg.
@@ -2111,6 +2213,28 @@ mod entry_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0110: exception and unwind handler frames a trap's stack lies
+    /// above were left by their handler (a longjmp out); others stay.
+    #[test]
+    fn abandoned_handler_frames_are_dropped_on_a_later_trap() {
+        let loader = super::super::Loader::new_mock();
+        let xcpt = |saved_rsp: u64| CallbackFrame {
+            saved_rip: 0, saved_rsp,
+            kind: FrameKind::ExceptionHandler {
+                saved: Box::default(), next_handler: XCPT_CHAIN_END, exc_report: 0, ctx_record: 0,
+                guest_allocs: Vec::new(),
+            },
+        };
+        let mut stack = vec![CallbackFrame { saved_rip: 0, saved_rsp: 0x9000, kind: FrameKind::PmCallback }, xcpt(0x4000)];
+        drop_abandoned_handler_frames(&loader, &mut stack, 0x3FF0);
+        assert_eq!(stack.len(), 2, "a trap below it: the handler is returning");
+        drop_abandoned_handler_frames(&loader, &mut stack, 0x8FF0);
+        assert_eq!(stack.len(), 1, "a trap above it: the handler was left");
+        assert!(matches!(stack[0].kind, FrameKind::PmCallback), "other frames stay");
+        drop_abandoned_handler_frames(&loader, &mut stack, 0xA000);
+        assert_eq!(stack.len(), 1, "never other kinds");
+    }
     use super::super::mutex_ext::MutexExt;
     use super::super::pm_types::OS2Message;
     use super::super::vm_backend::mock::MockVcpu;
@@ -2122,7 +2246,7 @@ mod tests {
     fn a_thread_runs_paged_on_its_own_block_or_unpaged() {
         use super::super::paging::{CR0_PG, CR4_PSE};
         let loader = super::super::Loader::new_mock();
-        let block = loader.alloc_paging_block().expect("a block");
+        let block = loader.alloc_paging_block(TIB_BASE).expect("a block");
         let mut vcpu = MockVcpu::new();
         loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, block);
         let s = vcpu.get_sregs().unwrap();
@@ -2863,7 +2987,7 @@ mod tests {
         vcpu.sregs.ss.db = 1;
         loader.run_vcpu(vcpu, MAIN_VCPU_ID, 0);
         let sp = STACK_TOP - 20;
-        assert_eq!(loader.guest_read::<u32>(sp), Some(CALLBACK_RET_TRAP));
+        assert_eq!(loader.guest_read::<u32>(sp), Some(XCPT_RET_TRAP), "a handler returns to XCPT_RET_TRAP (ADR-0110)");
         let report = loader.guest_read::<u32>(sp + 4).unwrap();
         assert_eq!(loader.guest_read::<u32>(report + ERR_NUM), Some(XCPT_SIGNAL));
         assert_eq!(loader.guest_read::<u32>(report + ERR_PARAMS), Some(XCPT_SIGNAL_INTR));

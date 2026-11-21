@@ -1080,7 +1080,7 @@ mod tests {
         use super::super::constants::ERROR_MAX_THRDS_REACHED;
         let d = tempfile::tempdir().unwrap();
         let l = loader_in_session(d.path(), 1);
-        let creator = l.alloc_paging_block().expect("the creator's block");
+        let creator = l.alloc_paging_block(crate::loader::constants::TIB_BASE).expect("the creator's block");
         let before = l.shared.mem_mgr.lock().unwrap().next_free;
         super::super::guest_mem::set_thread_tlm_backing(super::super::paging::tlm_page_of(creator as u64).unwrap());
         let rc = l.dos_create_thread(0, 0x7_0000, 0x1_0000, 0, 0, 0x2000);

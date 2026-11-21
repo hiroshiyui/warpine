@@ -115,7 +115,7 @@ static LONG run(char *source, char *name, LONG argc, PRXSTRING argv, PRXSYSEXIT 
 {
     RXSTRING instore[2], res;
     LONG rc;
-    MAKERXSTRING(instore[0], source, strlen(source));
+    MAKERXSTRING(instore[0], source, source ? strlen(source) : 0);
     MAKERXSTRING(instore[1], NULL, 0);
     MAKERXSTRING(res, result, room);
     rc = RexxStart(argc, argv, name, source ? instore : NULL, "TESTENV", RXCOMMAND, exits, retc, &res);

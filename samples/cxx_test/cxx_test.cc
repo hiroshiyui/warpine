@@ -8,8 +8,10 @@
  * to a base, by pointer, catch (...), rethrow, destructors run while
  * unwinding, std::bad_alloc, std::bad_cast), thread-safe static locals,
  * exceptions on a second thread, and exceptions passing an OS/2 exception
- * handler registered with DosSetExceptionHandler, which leaves the chain
- * with the frame it was registered in.
+ * handler registered with DosSetExceptionHandler, which is called with
+ * EH_UNWINDING and leaves the chain with the frame it was registered in.
+ * An access violation an OS/2 handler turns into a C++ throw unwinds the
+ * frames that trapped, running their destructors (ADR-0110).
  *
  * With cxxdll.dll, which links its own copy of the runtime (ADR-0107):
  * exceptions thrown in the DLL and caught here, thrown here and caught in
@@ -100,8 +102,10 @@ static int &counter_once()
 }
 
 // ── An OS/2 exception handler under a C++ throw ────────────────────────
-static ULONG APIENTRY os2_handler(PEXCEPTIONREPORTRECORD, PEXCEPTIONREGISTRATIONRECORD, PCONTEXTRECORD, PVOID)
+static int os2_unwound;              // calls with EH_UNWINDING
+static ULONG APIENTRY os2_handler(PEXCEPTIONREPORTRECORD rep, PEXCEPTIONREGISTRATIONRECORD, PCONTEXTRECORD, PVOID)
 {
+    if (rep->fHandlerFlags & EH_UNWINDING) os2_unwound++;
     return XCPT_CONTINUE_SEARCH;
 }
 
@@ -120,6 +124,66 @@ __attribute__((noinline)) static void throw_past_os2_handler()
     rec.ExceptionHandler = os2_handler;
     DosSetExceptionHandler(&rec);
     throw std::logic_error("past an OS/2 handler");
+}
+
+// ── A trap made a C++ exception (ADR-0110) ─────────────────────────────
+// An OS/2 handler throws on an access violation: the exception unwinds
+// the frames of the code that trapped, running their destructors, to a
+// catch above them, and the handler's own registration is unwound.
+struct Trap {
+    ULONG address;
+};
+
+static int trap_dtors;                // destructors run while unwinding
+static int trap_unwound;              // the trap handler's EH_UNWINDING calls
+struct TrapGuard {
+    ~TrapGuard() { trap_dtors++; }
+};
+
+static ULONG APIENTRY trap_to_throw(PEXCEPTIONREPORTRECORD rep, PEXCEPTIONREGISTRATIONRECORD, PCONTEXTRECORD, PVOID)
+{
+    if (rep->fHandlerFlags & (EH_UNWINDING | EH_EXIT_UNWIND)) {
+        trap_unwound++;
+        return XCPT_CONTINUE_SEARCH;
+    }
+    if (rep->ExceptionNum == XCPT_ACCESS_VIOLATION) throw Trap{rep->ExceptionInfo[1]};
+    return XCPT_CONTINUE_SEARCH;
+}
+
+static int *volatile nowhere = nullptr;
+
+__attribute__((noinline)) static void touch_nowhere()
+{
+    *nowhere = 1;                     // access violation at address 0
+}
+
+// Called through a pointer the compiler cannot see through: otherwise it
+// proves the call cannot throw (a store throws nothing in C++) and leaves
+// the caller without the cleanup that runs its destructor. Code compiled
+// with GCC's -fnon-call-exceptions needs no such care.
+static void (*volatile trap_here)() = touch_nowhere;
+
+__attribute__((noinline)) static void guarded_inner()
+{
+    TrapGuard g;
+    trap_here();
+}
+
+__attribute__((noinline)) static void guarded_outer()
+{
+    TrapGuard g;
+    guarded_inner();
+}
+
+// Registers the handler, then traps two frames down.
+__attribute__((noinline)) static void trap_under_handler()
+{
+    EXCEPTIONREGISTRATIONRECORD rec;
+    std::memset(&rec, 0, sizeof rec);
+    rec.ExceptionHandler = trap_to_throw;
+    DosSetExceptionHandler(&rec);
+    guarded_outer();
+    DosUnsetExceptionHandler(&rec);   // never reached
 }
 
 // ── A second thread ────────────────────────────────────────────────────
@@ -248,6 +312,25 @@ int main(int argc, char **argv)
         check("an exception passes an OS/2 exception handler", std::strcmp(e.what(), "past an OS/2 handler") == 0);
     }
     check("... whose registration left the chain", chain_head() == head_before);
+    check("... after its handler was called with EH_UNWINDING", os2_unwound == 1);
+
+    for (int round = 1; round <= 3; round++) {
+        ULONG trap_head = chain_head();
+        trap_dtors = trap_unwound = 0;
+        ULONG where = 1;
+        try {
+            trap_under_handler();
+        } catch (const Trap &t) {
+            where = t.address;
+        }
+        if (round == 1) {
+            check("an access violation thrown as a C++ exception is caught", where == 0);
+            check("... the trapping frames' destructors ran", trap_dtors == 2);
+            check("... the handler was unwound and left the chain", trap_unwound == 1 && chain_head() == trap_head);
+        } else if (round == 3) {
+            check("... three times over", where == 0 && trap_dtors == 2 && chain_head() == trap_head);
+        }
+    }
 
     TID tid;
     check("DosCreateThread", DosCreateThread(&tid, thread_main, 0, 0, 0x10000) == NO_ERROR);

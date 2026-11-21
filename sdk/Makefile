@@ -9,13 +9,15 @@
 WARPINE_SDK_BUILDING = 1
 include os2.mk
 
-LIBC_SRCS = string.c stdlib.c malloc.c stdio.c printf.c dtoa.c strtod.c math.c time.c scanf.c msgstub.c divdi3.c
+LIBC_SRCS = string.c stdlib.c malloc.c stdio.c printf.c dtoa.c strtod.c math.c time.c scanf.c msgstub.c divdi3.c setjmp.c
 LIBC_OBJS = $(LIBC_SRCS:%.c=$(OS2_BUILD)/%.o)
 HEADERS   = $(wildcard include/*.h include/os2/*.h) libc/libc_internal.h
 
 # The runtime's own memcpy and memset must not be turned into calls to
-# themselves.
-LIBC_CFLAGS = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -Werror
+# themselves. Unwind tables: a C++ exception thrown for a trap in the C
+# library (a bad pointer given to memcpy) unwinds through it (ADR-0110).
+LIBC_CFLAGS = $(filter-out -fno-asynchronous-unwind-tables,$(OS2_CFLAGS)) -fasynchronous-unwind-tables \
+              -std=gnu11 -Wall -Wextra -Werror
 ifeq ($(findstring clang,$(notdir $(CC))),)
 LIBC_CFLAGS += -fno-tree-loop-distribute-patterns
 endif

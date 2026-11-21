@@ -1,6 +1,6 @@
 # ADR-0096: A C SDK for GCC and clang: os2.h and a small runtime
 
-- **Status:** Accepted; builds on ADR-0095; amended by ADR-0097 (PM headers; `check-headers` compares every integer constant) and ADR-0098 (`errno` per thread, floating point in `printf`)
+- **Status:** Accepted; builds on ADR-0095; amended by ADR-0097 (PM headers; `check-headers` compares every integer constant) and ADR-0098 (`errno` per thread, floating point in `printf`); ADR-0110 adds `setjmp` / `longjmp` and unwind tables for C++ and the C library
 - **Date:** 2026-11-21
 - **Sources:**
   - IBM's *Control Program Programming Reference*: the prototypes, structures, flags and error codes of the Dos* and Que* calls, and of the Vio*, Kbd* and Mou* subsystem calls.

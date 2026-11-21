@@ -85,6 +85,7 @@ impl super::Loader {
             ApiResult::ExceptionDispatch { handler_addr, .. } => {
                 debug!(handler_addr, "exception_dispatch"); 0
             }
+            ApiResult::Unwind(u)               => { debug!(target = u.target, "unwind"); 0 }
         };
 
         // A change of the active frame is the desktop server's before the
