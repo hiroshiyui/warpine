@@ -550,6 +550,11 @@ mod tests {
             state = link.wait_call(id, Duration::from_millis(100));
         }
         assert_eq!(state, CallState::Answered(WinReply::Value(7)));
+        // The reader calls the waker after it has stored the answer and let
+        // go of the lock, so the answer can be seen first: wait for it.
+        while !woken.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(woken.load(Ordering::SeqCst), "the waker ran");
         assert_eq!(link.poll_call(id), CallState::Gone, "answered once");
         drop(t.join().unwrap());
