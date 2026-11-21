@@ -14,6 +14,7 @@ disassembly.
 - [Kernel and processes](#kernel-and-processes)
 - [Console and multimedia](#console-and-multimedia)
 - [Application compatibility](#application-compatibility)
+- [Security Facilities](#security-facilities)
 - [Development toolchain](#development-toolchain)
 - [Long-term](#long-term)
 
@@ -246,6 +247,23 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - still open from R2's area: REXXUTIL's screen and keyboard functions (`SysCurPos`, `SysGetKey`, `SysTextScreenRead` …), EAs, INI files and Workplace Shell objects, case by case; interactive tracing's pause (`TRACE ?`); an error output (STDERR, trace) separate from the shell's output;
 - [ ] **Session clock**: `DosSetDateTime` reaching processes that are already running (ADR-0039).
 - [ ] **Sockets** (ADR-0041): the real ordinals and layouts of `select`, `bsdselect` and `os2_select`.
+
+---
+
+## Security Facilities
+
+Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
+
+- [ ] **Guest privilege**: 32-bit guests run at ring 0, so they can change their own page tables and control registers; Warpine only detects that afterwards (`os2-paging-watch`, ADR-0088). Running them at ring 3 would let the processor enforce it, at the cost of the API thunks and the exception path changing privilege. XE faces the same choice.
+- [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (guard pages, read-only and decommitted memory, page 0), and paging for 16-bit (NE) programs.
+- [ ] **Confining the host process** (a second layer, should a guest escape into Warpine's own process):
+  - Landlock: file access only to the mapped drives, the session directory, `/dev/kvm` and what SDL needs; the drive rule of ADR-0066 enforced by the kernel;
+  - a cgroup v2 scope per session (memory, tasks), as the tests and the pre-commit hook already use, against runaway or hostile guests;
+  - seccomp filters per process role (guest processes, the desktop server);
+  - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
+- [ ] **Fuzzing** the parsers that read untrusted input: the LX and NE loaders, resources, the desktop protocol decoder (`desktop::proto`), message files (`msgfile.rs`), and the `os2rc` / `os2msg` / `lx-link` inputs.
+- [ ] **Dependency advisories in CI**: `cargo audit` and `cargo deny check advisories` run only at release time; CI and the hook check sources, bans and licences.
+- [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---
 
