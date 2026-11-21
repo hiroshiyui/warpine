@@ -87,6 +87,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
 
 ### Fixed
+- **CI's `gcc` and `clang` entries** failed on a fresh checkout: `build_sdk.sh` did not write `pm_pointer_test`'s pointer files (only its Open Watcom Makefile ran `make_ptr.py`), and two tests ran Open Watcom builds those entries do not have instead of skipping.
 - **Activation between programs could be lost** (ADR-0108). When a program activated its own frame just as another program's activation reached the desktop server, the server's `Deactivate` arrived afterwards and won, and both programs then disagreed with the server about which window was active (`pm_xproc_test` failed now and then under load). Reports of the active frame are now numbered (desktop protocol version 9). An API call's change is reported before the call returns, and a program ignores a `Deactivate` that answers an older report.
 - **`WARPINE_COUNTRY` decides the formats too.** The date order and separator, the clock, the currency and (without `WARPINE_CODEPAGE`) the codepage follow the country it names. Before, they followed the host's `LANG`, so the tests' pinned locale was not pinned: `pm_container_test`'s golden, recorded on a Japanese host, failed elsewhere. The golden is regenerated with country 1's dates (`03-09-2020`).
 - **`samples/build_sdk.sh`** no longer reports `cxx_test` as a failure: it and `c_msg_test`, which have their own Makefiles, are skipped.

@@ -276,6 +276,7 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
   - the entries left undeclared (`cargo run --bin gen_api -- check-headers` counts them), the float and long double math functions.
 - [ ] **After M3 and M4** (every C sample from GCC and clang, pinned compilers, GDB with DWARF, C++: ADR-0101–0103):
   - CI (ADR-0106): watch the first runs on GitHub (time and memory of the three entries), and consider caching the image and the crates;
+  - tests that need a sample binary should skip when it is missing: in a clean worktree, 13 integration tests failed until the Open Watcom samples were built (a guard in `run_sample` and the golden helpers, rather than per test);
   - C++ exceptions through Warpine's callbacks (a window procedure that `WinDispatchMsg` called; across DLLs is done, ADR-0107);
   - OS/2 exceptions running C++ destructors (an OS/2 handler per C++ frame, as compilers for OS/2 do);
   - a C++ standard library (strings, containers, streams);

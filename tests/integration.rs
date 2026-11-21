@@ -161,7 +161,7 @@ fn test_hello_world() {
 /// runtime variables.
 #[test]
 fn test_som_samples_run_on_the_som_runtime() {
-    if !kvm_available() { return; }
+    if !kvm_available() || !sample_exists("samples/som_test/hello.exe") { return; }
     // Open Watcom's C library ends lines with CR LF on OS/2.
     let (out, code) = run_sample("samples/som_test/hello.exe", 15);
     assert_eq!((code, out.replace("\r\n", "\n").as_str()), (0, "Hello, World from SOM (C version)\n"));
@@ -1672,7 +1672,7 @@ fn test_queue() {
 /// ne_hello: 16-bit NE format DosWrite + DosExit — pure assembly, no CRT.
 #[test]
 fn test_ne_hello() {
-    if !kvm_available() { return; }
+    if !kvm_available() || !sample_exists("samples/ne_hello/ne_hello.exe") { return; }
     let (out, code) = run_sample("samples/ne_hello/ne_hello.exe", 15);
     assert_eq!(code, 0, "ne_hello exited with {code}\nstdout:\n{out}");
     assert!(

@@ -47,4 +47,9 @@ The tests need KVM, SDL3, GDB, the pinned Open Watcom snapshot and the pinned co
   - the tool paths in `os2.mk`, `build_sdk.sh` and `samples/c_hello` ignored `CARGO_TARGET_DIR`;
   - `WARPINE_COUNTRY` set only the country code, while the date and number formats followed the host's `LANG`, so `pm_container_test`'s golden depended on the developer's locale. A country now decides its formats, and the golden is recorded with country 1's;
   - GDB 16 (the image's) reads the symbols of the DLLs in its first library list only after `sharedlibrary` (ADR-0104).
+- **The first run on GitHub** failed the `gcc` and `clang` entries, on gaps a workstation's leftovers had hidden:
+  - `pm_pointer_test`'s pointer files are written by `make_ptr.py`, which only its Open Watcom Makefile ran; `build_sdk.sh` now runs it too;
+  - `test_ne_hello` and `test_som_samples_run_on_the_som_runtime` ran Open Watcom builds that a `gcc` / `clang` entry does not have; they now skip without them, like the other tests.
+
+  The `gcc` entry was then run from a fresh worktree with `ci/run.sh`, which reproduces a clean checkout.
 - `.gitignore` ignores the debug companions (`*.dbg`) and the message files built in `samples/c_msg_test`.

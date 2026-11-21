@@ -174,6 +174,10 @@ build_special() {
 build_one() {
     local name=$1 src=$SAMPLES/$1 out=$OUT_ROOT/$1
     mkdir -p "$out"
+    # Inputs the sample's Makefile generates first (not in the repository).
+    if [ -f "$src/make_ptr.py" ]; then
+        python3 -I "$src/make_ptr.py" "$src"
+    fi
     copy_data "$src" "$out"
     build_special "$name" "$out" && return 0
     local c=("$src"/*.c)
