@@ -315,6 +315,11 @@ The WPS is a PM application on the session desktop, built on SOM. The SOM kernel
   - the stub prints "requires a 64-bit OS/2" and exits, so DOS, OS/2 and `file` all behave; record this in an ADR;
   - `src/xe/`, and `detect_format()` → `load_xe()` / `run_xe()`.
 - [ ] **Long mode**: `EFER.LME`, 4-level paging, a 64-bit GDT with FS/GS for the TIB / PIB, thunks with System V AMD64 arguments.
+- [ ] **ABI** (ADR-0109, proposed):
+  - the System V AMD64 psABI unchanged for C, the Itanium C++ ABI for C++ (the SDK's runtime and libc++ carry over), IEEE 754, DWARF `.eh_frame` unwinding;
+  - LP64 (POSIX `_POSIX_V7_LP64_OFF64`): OS/2 types from `<stdint.h>`, `ULONG` / `LONG` 32-bit, pointer-carrying types (handles, `MPARAM` / `MRESULT`, `PVOID` fields) 64-bit; a layout table for every structure and PM message;
+  - a CPU baseline from the psABI's levels (`x86-64-v2` or `v3`) in the XE header;
+  - to decide: OS/2 exception handlers against `.eh_frame` unwinding; the red zone with guests at ring 0 (ring 3, IST stacks, or `-mno-red-zone`); the psABI's ELF-specific parts if XE is not ELF; SOM's 64-bit interface.
 - [ ] **APIs**:
   - `DOSCALLS64` (I/O, memory, threads, semaphores);
   - `PMWIN64`;
