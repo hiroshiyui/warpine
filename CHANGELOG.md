@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **CI** (ADR-0106): `.github/workflows/ci.yml` runs three entries of `ci/matrix.sh` on every push and pull request:
+  - `watcom`: every test, clippy and the generators on Open Watcom's samples;
+  - `gcc` and `clang`: every C sample built by that compiler, then the integration tests on those builds.
+
+  They run in a pinned Podman image (`vendor/setup_ci_image.sh`: the compilers' Debian digest and snapshot, SDL3, GDB, rustup by SHA-256). `ci/run.sh` runs the same entries on a workstation. The workflow uses no third-party actions.
 - **C++ exceptions across DLLs** (ADR-0107).
   - An exception thrown in a DLL can be caught by the program, and the other way round, also through frames with destructors and with `throw;`. Before, it ended in `std::terminate`.
   - Each module's C++ runtime registers its unwind tables with Warpine (`WrpRegisterUnwindTables`, `WrpQueryUnwindTables`), and the runtimes share a per-thread runtime block (`WrpQueryRuntimeBlock`), so `std::uncaught_exceptions()` agrees in every module. An exception is freed by the runtime that allocated it.
@@ -82,8 +87,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
 
 ### Fixed
-- **`WARPINE_COUNTRY` decides the formats too.** The date order and separator, the clock, the currency and (without `WARPINE_CODEPAGE`) the codepage follow the country it names. Before, they followed the host's `LANG`, so the tests' pinned locale was not pinned: `pm_container_test`'s golden, recorded on a Japanese host, failed elsewhere. The golden is regenerated with country 1's dates (`03-09-2020`).
 - **Activation between programs could be lost** (ADR-0108). When a program activated its own frame just as another program's activation reached the desktop server, the server's `Deactivate` arrived afterwards and won, and both programs then disagreed with the server about which window was active (`pm_xproc_test` failed now and then under load). Reports of the active frame are now numbered (desktop protocol version 9). An API call's change is reported before the call returns, and a program ignores a `Deactivate` that answers an older report.
+- **`WARPINE_COUNTRY` decides the formats too.** The date order and separator, the clock, the currency and (without `WARPINE_CODEPAGE`) the codepage follow the country it names. Before, they followed the host's `LANG`, so the tests' pinned locale was not pinned: `pm_container_test`'s golden, recorded on a Japanese host, failed elsewhere. The golden is regenerated with country 1's dates (`03-09-2020`).
+- **`samples/build_sdk.sh`** no longer reports `cxx_test` as a failure: it and `c_msg_test`, which have their own Makefiles, are skipped.
 - **Exception handlers read the wrong registers from `CONTEXTRECORD`** (ADR-0101).
   - Warpine laid out 0x88 bytes of floating-point state where IBM's structure has 0x6C, so `ctx_RegEip`, `ctx_SegCs`, `ctx_RegEsp` and the rest were read from other registers' places.
   - The record now follows `<bsexcpt.h>`, 0xB0 bytes with `ctx_SegGs` at 0x70.

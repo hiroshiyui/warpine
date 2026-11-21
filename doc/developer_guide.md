@@ -2145,7 +2145,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2213: 2138 warpine + 23 `gen_api` + 32 `lx_link` + 8 `os2rc` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2246: 2160 warpine + 23 `gen_api` + 37 `lx_link` + 8 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2212,6 +2212,8 @@ Everything the build or the samples take from outside the repository is pinned a
 | GNU Unifont | release 17.0.03 (`vendor/unifont/README.md`) | the tarball's GPG signature by the Unifont maintainer; SHA-256 recorded |
 | IBM Plex | upstream commit in `vendor/ibm-plex/README.md` | files unmodified |
 | Guest Rust toolchain | `nightly-2026-11-15` in the guest crates' `rust-toolchain.toml` | build with `cargo build`, not `cargo +nightly` |
+| Pinned GCC and clang (ADR-0101) | `BASE_DIGEST` and `SNAPSHOT` in `vendor/setup_compilers.sh` | the base image by digest; apt checks the snapshot's packages against the archive keys in it |
+| The CI image (ADR-0106) | the same digest and snapshot (with its updates and security suites); `RUSTUP_VERSION` / `RUSTUP_SHA256` in `vendor/setup_ci_image.sh`; the toolchain of `rust-toolchain.toml` | `rustup-init` by SHA-256, the toolchain by rustup's manifest hashes; the workflow uses no third-party actions |
 
 Moving any of them is a deliberate change of the pin and its hash. Build outputs (`*.o`, `*.res`, `*.exe`) are never committed.
 
@@ -2290,7 +2292,9 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 cargo test --test integration     # the end-to-end tests (requires /dev/kvm)
 ```
 
-**The samples' compiler** (ADR-0101): the tests run the Open Watcom builds in `samples/<name>/`. With `WARPINE_SAMPLES=gcc` (or `clang`, `gcc-pinned`, `clang-pinned`) they run the builds of `samples/build_sdk.sh` instead: `sample_path` maps every `samples/<name>/<file>.exe` / `.dll` a test runs, copies or checks to `samples/build/<tag>/<name>/`, except for the samples that script does not build. Use `sample_path` / `sample_exists` for any new sample path in a test.
+**The samples' compiler** (ADR-0101): the tests run the Open Watcom builds in `samples/<name>/`. With `WARPINE_SAMPLES=gcc` (or `clang`, `gcc-pinned`, `clang-pinned`) they run the builds of `samples/build_sdk.sh` instead: `sample_path` maps every `samples/<name>/<file>.exe` / `.dll` a test runs, copies or checks to `samples/build/<tag>/<name>/`, except for the samples that script does not build. Use `sample_path` / `sample_exists` for any new sample path in a test. A `ci-` prefix (`ci-gcc`, `ci-clang`) is the CI matrix's own build (ADR-0106).
+
+**CI** (ADR-0106): `ci/matrix.sh watcom|gcc|clang` is one matrix entry; it runs in the image `vendor/setup_ci_image.sh` builds, started by `ci/run.sh` (locally, or from `.github/workflows/ci.yml`). A new tool or package the tests need goes into that image's package list. A sample with its own Makefile and integration test goes into `build_sdk.sh`'s `SKIP` and `sample_path`'s `NOT_BUILT`.
 
 ```bash
 samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
@@ -2455,7 +2459,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2213 unit tests (2138 warpine + 23 gen_api + 32 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat), 207 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2246 unit tests (2160 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 208 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

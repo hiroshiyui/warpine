@@ -257,12 +257,10 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
   - `os2rc`: HELPTABLE / HELPSUBTABLE, ASSOCTABLE, FONTDIR, resource names given as strings;
   - the entries left undeclared (`cargo run --bin gen_api -- check-headers` counts them), the float and long double math functions.
 - [ ] **After M3 and M4** (every C sample from GCC and clang, pinned compilers, GDB with DWARF, C++: ADR-0101–0103):
-  - run the integration suite against the GCC and clang builds in CI (`samples/build_sdk.sh`, `WARPINE_SAMPLES`), with the pinned compilers;
-  - C++ exceptions across DLLs (one shared runtime, or frame registration between modules) and through Warpine's callbacks;
+  - CI (ADR-0106): watch the first runs on GitHub (time and memory of the three entries), and consider caching the image and the crates;
+  - C++ exceptions through Warpine's callbacks (a window procedure that `WinDispatchMsg` called; across DLLs is done, ADR-0107);
   - OS/2 exceptions running C++ destructors (an OS/2 handler per C++ frame, as compilers for OS/2 do);
   - a C++ standard library (strings, containers, streams);
-  - `DosGetMessage` with messages bound into the executable;
-  - the debug companion for DLLs at their load address (a GDB command, or the stub reporting the loaded modules).
 - [ ] **Ported-software tier**:
   - bitwiseworks GCC / LIBCn / LIBCx binaries as regression inputs (check licences);
   - list the DOSCALLS ordinals LIBCn / LIBCx import;

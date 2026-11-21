@@ -26,15 +26,17 @@ fn warpine() -> &'static str {
 /// `samples/<name>/` by default, or with `WARPINE_SAMPLES=<tag>` the builds
 /// of `samples/build_sdk.sh` in `samples/build/<tag>/<name>/` (`gcc`,
 /// `clang`, or `gcc-pinned` / `clang-pinned` from the pinned compilers;
-/// ADR-0101). Only programs and DLLs move; the samples that script does
+/// ADR-0101; `ci-gcc` / `ci-clang` from the CI matrix, ADR-0106). Only programs and DLLs move; the samples that script does
 /// not build keep their Open Watcom binaries.
 fn sample_path(path: impl AsRef<Path>) -> String {
     let path = path.as_ref().to_string_lossy().into_owned();
     let Ok(cc) = std::env::var("WARPINE_SAMPLES") else { return path };
     if cc.is_empty() || cc == "watcom" { return path; }
-    let compiler = cc.strip_suffix("-pinned").unwrap_or(&cc);
+    let compiler = cc.strip_prefix("ci-").unwrap_or(&cc);
+    let compiler = compiler.strip_suffix("-pinned").unwrap_or(compiler);
     assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
-    const NOT_BUILT: &[&str] = &["ne_hello", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "rust_hello", "shapes", "som_test"];
+    const NOT_BUILT: &[&str] = &["ne_hello", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "cxx_test",
+                                  "rust_hello", "shapes", "som_test"];
     let Some(rest) = path.strip_prefix("samples/") else { return path };
     let Some((dir, _)) = rest.split_once('/') else { return path };
     let lower = rest.to_ascii_lowercase();

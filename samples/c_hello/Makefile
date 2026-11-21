@@ -4,7 +4,8 @@
 # OS/2 LX executable. Build lx-link first: cargo build --bin lx_link.
 
 CC      ?= gcc
-LX_LINK ?= ../../target/debug/lx_link
+CARGO_TARGET_DIR ?= ../../target
+LX_LINK ?= $(CARGO_TARGET_DIR)/debug/lx_link
 CFLAGS   = -m32 -O2 -ffreestanding -fno-pic -fno-stack-protector \
            -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections \
            -fcommon -Wall -Wextra

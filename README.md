@@ -246,8 +246,10 @@ samples/               OS/2 sample applications and build scripts
   c_gdb_test/          A C program built with -g, for source-level debugging with GDB
   cxx_test/            A C++ program (exceptions, RTTI, new / delete) built by g++ or clang++
   build_sdk.sh         Builds every C sample with GCC or clang into samples/build/
-sdk/                   The SDK for GCC and clang: os2.h, a small C runtime, a C++ runtime, os2.mk (os2rc compiles resources)
+sdk/                   The SDK for GCC and clang: os2.h, a small C runtime, a C++ runtime, os2.mk (os2rc compiles resources, os2msg messages)
 vendor/setup_compilers.sh  Pinned GCC and clang in a Podman image (vendor/pinned/ runs them)
+vendor/setup_ci_image.sh   The CI image: the same pinned base, SDL3, GDB and Rust (ADR-0106)
+ci/                    The CI matrix (matrix.sh) and its local runner (run.sh); .github/workflows/ci.yml calls them
 tests/rc/              Resource scripts os2rc must compile exactly as Open Watcom's wrc does
 crates/                Standalone guest crates (NOT part of the host workspace)
   warpine-os2-sys/     Raw #![no_std] OS/2 API bindings (extern "C" declarations)
@@ -364,6 +366,7 @@ samples/build_sdk.sh gcc           # or clang: samples/build/<cc>/<sample>/
 WARPINE_SAMPLES=gcc cargo test --test integration
 ./vendor/setup_compilers.sh        # pinned GCC and clang in a Podman image, by digest and snapshot date
 CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc
+ci/run.sh gcc                      # a CI matrix entry (watcom, gcc, clang) in the pinned image (ADR-0106)
 ```
 
 C++ works too, with exceptions and RTTI (ADR-0103): `os2.mk` gives `OS2_CXX` and `OS2_CXXFLAGS`, and a program links `libos2cxx.a` before `libos2c.a`.
@@ -403,7 +406,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2213 unit tests (no KVM required)
+cargo test                        # 2246 unit tests (no KVM required)
 cargo test --test integration     # 204 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

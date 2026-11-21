@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# CI (ADR-0106): the test matrix of ci/matrix.sh, in the pinned image of
+# vendor/setup_ci_image.sh, on GitHub's Linux runners (which have KVM).
+#
+# Supply chain: no third-party actions. The checkout is plain git, and
+# everything else runs in the image, whose inputs are pinned by digest,
+# snapshot date and SHA-256. ci/run.sh runs the same entries on a
+# workstation.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: samples from ${{ matrix.samples }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        samples: [watcom, gcc, clang]
+    steps:
+      - name: Check out the commit (plain git)
+        env:
+          REPO: ${{ github.server_url }}/${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git fetch -q --depth=1 "$REPO" "$SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Let the runner's user open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run the matrix entry in the pinned image
+        env:
+          SAMPLES: ${{ matrix.samples }}
+          CI_JOBS: "4"
+        run: ci/run.sh "$SAMPLES"

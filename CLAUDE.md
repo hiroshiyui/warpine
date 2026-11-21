@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2213 unit tests (2138 warpine + 23 gen_api + 32 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat) + 207 integration tests
+cargo test                                 # 2246 unit tests (2160 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 208 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -62,9 +62,10 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
   - Structure layouts match Open Watcom's (`tests/sdk_layout`, ADR-0101): a new structure Open Watcom also has goes into `fields.inc`.
   - DLLs: `lx-link --dll --export A,B.2 [--initinstance --terminstance] $(OS2_DLL0) objs libos2c.a -o x.dll`; a `.dll` input links its exports as imports.
 - **Every C sample from GCC or clang** (ADR-0101): `samples/build_sdk.sh gcc|clang [sample...]` builds into `samples/build/<cc>/`; `WARPINE_SAMPLES=gcc cargo test --test integration` runs the tests on those builds (Open Watcom's are the default). In tests, name sample paths through `sample_path` / `sample_exists`.
+  - CI (ADR-0106): `ci/run.sh [watcom|gcc|clang]` runs the matrix entries of `.github/workflows/ci.yml` locally, in the pinned image of `vendor/setup_ci_image.sh` (cargo into `target/ci`, samples into `samples/build/ci-<cc>`).
   - Pinned compilers: `./vendor/setup_compilers.sh` (a Podman image from a Debian base pinned by digest, packages from a dated snapshot), then `CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc`. The container sees only the repository.
-- **C++** (ADR-0103): `$(OS2_CXX) $(OS2_CXXFLAGS)` from `os2.mk` (g++ / clang++, the SDK's `include/c++`), linked with `$(OS2_LIBCXX)` before `$(OS2_LIBC)`; exceptions, RTTI, `new` / `delete`, `__cxa_atexit` (see `samples/cxx_test`). An exception must not leave its module or cross a call into Warpine.
-- **Source-level debugging** (ADR-0102): objects with DWARF (`-g`) make `lx-link` write `<output>.dbg`; `warpine --gdb 1234 prog.exe`, then `gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234'` (see `samples/c_gdb_test`).
+- **C++** (ADR-0103): `$(OS2_CXX) $(OS2_CXXFLAGS)` from `os2.mk` (g++ / clang++, the SDK's `include/c++`), linked with `$(OS2_LIBCXX)` before `$(OS2_LIBC)`; exceptions, RTTI, `new` / `delete`, `__cxa_atexit` (see `samples/cxx_test`). Exceptions pass between the program and its DLLs (each module's runtime registers its unwind tables, and all share a per-thread runtime block: `WARPINE.7`–`10`, `os2/warpine.h`, ADR-0107), but must not cross a call into Warpine.
+- **Source-level debugging** (ADR-0102): objects with DWARF (`-g`) make `lx-link` write `<output>.dbg`; `warpine --gdb 1234 prog.exe`, then `gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234'` (see `samples/c_gdb_test`). DLLs' companions come from the stub's library list, also after `DosLoadModule` (ADR-0104).
 - **Generators:** each has a test that fails when its output is stale.
   - `cargo run --bin gen_api -- check | validate-doc | check-headers`: `targets/os2api.def` is the single source of the ordinals; `check-headers` holds the SDK's headers to it (ADR-0096).
   - `cargo run --bin gen_arch -- check | render` (ADR-0021): a new, renamed or removed module needs `doc/architecture/layers.toml` updated and a render.

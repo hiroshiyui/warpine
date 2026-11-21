@@ -317,5 +317,11 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - a class without a version accepting any; `somTestCls`'s error code; the text of a kept `somAssert`; `somCheckArgs`'s levels;
   - `dataAlignment` 4, `classInfo` and the protected data 0.
 
+- **The SDK and its tools** (ADR-0101–0104):
+  - `DosGetMessage` (ADR-0105): Warpine's own message format and bound segment (IBM `MKMSGF` files not read), the search order (bound, current directory, `DPATH`), ids for `E` / `W` only, the fall-back texts, no codepage conversion;
+  - layouts taken from Open Watcom's headers where IBM's references give no sizes;
+  - `lx-link`'s export ordinals;
+  - one C++ runtime per module, and C++ exceptions apart from OS/2's exception dispatch; across modules (ADR-0107): the `WARPINE` unwind-table calls, tables found through the module holding the PC, the shared runtime block at `TLM_PAGE + 0x800` with one C++ runtime layout per process;
+  - the GDB stub's library list: companions only beside the DLL's file, host paths sent, the first stop at Warpine's start thunk when DLLs have `_DLL_InitTerm`.
 - **Formats of a pinned country** (`WARPINE_COUNTRY`): the language and territory each country code stands for (`country_locale`), and through them its date order, separators, clock and currency.
 - **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments; for `LIBPATH` and `SET`, see ADR-0092 (the program's own directory searched, a read per process, the `SET` name and value rules, Warpine's base environment).
