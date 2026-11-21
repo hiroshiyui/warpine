@@ -190,6 +190,19 @@ impl super::Loader {
         vcpu
     }
 
+    /// The length of the breakpoint instruction a 32-bit program executed
+    /// at `rip` (`INT3` or `INT 3`), or None: 16-bit code, or no such
+    /// instruction there (`seh::breakpoint_length`).
+    fn program_breakpoint(&self, vcpu: &dyn VcpuBackend, rip: u64) -> Option<u32> {
+        let sregs = vcpu.get_sregs().ok()?;
+        if sregs.cs.db == 0 || sregs.cs.base != 0 {
+            return None;
+        }
+        let at = u32::try_from(rip).ok()?;
+        let code = self.guest_read_bytes(at, 2).or_else(|| self.guest_read_bytes(at, 1))?;
+        super::seh::breakpoint_length(&code)
+    }
+
     /// Whether the executable's entry point is the start-up code of the
     /// Open Watcom snapshots that declared `__OS2Main` "no return" (Open
     /// Watcom issue #1649): `jmp __OS2Main`, which then takes its four
@@ -1511,6 +1524,37 @@ impl super::Loader {
                                 regs.rip = addr as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
+                        }
+                    }
+                    // A breakpoint instruction in a 32-bit program's own
+                    // code: XCPT_BREAKPOINT to its handlers, with EIP past
+                    // the instruction, as the processor's trap frame has
+                    // it (Control Program Reference); unhandled, it ends
+                    // the process like any other exception.
+                    else if let Some(len) = self.program_breakpoint(&*vcpu, rip) {
+                        let regs = vcpu.get_regs().unwrap();
+                        let sregs = vcpu.get_sregs().unwrap();
+                        let after = (rip as u32).wrapping_add(len);
+                        let fault_ctx = FaultContext {
+                            eax: regs.rax as u32, ebx: regs.rbx as u32, ecx: regs.rcx as u32, edx: regs.rdx as u32,
+                            esi: regs.rsi as u32, edi: regs.rdi as u32, ebp: regs.rbp as u32,
+                            esp: regs.rsp as u32, eip: after, eflags: regs.rflags as u32,
+                            cs: sregs.cs.selector, ds: sregs.ds.selector, es: sregs.es.selector,
+                            fs: sregs.fs.selector, gs: sregs.gs.selector, ss: sregs.ss.selector,
+                        };
+                        let dispatch = if guest_stack_ok(regs.rsp) {
+                            self.chain_dispatch(vcpu_id, fault_ctx, XCPT_BREAKPOINT, 0, &[])
+                        } else { None };
+                        if let Some(exc_dispatch) = dispatch {
+                            debug!("  [VCPU {}] INT3 at 0x{:08X}: XCPT_BREAKPOINT", vcpu_id, rip);
+                            setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch);
+                            continue;
+                        }
+                        let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::UnexpectedBreakpoint);
+                        self.dump_crash_report(&report);
+                        match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+                            Some(end) => return end,
+                            None => continue,
                         }
                     }
                     else {

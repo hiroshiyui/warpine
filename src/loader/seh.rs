@@ -53,6 +53,20 @@ pub(crate) struct Unwind {
     pub calls: usize,
 }
 
+/// The length of the breakpoint instruction a program executed at `code`
+/// (the bytes at the address KVM reports for a `#BP`): 1 for `INT3`
+/// (0xCC), 2 for `INT 3` (0xCD 0x03); None for anything else.
+pub fn breakpoint_length(code: &[u8]) -> Option<u32> {
+    const INT3: u8 = 0xCC;
+    const INT_N: u8 = 0xCD;
+    const BREAKPOINT_VECTOR: u8 = 3;
+    match code {
+        [INT3, ..] => Some(1),
+        [INT_N, BREAKPOINT_VECTOR, ..] => Some(2),
+        _ => None,
+    }
+}
+
 /// Bytes read at a faulting EIP to recognise a privileged instruction
 /// (prefixes, opcode and ModR/M).
 const PRIVILEGED_SCAN_LEN: usize = 8;
@@ -457,7 +471,7 @@ mod tests {
     use super::super::{Loader, ApiResult};
     use super::super::constants::*;
     use super::super::mutex_ext::MutexExt;
-    use super::xcpt_code_for_vector;
+    use super::{breakpoint_length, xcpt_code_for_vector};
 
     // ── xcpt_code_for_vector ─────────────────────────────────────────────────
 
@@ -484,6 +498,17 @@ mod tests {
     #[test]
     fn test_xcpt_unknown_vector() {
         assert_eq!(xcpt_code_for_vector(255, 0), XCPT_FATAL_EXCEPTION);
+    }
+
+    #[test]
+    fn breakpoint_instructions_are_measured() {
+        assert_eq!(breakpoint_length(&[0xCC]), Some(1));
+        assert_eq!(breakpoint_length(&[0xCC, 0x90]), Some(1));
+        assert_eq!(breakpoint_length(&[0xCD, 0x03]), Some(2));
+        assert_eq!(breakpoint_length(&[0xCD, 0x21]), None, "another INT n");
+        assert_eq!(breakpoint_length(&[0xCD]), None, "cut short");
+        assert_eq!(breakpoint_length(&[]), None);
+        assert_eq!(breakpoint_length(&[0x90]), None);
     }
 
     // ── DosSetExceptionHandler / DosUnsetExceptionHandler ───────────────────

@@ -1559,6 +1559,24 @@ fn every_thread_has_a_tss_and_the_flat_segments() {
     }
 }
 
+/// xcpt_breakpoint_test: a program's own INT3 (and INT 3, CD 03) raises
+/// XCPT_BREAKPOINT, continuable, with EIP and ExceptionAddress past the
+/// instruction; with no handler it ends the process as an unhandled
+/// exception, its exit list run with TC_EXCEPTION. At both rings.
+#[test]
+fn a_programs_breakpoint_raises_xcpt_breakpoint() {
+    const SAMPLE: &str = "samples/xcpt_breakpoint_test/xcpt_breakpoint_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    for ring in [RING_3, RING_0] {
+        let (out, code) = run_sample_env(SAMPLE, 20, &[("WARPINE_RING", ring)]);
+        assert!(!out.contains("FAIL"), "ring {ring}:\n{out}");
+        assert!(out.contains("xcpt_breakpoint_test: done 8/8"), "ring {ring}:\n{out}");
+        assert!(out.contains("xcpt_breakpoint_test: INT3 with no handler"), "ring {ring}:\n{out}");
+        assert_eq!(out.matches("xcpt_breakpoint_test: exit list tc=4").count(), 1, "ring {ring}: TC_EXCEPTION once:\n{out}");
+        assert_eq!(code, 1, "ring {ring}:\n{out}");
+    }
+}
+
 /// The checks a text-mode sample with `<prefix>: <name>: ok` lines
 /// reported, all passed, at least `min` of them, and exit code 0.
 fn assert_text_checks_pass(sample: &str, prefix: &str, min: usize) {
