@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **A Landlock sandbox** (ADR-0111). Every Warpine process confines its own file access before guest code runs: its drives and the session read-write, the system's files read-only, the rest of the home directory out of reach, even should a guest escape into Warpine's process. `WARPINE_SANDBOX=off` turns it off; `warpine --sandbox-check <path>` shows what a confined process reaches.
+- **Fuzzing** (ADR-0112). `fuzz/` has libFuzzer targets for the desktop protocol, the LX and NE parsers and message files. CI fuzzes each for a minute and checks dependency advisories (`cargo deny check`) on every push.
 - **`DosUnwindException` works** (ADR-0110). It calls the handlers above its target with `EH_UNWINDING`, newest first, takes each off the chain, and goes on at `pTargetIP` (or returns). `END_OF_CHAIN` and `UNWIND_ALL` unwind the whole chain. Before, it only cut the chain. `DosRaiseException` now fills in `ExceptionAddress`.
 - **C++ exceptions from OS/2 traps** (ADR-0110). An OS/2 exception handler in a GCC or clang program may `throw`: the exception unwinds the frames that trapped, running their destructors, to a catch above them. C++ code and the SDK's C library are built with unwind tables for every function for this.
 - **`setjmp` / `longjmp` in the SDK** (`setjmp.h`). `longjmp` unwinds the OS/2 handlers registered since `setjmp`, as Open Watcom's does, so a handler may leave an exception by `longjmp`.
@@ -90,7 +92,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
   Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
 
+### Changed
+- **Crash dumps** go to `$XDG_STATE_HOME/warpine` (`~/.local/state/warpine`), not the current directory, which the sandbox may not write; stderr names the file.
+- **Desktop protocol version 10:** the frames an API call raises or lowers travel in the `Report` after the call (ADR-0108).
+
 ### Fixed
+- **Hostile executables crashed the loader** (found by fuzzing, ADR-0112): an LX header's imported-module count made it reserve about 100 GB; an NE alignment shift of 64 or more, an entry table cut short, and ordinals past 65535 panicked.
+- **A program's new frame could end above another program's active one** (ADR-0108): its raise travelled with its first display update and could arrive after the other program had activated its frame (`pm_xproc_test` failed now and then under load).
 - **Open Watcom C++ programs skipped their destructors** when an exception passed: their runtime unwinds through `DosUnwindException`, which called no handler (ADR-0110).
 - **NULL pointers did not trap.** 32-bit threads mapped the low 64 KB, so a NULL access read or wrote linear address 0 silently. It now raises `XCPT_ACCESS_VIOLATION` as on OS/2, whose `ExceptionInfo` gives the access type and the address (it gave the EIP). `rexx_api_test` had a `strlen(NULL)` this hid.
 - **Reloading FS lost the TIB.** Selector `0x18` had base 0, so after Open Watcom's `longjmp` (which reloads FS) the exception chain head and `DosGetInfoBlocks`' TIB were at address 0. FS now reaches each thread's TIB through a window page its tables map.

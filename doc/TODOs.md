@@ -254,15 +254,14 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Guest privilege**: 32-bit guests run at ring 0, so they can change their own page tables and control registers; Warpine only detects that afterwards (`os2-paging-watch`, ADR-0088). Running them at ring 3 would let the processor enforce it, at the cost of the API thunks and the exception path changing privilege. XE faces the same choice.
+- [ ] **Guest privilege**: 32-bit guests run at ring 0, so they can change their own page tables and control registers; Warpine only detects that afterwards (`os2-paging-watch`, ADR-0088). ADR-0113 (proposed) plans ring 3 in steps: a TSS and ring-0 stacks, DPL-3 descriptors behind `WARPINE_RING=3`, supervisor-only tables and CR0.WP, then the NE path. XE faces the same choice.
 - [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (guard pages, read-only and decommitted memory), and paging for 16-bit (NE) programs.
-- [ ] **Confining the host process** (a second layer, should a guest escape into Warpine's own process):
-  - Landlock: file access only to the mapped drives, the session directory, `/dev/kvm` and what SDL needs; the drive rule of ADR-0066 enforced by the kernel;
+- [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
+  - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
   - a cgroup v2 scope per session (memory, tasks), as the tests and the pre-commit hook already use, against runaway or hostile guests;
   - seccomp filters per process role (guest processes, the desktop server);
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing** the parsers that read untrusted input: the LX and NE loaders, resources, the desktop protocol decoder (`desktop::proto`), message files (`msgfile.rs`), and the `os2rc` / `os2msg` / `lx-link` inputs.
-- [ ] **Dependency advisories in CI**: `cargo audit` and `cargo deny check advisories` run only at release time; CI and the hook check sources, bans and licences.
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE and message files): the resource and `os2rc` inputs, `lx-link`'s object reader, and longer runs than CI's minute per target.
 - [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---

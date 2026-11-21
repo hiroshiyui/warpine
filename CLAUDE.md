@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2250 unit tests (2164 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 210 integration tests
+cargo test                                 # 2258 unit tests (2172 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 211 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -88,7 +88,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 4. **PM.**
    - API threads rasterise into shared per-frame surfaces (`src/gui/surface.rs`); the GUI thread composites them (`src/gui/sdl_renderer.rs`, software or layered compositor).
    - Input waits in one system input queue and is routed when read (`pm_input.rs`, ADR-0051 / 0058).
-   - Each session has one desktop server process (`src/desktop/`, `src/gui/desktop_server.rs`; protocol version 9, ADR-0052–0057, 0067, 0068, 0108). `WARPINE_DESKTOP=local` keeps the desktop in-process.
+   - Each session has one desktop server process (`src/desktop/`, `src/gui/desktop_server.rs`; protocol version 10, ADR-0052–0057, 0067, 0068, 0108). `WARPINE_DESKTOP=local` keeps the desktop in-process.
 5. **Processes.** Each OS/2 process is its own Warpine host process (ADR-0020).
    - Shared memory goes through a sealed memfd arena (ADR-0049); shared semaphores through a memfd of slots (ADR-0050).
    - Named pipes are `AF_UNIX` sockets in a private session directory (ADR-0022).
@@ -158,6 +158,9 @@ The PIB holds `pib_ulpid` at `+0x00`, `ulppid` at `+0x04`, `hmte` at `+0x08`, `p
   5. Run `gh release create`.
 
 ### Security rules
+
+- Every Warpine process confines itself with Landlock (`src/sandbox.rs`, ADR-0111): a new host path a process must reach goes into `sandbox::policy`. `WARPINE_SANDBOX=off` turns it off; crash dumps go to `$XDG_STATE_HOME/warpine`.
+- The parsers of untrusted input are fuzzed (`fuzz/`, ADR-0112): `fuzz/seed.sh`, then `fuzz/run.sh <target> [seconds]`; a new parser of guest- or file-supplied data gets a target.
 
 - Always guard against hypervisor escape; memory safety is the top priority.
 - Guests never reach the host environment, host Unix sockets or host paths outside their drives (ADR-0066).

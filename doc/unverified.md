@@ -181,7 +181,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - an inclusive target in `GpiWCBitBlt` / `GpiDrawBits`;
   - image fonts ignoring angle and shear under `CM_MODE1`;
   - whether `WinDrawText` / `WinFillRect` follow the transforms.
-- **Desktop server**: the handling of a stalled client (later fix packs are said to time out). Activation reports (ADR-0108): which activations are claims (`WinSetActiveWindow`, a switch, a click, `SWP_ACTIVATE`, the VIO window again), a click on the active frame counted as one, a round trip to the server after an API call that changed the active frame.
+- **Desktop server**: the handling of a stalled client (later fix packs are said to time out). Stacking changes of API calls sent in the `Report` after the call, and a frame announced there placed before it is drawn (ADR-0108, item 7). Activation reports (ADR-0108): which activations are claims (`WinSetActiveWindow`, a switch, a click, `SWP_ACTIVATE`, the VIO window again), a click on the active frame counted as one, a round trip to the server after an API call that changed the active frame.
 
 ## Kernel and processes
 
@@ -213,6 +213,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - muxwait flags with neither or both `DCMW_*`;
   - a closed member giving `ERROR_INVALID_HANDLE`;
   - wait-all returning the last record's user value.
+- **The Landlock sandbox** (ADR-0111): the display and sound paths (tested with SDL's dummy drivers only); the whole runtime directory and `/dev` writable; the library directories executable; the program's directory readable.
+- **Fuzzing** (ADR-0112): a minute per target in CI; the protocol target's shims for four constants and a helper.
 - **Exceptions and traps** (ADR-0110):
   - `DosUnwindException`: a record leaves the chain after its handler returns; handlers' results are ignored and nested unwinds not marked; `EH_EXIT_UNWIND` is never set; a target not on the chain is refused with `ERROR_INVALID_PARAMETER`, without unwinding; the report and context records are allocated per call;
   - `DosRaiseException` sets `ExceptionAddress` to its return address;

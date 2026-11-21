@@ -1834,6 +1834,18 @@ A file that does not exist yet is resolved through its parent directory (`resolv
 
 WINE explicitly does *not* sandbox (`"Wine is NOT a sandbox"`). Warpine's isolated-directory model provides real containment with minimal complexity — OS/2 applications expect to operate within discrete drive boundaries, so isolation is both correct and secure.
 
+### The Landlock sandbox (ADR-0111)
+
+Behind the VFS's own checks, the kernel confines each Warpine process (`src/sandbox.rs`):
+- `main.rs` calls `confine` in every role right after the loader joins the session (LX, NE, CMD.EXE headless and windowed) and at the start of the desktop server, before any guest code runs. Landlock is inherited, so children start confined.
+- `sandbox::policy` grants:
+  - every right on each drive's host directory (read only for a read-only drive), the runtime directory, `/dev`, `crash_dump::crash_dir()`, and the directories of `WARPINE_DESKTOP_LOG` and a GUI script's dumps;
+  - reading on the system's directories, the program's own directory and file, the GUI script, and `.Xauthority` / `.icons` / `.local/share/icons` / `.config/pulse` in the home directory;
+  - executing Warpine's binary and the library directories.
+
+  A rule for a single file gets file rights only (else the ruleset is only partly enforced), and paths that do not exist are left out.
+- `WARPINE_SANDBOX=off` skips it; a kernel without Landlock logs a warning. `warpine --sandbox-check <path>` confines like a program with no drives and prints whether `path` is readable; `the_sandbox_keeps_the_home_directory_out_of_reach` uses it.
+
 ### Migration Path
 
 The VFS is introduced incrementally:
@@ -2117,7 +2129,7 @@ gdb -ex 'target remote :1234'
 
 **Module:** `src/loader/crash_dump.rs`
 
-On any fatal VMEXIT (guest exception, triple fault, unhandled VMEXIT, KVM run error, unexpected breakpoint), Warpine captures a structured crash report and writes it to both `warpine-crash-<pid>.txt` and stderr.
+On any fatal VMEXIT (guest exception, triple fault, unhandled VMEXIT, KVM run error, unexpected breakpoint), Warpine captures a structured crash report and writes it to both `warpine-crash-<pid>.txt` in `crash_dump::crash_dir()` (`$XDG_STATE_HOME/warpine`, else `~/.local/state/warpine`; ADR-0111) and stderr.
 
 **Data captured:**
 - All general-purpose and segment registers
@@ -2156,7 +2168,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2250: 2164 warpine + 23 `gen_api` + 37 `lx_link` + 8 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2258: 2172 warpine + 23 `gen_api` + 37 `lx_link` + 8 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2312,6 +2324,16 @@ samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
 ```
 
 ---
+
+### Fuzzing (ADR-0112)
+
+`fuzz/` is a workspace of its own on the guest crates' dated nightly, with `libfuzzer-sys`:
+- **Targets** include Warpine's modules by `#[path]`:
+  - `desktop_proto`, with shims for the loader items `proto.rs` uses; decoded messages must round-trip;
+  - `lx_parse` and `ne_parse`, through a module whose path is `src/`, so their `header` submodules resolve;
+  - `msgfile`, where parsed files must round-trip.
+- **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs and message files into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
+- **In CI** the watcom entry runs each target for a minute after `cargo deny check` (advisories included) in both workspaces.
 
 ### GUI regression tests
 
@@ -2470,7 +2492,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2250 unit tests (2164 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 210 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2258 unit tests (2172 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 211 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

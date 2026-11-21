@@ -71,6 +71,7 @@ warpine --licenses
 | `WARPINE_DESKTOP_LOG` | a file path | _(unset)_: no log | Where the desktop server writes its log (it has no terminal) |
 | `WARPINE_VIO` | `window`, `fullscreen` | `window` | How a text-mode (VIO) program on a terminal is shown: in a window on the PM desktop (an "OS/2 window" session) or in the separate 640 × 400 text window ("OS/2 full screen"). A program whose LX module flags mark it incompatible with PM windowing always runs full screen |
 | `WARPINE_HEADLESS` | any value | _(unset)_ | Run a text-mode program on the host terminal (ANSI output, raw keyboard) even when stdout is a terminal; a piped stdout is headless anyway |
+| `WARPINE_SANDBOX` | `off` (also `0`, `no`) | on | The Landlock sandbox (ADR-0111): every Warpine process may then reach only its drives, the runtime directory, `/dev`, the crash-dump directory and the system's files (read-only). `off` leaves it unconfined, for a display or sound setup that needs a path the policy misses. `warpine --sandbox-check <path>` says whether `path` is reachable when confined |
 | `WARPINE_COUNTRY` | OS/2 country code (`1`, `49`, `81`, …) | from the host locale | Country reported by `DosQueryCtryInfo`. Without it the host locale (`LC_ALL`, `LC_CTYPE`, `LANG`) chooses, like an OS/2 installation in that language: `ja_JP` → 81, `de_DE` → 49, `C` / unset → 1. A country it names also decides the formats (date order and separator, clock, currency) and, without `WARPINE_CODEPAGE`, the codepage, whatever the host locale |
 | `WARPINE_CODEPAGE` | A supported codepage (`437`, `850`, `852`, `866`, `932`, `936`, `949`, `950`, `1250`–`1258`) | from the host locale | The process codepage a program starts with (`DosQueryCp`; also the VIO screen's and new message queues' codepage). Without it the host locale chooses: Japanese → 932, Simplified / Traditional Chinese → 936 / 950, Korean → 949, Cyrillic → 866, Central European → 852, US English and `C` → 437, other languages → 850. `DosSetProcessCp` still changes it at run time; an unsupported value is ignored with a warning |
 | `WARPINE_GUI_SCRIPT` | Path to a script file | _(unset)_ | Replay a scripted PM session (`click`, `rclick`, `drag`, `rdrag`, `wheel`, `drop`, `key`, `text`, `dump`, `quit` steps) for testing; combine with `SDL_VIDEODRIVER=dummy` to run without a display. On a real display, host mouse and keyboard input is ignored while the script runs. See the developer guide, "GUI regression tests" |
@@ -525,7 +526,7 @@ DLLs need nothing more (ADR-0104):
 
 ### Output
 
-- **File:** `warpine-crash-<pid>.txt` in the current working directory
+- **File:** `warpine-crash-<pid>.txt` in `$XDG_STATE_HOME/warpine`, else `~/.local/state/warpine` (ADR-0111); stderr names it
 - **Stderr:** Same report printed simultaneously
 
 ### Contents
