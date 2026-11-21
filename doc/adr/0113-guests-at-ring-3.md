@@ -1,6 +1,6 @@
 # ADR-0113: Running 32-bit guests at ring 3
 
-- **Status:** Accepted (steps 1–4 done: 32-bit and 16-bit programs run at ring 3 by default; step 5 after a release)
+- **Status:** Accepted, all five steps done: every program runs at ring 3, with no way back (step 5, after v0.0.10)
 - **Date:** 2026-11-21
 - **Sources:**
   - Intel SDM vol. 3: privilege levels and checks (5.5–5.8), stack switching through the TSS on an interrupt from ring 3 (6.12.1, 7.2), the gate DPL check that `INT n`, `INT3` and `INTO` make (6.12.1.1), the 32-bit TSS and its I/O map base (8.2.1), CR0.WP and the U/S page bit (4.6).
@@ -58,7 +58,7 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
    2. **Done:** DPL-3 descriptors and CPL 3 for LX threads, behind `WARPINE_RING=3`, with the whole suite and the GCC / clang builds passing (see *Step 2* below);
    3. **Done:** the default switched, U/S and CR0.WP set; `WARPINE_RING=0` kept for one release as a way back (from v0.0.9 to v0.0.10), then removed (see *Step 3* below);
    4. **Done:** the NE path (see *Step 4* below);
-   5. the paging watch kept as a second check for one release after the switch, then removed.
+   5. **Done:** the paging watch kept as a second check for one release after the switch, then removed (see *Step 5* below).
 
 ## Step 2: how ring 3 works (`src/loader/ring.rs`)
 
@@ -86,6 +86,14 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
 - **Exceptions:** an exception from 16-bit ring-3 code goes through the same 32-bit gates; `lower_ring3_frame` moves its frame to the 16-bit stack (SS.base + SP). With no 16-bit exception handling, an unhandled one ends the program with a crash report, as before.
 - **`WARPINE_RING=0`** keeps the 16-bit path exactly as it was: unpaged, at ring 0.
 - **The low 64 KB** are not present for a 16-bit program at ring 3, as for 32-bit ones (ADR-0110); Warpine's BIOS data area copy there is out of its reach.
+
+## Step 5: ring 3 only
+
+- **`WARPINE_RING` is gone,** with ring 0 as a mode: the ring is a constant (`USER_RING`, `user_selector`), so the per-process ring (`guest_ring`, `set_guest_ring`, `thread_ring`) and the ring-0 branches of the descriptor setup, the segment setup and the NE path are gone too.
+- **Every thread runs paged.** A thread that cannot get its page tables does not start (`DosCreateThread` returns `ERROR_NOT_ENOUGH_MEMORY`; thread 1, of a 32-bit or 16-bit program, ends the process with an error) instead of running unpaged at ring 0, which DPL-3 descriptors no longer allow.
+- **The ring-0 defences are gone** (ADR-0088 item 5): the `os2-paging-watch` thread that kicked every vCPU every 250 ms, `paging_violation`, and the integrity check and repair of a thread's tables (`paging_block_intact`, `repair_paging_block`). Crash reports still say whether paging is on and whether CR3 is the thread's own block (`PagingStatus::Own`, `ForeignCr3`).
+- **Warpine does not write its protected memory for a guest.** Removing the watch showed what it still covered: Warpine writes many results through pointers a guest gives (`DosQueryMem`'s `*pcb`, for one), bypassing the page tables, so a guest could have pointed one into its own page directory, in the supervisor-only arena, and had Warpine corrupt it, the first step to reaching supervisor pages (EPT still bounded it to its own memory). The ordinary write paths of guest memory (`write`, `write_bytes`, `slice_mut`) now refuse any write that touches the GDT, IDT and stubs or the paging arena (`guest_mem::protected`), checked on the address as given, before the thread-local page is translated; Warpine's own setup writes those structures through separate paths (`write_system`, `system_write`). An API call given such a pointer fails as with any address it cannot write.
+- **Tests run at the one ring:** the paging-abuse variants each fault at their first privileged instruction (`a_guest_cannot_reach_its_paging`); `pgabuse_past` no longer reads CR3 and still tests the storm of accesses past guest RAM (`a_guest_reading_past_its_memory_ends_as_a_trap`, and SIGTERM during it); HLT ends a program with `TC_EXCEPTION`.
 
 ## Open questions
 
@@ -116,4 +124,5 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
 - **Step 2:** with `WARPINE_RING=3` the whole suite passes (the ring-0 abuse tests pinned to ring 0, their ring-3 counterparts added), and `ring_test` checks `CLI` raising `XCPT_PRIVILEGED_INSTRUCTION` and a context record unable to raise IOPL. Unit tests: `ring.rs` (the variable, EFLAGS, the instruction list, descriptor decoding, moving a frame), and the ring-3 descriptors and segments (`vcpu.rs`).
 - **Step 3:** ring 3 is the default. `ring_test` checks, built by Open Watcom, GCC and clang, that at ring 3 the GDT, the ring-0 window and the paging arena raise `XCPT_ACCESS_VIOLATION`, and at either ring that the thunks' 4 MB cannot be written (17 checks at ring 3, 11 at ring 0). Unit tests: the arena, the supervisor-only pages and the read-only thunks' entry, CR0.WP. The suite passes at the default ring and with `WARPINE_RING=0`.
 - **Step 4:** `ne_ring_test` (assembly, Open Watcom) runs at ring 3 with its data and stack at its code's RPL, and `CLI` ends it as an unhandled #GP with its tables intact; with `WARPINE_RING=0` it runs at ring 0, where `CLI` goes through. `ne_hello` passes at both rings.
+- **Step 5:** the suite passes with no ring-0 runs left; unit tests `protected_memory_takes_only_system_writes` (the GDT, IDT and arena refuse ordinary writes, take system ones; `TLM_PAGE` stays writable) and `the_paging_state_names_the_threads_own_block`.
 - **Found, then fixed:** an `INT3` a program executed itself, outside the API thunks, ended the process as an unexpected breakpoint, with exit code 0 and no exit list. It now raises `XCPT_BREAKPOINT` to the program's handlers, as on OS/2 (`samples/xcpt_breakpoint_test`); the DPL-3 breakpoint gate makes it reach Warpine at ring 3 too.

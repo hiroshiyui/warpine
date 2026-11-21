@@ -254,7 +254,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Guest privilege**: ADR-0113 steps 1–4 are done: 32-bit and 16-bit programs run at ring 3 by default, with supervisor-only page tables (the paging arena), GDT, IDT and ring-0 window, read-only thunks and CR0.WP. Left: step 5, after one release (v0.0.10), remove `WARPINE_RING=0` and with it the ring-0 defences (the `os2-paging-watch` kicks, `paging_violation`, ADR-0088). The arena caps a process at 226 threads; a second arena would lift that. XE faces the same choice.
+- [ ] **Threads per process**: the paging arena caps a process at 226 threads (ADR-0113, ADR-0114), below `THREADS=`'s 4095; a second arena with its own page tables would lift that.
 - [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (the main thread's stack).
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;

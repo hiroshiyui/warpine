@@ -1,6 +1,6 @@
 # ADR-0088: Guest paging for thread-local memory
 
-- **Status:** Accepted; its addresses amended by ADR-0094 (`TLM_PAGE` moved into the system area, the page table covering that 4 MB) and ADR-0110 (a four-page block: the low 64 KB not present, the FS window to the thread's TIB)
+- **Status:** Accepted; its addresses amended by ADR-0094 (`TLM_PAGE` moved into the system area, the page table covering that 4 MB) and ADR-0110 (a four-page block: the low 64 KB not present, the FS window to the thread's TIB); its security measures against a guest at ring 0 (item 5: the watch, `paging_violation`, the repair) superseded by ADR-0113, whose step 5 removed them once every guest ran at ring 3
 - **Date:** 2026-11-20
 - **Sources:**
   - IBM's *Control Program Programming Reference*: `DosAllocThreadLocalMemory` and `DosFreeThreadLocalMemory`. A thread-local memory area of 32 DWORDs; up to 8 DWORDs per call; one pointer that is the same for every thread, each thread seeing its own words through it.
@@ -64,7 +64,7 @@ Option 1, paging per vCPU.
 4. **The calls.**
    - `DosAllocThreadLocalMemory` (454) and `DosFreeThreadLocalMemory` (455) keep a process-wide 32-bit map of the area's words (`TlmArea`, `SharedState::tlm`).
    - An allocation takes the first run of `cb` free words (1–8) and returns `TLM_PAGE + 4 × index`.
-5. **Security.** The guest runs at ring 0, so it can rewrite its tables and load CR3 or CR0 itself. On OS/2 it could do neither, because the instructions are privileged and the tables are not the program's. EPT / NPT keep it inside its memory; Warpine adds:
+5. **Security** *(superseded by ADR-0113: guests run at ring 3, where they cannot touch their paging, and step 5 removed the watch, `paging_violation` and the repair; the MMIO storm limit and `finish_mmio` stay)*. The guest runs at ring 0, so it can rewrite its tables and load CR3 or CR0 itself. On OS/2 it could do neither, because the instructions are privileged and the tables are not the program's. EPT / NPT keep it inside its memory; Warpine adds:
    - **The host never follows the guest's tables.**
      - `guest_mem` translates only `TLM_PAGE`, to the page Warpine chose when the thread started.
      - A CR3 counts only when it is a whole, page-aligned block in the allocator's region (`valid_block`), and the arithmetic is checked, so no guest value can reach a host address outside guest memory.
