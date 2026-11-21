@@ -54,6 +54,16 @@ fn kvm_available() -> bool {
     Path::new("/dev/kvm").exists()
 }
 
+/// Whether a test of `sample` can run: KVM is there and the sample is
+/// built (they are git-ignored; a clean worktree has none). Says why not.
+fn can_run(sample: &str) -> bool {
+    let ok = kvm_available() && sample_exists(sample);
+    if !ok {
+        eprintln!("skipping: KVM or {} not available", sample_path(sample));
+    }
+    ok
+}
+
 /// Run `sample` (path relative to workspace root) with WARPINE_HEADLESS=1,
 /// wait up to `timeout` seconds, and return `(stdout, exit_code)`.
 ///
@@ -70,6 +80,8 @@ fn run_sample_env(sample: &str, timeout_secs: u64, env: &[(&str, &str)]) -> (Str
 
 /// [`run_sample_env`] with command-line arguments for the program.
 fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str, &str)]) -> (String, i32) {
+    // A test skips a sample that is not built (`can_run`): say which.
+    assert!(sample_exists(sample), "{} is not built: guard the test with can_run", sample_path(sample));
     // Drive C: is $XDG_DATA_HOME/warpine/drive_c: a fresh one per run, never
     // the user's own (`env` may still name another).
     let data_home = tempfile::tempdir().expect("tempdir");
@@ -141,7 +153,7 @@ fn test_licenses_switch_prints_the_built_in_font_notices() {
 /// hello: DosWrite to stdout, clean exit.
 #[test]
 fn test_hello_world() {
-    if !kvm_available() { return; }
+    if !can_run("samples/hello/hello.exe") { return; }
     let (out, code) = run_sample("samples/hello/hello.exe", 15);
     assert_eq!(code, 0, "hello exited with {code}\nstdout:\n{out}");
     assert!(
@@ -323,7 +335,7 @@ fn test_som_classes_built_from_static_class_info() {
 /// found. badstart.exe, which imports badinit.dll, does not start.
 #[test]
 fn test_dll_initialization_and_module_names() {
-    if !kvm_available() { return; }
+    if !can_run("samples/dllinit_test/dllinit.exe") || !can_run("samples/dllinit_test/goodinit.dll") { return; }
     let data = tempfile::tempdir().expect("tempdir");
     let libs = data.path().join("warpine/drive_c/LIBS");
     std::fs::create_dir_all(&libs).unwrap();
@@ -347,7 +359,7 @@ fn test_dll_initialization_and_module_names() {
 /// alloc_test: DosAllocMem / DosFreeMem round-trip.
 #[test]
 fn test_alloc_test() {
-    if !kvm_available() { return; }
+    if !can_run("samples/alloc_test/alloc_test.exe") { return; }
     let (out, code) = run_sample("samples/alloc_test/alloc_test.exe", 15);
     assert_eq!(code, 0, "alloc_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("Alloc succeeded"),        "missing 'Alloc succeeded':\n{out}");
@@ -358,7 +370,7 @@ fn test_alloc_test() {
 /// nls_test: DosQueryCp, DosQueryCtryInfo, DosGetDateTime, DosMapCase.
 #[test]
 fn test_nls() {
-    if !kvm_available() { return; }
+    if !can_run("samples/nls_test/nls_test.exe") { return; }
     let (out, code) = run_sample("samples/nls_test/nls_test.exe", 15);
     assert_eq!(code, 0, "nls_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("All tests PASSED!"), "NLS tests failed:\n{out}");
@@ -380,7 +392,7 @@ fn test_nls() {
 /// hang it for every non-US country).
 #[test]
 fn test_country_and_codepage_from_the_environment() {
-    if !kvm_available() { return; }
+    if !can_run("samples/nls_test/nls_test.exe") { return; }
     let (out, code) = run_sample_env("samples/nls_test/nls_test.exe", 15,
                                      &[("WARPINE_COUNTRY", "81"), ("WARPINE_CODEPAGE", "932")]);
     assert_eq!(code, 0, "nls_test exited with {code}\nstdout:\n{out}");
@@ -1129,7 +1141,7 @@ fn test_sockets_over_loopback() {
 /// thread_test: DosCreateThread / DosWaitThread.
 #[test]
 fn test_thread() {
-    if !kvm_available() { return; }
+    if !can_run("samples/thread_test/thread_test.exe") { return; }
     let (out, code) = run_sample("samples/thread_test/thread_test.exe", 15);
     assert_eq!(code, 0, "thread_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("Hello from child thread!"), "thread output:\n{out}");
@@ -1559,16 +1571,17 @@ fn a_programs_breakpoint_raises_xcpt_breakpoint() {
 /// memory cannot be read.
 #[test]
 fn page_states_of_allocated_memory_hold() {
-    text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 40, &[]);
+    text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 42, &[]);
 }
 
 /// stack_grow_test (ADR-0114): a thread's stack is sparse, grows as it is
 /// used (also by a frame larger than a page), and raises
 /// XCPT_UNABLE_TO_GROW_STACK near its bottom, which a handler leaves by
-/// longjmp; STACK_COMMITTED commits it whole.
+/// longjmp; STACK_COMMITTED commits it whole. The main thread's stack
+/// too: its bounds in the TIB, sparse, growing and running out.
 #[test]
 fn thread_stacks_grow_and_run_out() {
-    text_checks_pass_env("samples/stack_grow_test/stack_grow_test.exe", "stack_grow_test", 11, &[]);
+    text_checks_pass_env("samples/stack_grow_test/stack_grow_test.exe", "stack_grow_test", 18, &[]);
 }
 
 /// The checks a text-mode sample with `<prefix>: <name>: ok` lines
@@ -1779,7 +1792,7 @@ fn test_kernel_batch2() {
 /// pipe_test: DosCreatePipe, DosWrite, DosRead.
 #[test]
 fn test_pipe() {
-    if !kvm_available() { return; }
+    if !can_run("samples/pipe_test/pipe_test.exe") { return; }
     let (out, code) = run_sample("samples/pipe_test/pipe_test.exe", 15);
     assert_eq!(code, 0, "pipe_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("DosCreatePipe rc=0"), "pipe create:\n{out}");
@@ -1789,7 +1802,7 @@ fn test_pipe() {
 /// mutex_test: DosCreateMutexSem, recursive locking, inter-thread handoff.
 #[test]
 fn test_mutex() {
-    if !kvm_available() { return; }
+    if !can_run("samples/mutex_test/mutex_test.exe") { return; }
     let (out, code) = run_sample("samples/mutex_test/mutex_test.exe", 15);
     assert_eq!(code, 0, "mutex_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("Recursive locks OK"), "recursive lock:\n{out}");
@@ -1799,7 +1812,7 @@ fn test_mutex() {
 /// queue_test: DosCreateQueue, DosWriteQueue, DosReadQueue.
 #[test]
 fn test_queue() {
-    if !kvm_available() { return; }
+    if !can_run("samples/queue_test/queue_test.exe") { return; }
     let (out, code) = run_sample("samples/queue_test/queue_test.exe", 15);
     assert_eq!(code, 0, "queue_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("DosCreateQueue rc=0"), "queue create:\n{out}");
@@ -1837,7 +1850,7 @@ fn test_ne_hello() {
 /// thunk_test: TIB/PIB layout, DosGetInfoBlocks, DosQuerySysInfo.
 #[test]
 fn test_thunk() {
-    if !kvm_available() { return; }
+    if !can_run("samples/thunk_test/thunk_test.exe") { return; }
     let (out, code) = run_sample("samples/thunk_test/thunk_test.exe", 15);
     assert_eq!(code, 0, "thunk_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("All tests PASSED!"), "thunk tests failed:\n{out}");
@@ -3669,7 +3682,7 @@ fn a_process_gets_482_threads() {
 #[test]
 fn test_threads_limit_refuses_a_process_without_a_slot() {
     use std::os::unix::fs::PermissionsExt;
-    if !kvm_available() { return; }
+    if !can_run("samples/hello/hello.exe") { return; }
     let dir = tempfile::tempdir().unwrap();
     let session = dir.path().join("s");
     std::fs::create_dir(&session).unwrap();
