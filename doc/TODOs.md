@@ -188,7 +188,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
-- [ ] **Memory protection on the page tables** (ADR-0088): 32-bit threads now run paged, which makes these possible; each needs its own decision: `PAG_GUARD` guard pages and stack growth, decommitted pages (`DosSetMem`), read-only memory (`PAG_READ` without `PAG_WRITE`), unmapped page 0; paging for 16-bit (NE) programs.
+- [ ] **Memory protection on the page tables** (ADR-0088): 32-bit threads now run paged, which makes these possible; each needs its own decision: `PAG_GUARD` guard pages and stack growth, decommitted pages (`DosSetMem`), read-only memory (`PAG_READ` without `PAG_WRITE`); paging for 16-bit (NE) programs. (The low 64 KB are not present since ADR-0110.)
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Profiles**:
   - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
@@ -255,7 +255,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
 - [ ] **Guest privilege**: 32-bit guests run at ring 0, so they can change their own page tables and control registers; Warpine only detects that afterwards (`os2-paging-watch`, ADR-0088). Running them at ring 3 would let the processor enforce it, at the cost of the API thunks and the exception path changing privilege. XE faces the same choice.
-- [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (guard pages, read-only and decommitted memory, page 0), and paging for 16-bit (NE) programs.
+- [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (guard pages, read-only and decommitted memory), and paging for 16-bit (NE) programs.
 - [ ] **Confining the host process** (a second layer, should a guest escape into Warpine's own process):
   - Landlock: file access only to the mapped drives, the session directory, `/dev/kvm` and what SDL needs; the drive rule of ADR-0066 enforced by the kernel;
   - a cgroup v2 scope per session (memory, tasks), as the tests and the pre-commit hook already use, against runaway or hostile guests;
