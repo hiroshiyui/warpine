@@ -44,14 +44,16 @@ digraph warpine {
     network [label="Host network (Linux sockets)", shape=component, fillcolor="#ffffff"];
     children [label="Child Warpine processes (DosExecPgm, WinStartApp, pipes, signal exceptions)", shape=component, fillcolor="#ffffff"];
     gdb [label="GDB (remote protocol over TCP)", shape=component, fillcolor="#ffffff"];
+    systemd [label="systemd user manager (D-Bus, through busctl): the session's scope (ADR-0116)", shape=component, fillcolor="#ffffff"];
   }
   subgraph cluster_build {
     label="Build tools (separate programs)"; style="rounded,filled"; fillcolor="#f1f8e9"; color="#90a4ae";
     tools [label=<<B>Build tools: lx-link, os2rc, os2msg, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033, ADR-0099, ADR-0105)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">bin/lx_link.rs, bin/os2rc.rs, bin/os2msg.rs, bin/gen_api.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">bin/gen_arch.rs, bin/gen_compat.rs</FONT>>, fillcolor="#dcedc8"];
   }
   { rank=min; program; thunks; }
-  { rank=max; kvm; sdl; hostfs; network; children; gdb; }
+  { rank=max; kvm; sdl; hostfs; network; children; gdb; systemd; }
   { rank=max; tools; }
+  entry -> systemd [label="session scope: MemoryMax, TasksMax"];
   entry -> formats [label="parse"];
   entry -> loading [label="load"];
   loading -> program [label="map pages, apply fixups"];

@@ -264,7 +264,17 @@ id = "gdb"
 zone = "os"
 label = "GDB (remote protocol over TCP)"
 
+[[external]]
+id = "systemd"
+zone = "os"
+label = "systemd user manager (D-Bus, through busctl): the session's scope (ADR-0116)"
+
 # ── Flows ───────────────────────────────────────────────────────────────────
+
+[[flow]]
+from = "entry"
+to = "systemd"
+label = "session scope: MemoryMax, TasksMax"
 
 [[flow]]
 from = "entry"
