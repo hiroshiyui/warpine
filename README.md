@@ -44,7 +44,7 @@ Warpine runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) programs na
 - **More GPI** — rounded box corners, line ends and joins, scaled line widths, rotated glyphs and images under transforms, palettes, and drawing through a child window's presentation space are not implemented.
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet; the spooler reports no printers.
 
-_The menu and modern-theme screenshots captured from commit `b5e7e5a` on 2026-11-23, the others from uncommitted changes on top of `848a01b` on 2026-11-23; the text window at the top from uncommitted changes on top of `8f820e1` on 2026-11-20._
+_The menu and modern-theme screenshots captured from uncommitted changes on top of `9f061a1` on 2026-11-23, the others from uncommitted changes on top of `848a01b` on 2026-11-23; the text window at the top from uncommitted changes on top of `8f820e1` on 2026-11-20._
 <!-- screenshots:end -->
 
 ## Key Features
@@ -411,7 +411,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2333 unit tests (no KVM required)
+cargo test                        # 2334 unit tests (no KVM required)
 cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
