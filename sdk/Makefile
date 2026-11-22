@@ -14,9 +14,10 @@ LIBC_OBJS = $(LIBC_SRCS:%.c=$(OS2_BUILD)/%.o)
 HEADERS   = $(wildcard include/*.h include/os2/*.h) libc/libc_internal.h
 
 # The runtime's own memcpy and memset must not be turned into calls to
-# themselves. Unwind tables: a C++ exception thrown for a trap in the C
-# library (a bad pointer given to memcpy) unwinds through it (ADR-0110).
-LIBC_CFLAGS = $(filter-out -fno-asynchronous-unwind-tables,$(OS2_CFLAGS)) -fasynchronous-unwind-tables \
+# themselves. OS2_CFLAGS's unwind tables let a C++ exception thrown for a
+# trap in the C library (a bad pointer given to memcpy) unwind through it
+# (ADR-0110).
+LIBC_CFLAGS = $(OS2_CFLAGS) \
               -std=gnu11 -Wall -Wextra -Werror
 ifeq ($(findstring clang,$(notdir $(CC))),)
 LIBC_CFLAGS += -fno-tree-loop-distribute-patterns

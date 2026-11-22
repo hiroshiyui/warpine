@@ -61,7 +61,7 @@ LIBC=$RT/libos2c.a
 
 GCC_INCLUDE=$("$CC_CMD" -m32 -print-file-name=include)
 CFLAGS=(-m32 -O2 -ffreestanding -fno-pic -fno-stack-protector
-        -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections
+        -fasynchronous-unwind-tables -ffunction-sections -fdata-sections
         -nostdinc -isystem "$SDK/include" -isystem "$GCC_INCLUDE"
         -D_System= -D__syscall= -D_Optlink= -std=gnu11 -w)
 if [ "$CC_NAME" = clang ]; then
