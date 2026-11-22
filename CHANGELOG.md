@@ -9,7 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 - **A modern theme** (ADR-0118, `WARPINE_THEME=modern`): frames with rounded, antialiased corners and a soft shadow, a thin edge line instead of bevelled borders, and flat title-bar pictograms. Only pels change: window sizes, client areas, metrics and hit areas are the same in every theme. The classic look stays the default for now. The desktop server, the layered and the software compositor draw the same pels.
 
+- **Modern controls and menus** (ADR-0118): in `WARPINE_THEME=modern`, buttons, entry fields and list boxes have rounded boxes, a focused push button an accent focus ring, a focused entry field an accent edge, and the push button under the pointer a lighter face; pull-downs and pop-up menus are rounded and shadowed like frames.
+- **`WM_MEASUREITEM` for owner-drawn menu items**: before an owner-drawn item's pull-down first drops, the owner is asked its height; the pull-down's rows take the tallest answer (never less than the font's), and the owner draws in rows of that height. A pull-down opened from the keyboard now has its owner-drawn items drawn too.
+
 ### Changed
+- **Fonts are read with `skrifa` only** (ADR-0119): `ab_glyph` and its parser `ttf-parser`, which RustSec reports unmaintained (RUSTSEC-2026-0192), are gone; `gui/face.rs` keeps `ab_glyph`'s arithmetic, so every glyph keeps its pels. `deny.toml` ignores no advisory any more.
 - **Desktop protocol version 11**: a picture can ask the desktop server to shape it as a rounded frame (`Item::rounded`).
 
 ## [0.0.13] - 2026-11-23

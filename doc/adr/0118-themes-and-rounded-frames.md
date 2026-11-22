@@ -34,4 +34,5 @@ Rounded, antialiased corners and a soft shadow need what lies *below* a frame, w
 
 - Golden pictures stay byte-identical in the classic theme; the modern theme has its own (`pm_dialog_modern`), and one test checks that the software and layered compositors draw the very pels the desktop server does.
 - Pointer hit testing is unchanged: the bare pels of a corner still belong to the frame.
-- Next steps (TODOs): modern built-in controls (rounded buttons and fields, focus rings, hover), menus and pop-ups, scroll bars and sliders; then `modern` as the default, `classic` kept.
+- **Addendum (2026-11-23):** built-in controls and menus. `control_box` draws a rounded box (radius 3, corners left unpainted so what is behind shows: a control cannot read the pels below it); a focused push button gets an accent focus ring, a focused entry field an accent edge, the push button under the pointer a lighter face (`WindowManager::hover_control`). Pull-downs and pop-up menus are rounded and shadowed like frames: the software compositor draws a frame's pull-down after the frame with its own shadow, the layered compositor gives pull-down and pop-up textures alpha, and the desktop server shapes them from `Item::rounded`.
+- Next steps (TODOs): scroll bars and sliders; then `modern` as the default, `classic` kept.

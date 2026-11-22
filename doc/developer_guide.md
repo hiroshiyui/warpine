@@ -519,6 +519,7 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `SdlRenderer` in
 **Compositing.** `composite_and_present` snapshots the visible frames under the window-manager lock, brings the chrome cache up to date, lays the frames out (`place_frame`) and works out the damage; if anything changed it hands a `Scene` (frames back to front with their surfaces and chrome, the damage, the frames whose chrome changed, whether to redraw everything) to the `Compositor`:
 
 - *Backends.* `SoftwareCompositor` keeps a desktop-sized buffer between frames, redraws only the damage into it and uploads only the damaged rectangles to one streaming texture on SDL's `software` renderer. `LayeredCompositor` keeps one texture per frame (client surface plus chrome, rendered at the origin) and one per open pull-down, and draws the desktop as textured quads with whichever SDL renderer the platform offers (OpenGL, Vulkan, Metal, Direct3D; `SDL_RENDER_DRIVER=gpu` selects the SDL_GPU-based one), with vsync (`SDL_RENDER_VSYNC`). A frame's texture is rendered in full (client and chrome) when it is new, its size or chrome changed, or after a full redraw. When only the client's pixels changed (`Surface::generation`, bumped by every `draw`, `put_row` and `resize`), just the changed rectangle is copied from the surface into the texture — clipped to the inside of the frame's border ring (`partial_upload`), since the client reaches the frame's bottom edge and the border is drawn over its last rows: each surface accumulates the bounds of what it was drawn (`Surface::take_changes`; a `DrawOp`'s bounds are computed before it is applied, text as full-width rows around its baseline), and the layered compositor takes them. Uploads go through `upload`, which checks that the rows SDL will read lie inside the source buffer (`upload_span`; sdl3-rs's `Texture::update` does not). Moving a window only changes where the quad is drawn. A client area the surface does not reach yet (a surface lagging a resize) is left out of the quads (`painted_parts`), so frames below show through as with the software backend. Frame textures are capped at `MAX_LAYER_DIM` (8192) per side.
+- *Modern controls and menus* (ADR-0118 addendum). `control_box` / `control_box_edged` (`loader/mod.rs`) draw `rounded_box` in the modern theme: radius `theme::CONTROL_RADIUS`, row insets from `theme::corner_inset`, corners left unpainted. `paint_button` draws the default button's edge in the emphasis colour, an accent focus ring (`rounded_box` without fill) and the hover face for `WindowManager::hover_control`, which `control_mouse_pointer` / `default_mouse_pointer` set through `set_hover` (testable as `set_hover_in(theme, …)`). Pull-downs: the software compositor draws a rounded frame's body without its pull-down, then the pull-down with its own `shaped` shadow and corners; `draw_overlay` shapes pop-up menus; the layered compositor builds pull-down and overlay textures with `shaped_texture` and draws their shadows (`draw_shadow`); the desktop-server client marks pull-down and overlay items `rounded`. `FramePlacement::extent` and the overlay damage include those shadows.
 - *Themes and rounded frames* (ADR-0118). `gui/theme.rs` holds the theme (`WARPINE_THEME`, read once); the chrome drawing asks it whether to bevel (`ButtonStyle`, `draw_frame_border`). In the modern theme `FramePlacement::rounded` is set for frames that are not maximized; `extent()` then takes in the shadow, so damage covers it. `gui/frame_shape.rs` holds the shape: `coverage` (antialiased corners from a distance-to-rounded-rectangle), `shadow_alpha`, and the compositing helpers. The software compositor draws a rounded frame as `draw_shadow`, `corners_under` (the pels below its corners, an open pull-down excluded), `draw_placed_frame`, `blend_corners`, and lets frames below show at its corners (`FramePlacement::hides` uses `covers`). The layered compositor gives a rounded frame an ARGB texture with `shape_alpha` (also on partial uploads, which then go through `scratch`) drawn blended, and draws the shared `shadow_slices` picture in nine pieces (`slice_places`) under it. The desktop-server client sets `Item::rounded` (protocol 11); the server's `item_frame` / `item_extent` and `PixmapCompositor::compose` do what the software compositor does. `gui_modern_theme_is_the_same_in_every_compositor` holds all three to one golden.
 - *Choice.* `WARPINE_COMPOSITOR=software|layered`; by default layered on a real display and software on the `dummy` / `offscreen` drivers, whose output the golden-image tests compare. If no renderer can be created for the layered backend it falls back to software. The choice is logged at info level. The `gui_layered_compositor_*` integration tests run the golden (including typing into controls, which takes the partial-upload path) and drag/resize checks with the layered backend (on SDL's software renderer, under the dummy driver); `dump` reads its back buffer with `SDL_RenderReadPixels`. A render-device or render-target reset redraws everything (all textures are recreated).
 - *Measured.* On a real display (2026-11-16, release build, 25 scripted title-bar drags of `samples/pm_menu_dlg_test` in 5 s, frame statistics): software 1.56 ms per composite, 1.31 ms of it presenting — the software present pushes the whole desktop image to the window system; layered 0.25 ms on `opengl`, 0.23 ms on `vulkan`, 0.25 ms on `gpu` (SDL_GPU). The accelerated renderers are equivalent, so SDL's default pick is kept (no preferred `SDL_RENDER_DRIVER`). `samples/pm_bench` reports the same guest-side rates under both compositors, since drawing happens on the API threads either way.
@@ -598,7 +599,7 @@ binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
 
 - **Faces.** IBM Plex Sans, Mono and Serif in Regular/Bold/Italic/Bold Italic,
   plus IBM Plex Sans JP, KR, TC and SC (Regular) for CJK. Faces are parsed
-  lazily and zero-copy (`ab_glyph::FontRef`), so the large CJK files cost
+  lazily and zero-copy (`gui/face.rs` `Face`, on `skrifa`, ADR-0119), so the large CJK files cost
   nothing until a character needs them.
 - **`FontSpec { family, bold, italic, px }`.** `px` is the line height
   (ascent + descent). `FontSpec::SYSTEM` is Plex Sans at 16 px, matching the
@@ -616,14 +617,14 @@ binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
   quarter-pixel phase (`pen_phase`, `SUBPIXEL_STEPS`; the glyph cache is
   keyed by phase), so letter spacing follows the font's advances. Widths
   (`text_width`) sum the unrounded advances. Unifont bitmaps keep the
-  rounded pen. GPOS kerning is not applied (`ab_glyph` reads no GPOS).
+  rounded pen. GPOS kerning is not applied.
 - **Hinting and contrast (ADR-0047).** `rasterize_hinted` draws the Latin
   faces' glyphs through `skrifa`'s autohinter in light mode (vertical
   snapping only, linear advances kept): `hint_face` holds each face's
   `GlyphStyles`, `HINTERS` the per-thread hinting instances by face and
   ppem, `PathPen` collects the hinted outline, and `ab_glyph_rasterizer`
   fills it at the quarter-pixel phase. CJK faces, transformed glyphs and any
-  glyph `skrifa` cannot draw use the unhinted `ab_glyph` raster. All outline
+  glyph `skrifa` cannot hint use the unhinted raster (`face::Outlined`: `ab_glyph`'s placement and `ab_glyph_rasterizer`, ADR-0119). All outline
   coverage goes through `contrast_coverage` (`c^(1/TEXT_CONTRAST)`).
 - **Coordinates.** `DrawOp::Text` positions system-font text by the
   bottom of its 16-px line box (used by built-in controls);
@@ -651,7 +652,7 @@ binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
   with a `glyph_transform::Matrix`. With the identity matrix the run draws
   the cached upright glyphs; otherwise `gui/glyph_transform.rs` transforms
   the outline (`font::glyph_shape`) in font units and rasterises it with
-  ab_glyph (Unifont bitmaps are mapped pel by pel through the inverse
+  `face::Outlined` (Unifont bitmaps are mapped pel by pel through the inverse
   matrix), in its own per-thread cache bounded at `TRANSFORMED_CACHE_MAX`
   glyphs; matrices with an entry beyond ±16 or no inverse draw nothing.
   Underscore / strikeout bands and a non-upright background box are
@@ -2181,7 +2182,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2327: 2237 warpine + 23 `gen_api` + 39 `lx_link` + 10 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2333: 2243 warpine + 23 `gen_api` + 39 `lx_link` + 10 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2511,7 +2512,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2327 unit tests (2237 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 222 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2333 unit tests (2243 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 224 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

@@ -53,9 +53,8 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 
 ## Presentation Manager
 
-- [ ] **The modern theme** (ADR-0118; frames are done):
-  - built-in controls: rounded buttons and entry fields, focus rings instead of dotted outlines, hover feedback;
-  - menus and pop-up menus with rounded corners and a shadow; slimmer, flat scroll bars and sliders;
+- [ ] **The modern theme** (ADR-0118; frames, controls, menus and pop-ups are done):
+  - slimmer, flat scroll bars and sliders; focus rings on list boxes, check boxes and radio buttons;
   - then `modern` as the default theme, `classic` kept.
 
 ### Controls
@@ -77,7 +76,6 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - `WM_BEGINDRAG` from the keyboard;
   - a host drop's position on real displays (the last pointer position is used).
 - [ ] **Menus**:
-  - `WM_MEASUREITEM` for owner-drawn items, sent when the menu is created; Warpine's pull-down rows are one fixed height, so the reply would need rows of the owner's height;
   - a redraw of an owner-drawn item when the mouse highlights it (the keyboard highlight does), `MIA_NODISMISS`.
 - [ ] **Sliders and value sets**:
   - dragging the arm with button 2, `WC_CIRCULARSLIDER`;
