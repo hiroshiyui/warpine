@@ -53,6 +53,11 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 
 ## Presentation Manager
 
+- [ ] **The modern theme** (ADR-0118; frames are done):
+  - built-in controls: rounded buttons and entry fields, focus rings instead of dotted outlines, hover feedback;
+  - menus and pop-up menus with rounded corners and a shadow; slimmer, flat scroll bars and sliders;
+  - then `modern` as the default theme, `classic` kept.
+
 ### Controls
 
 - [ ] **Containers** (ADR-0043–0046, 0065, 0067):

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **A modern theme** (ADR-0118, `WARPINE_THEME=modern`): frames with rounded, antialiased corners and a soft shadow, a thin edge line instead of bevelled borders, and flat title-bar pictograms. Only pels change: window sizes, client areas, metrics and hit areas are the same in every theme. The classic look stays the default for now. The desktop server, the layered and the software compositor draw the same pels.
+
+### Changed
+- **Desktop protocol version 11**: a picture can ask the desktop server to shape it as a rounded frame (`Item::rounded`).
+
 ## [0.0.13] - 2026-11-23
 
 ### Security
