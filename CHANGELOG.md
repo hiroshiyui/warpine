@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-11-23
+
 ### Security
 - **A cgroup per session** (ADR-0116): a session's first process asks the systemd user manager for a scope holding itself, which every process of the session inherits, with 8 GB of memory and 8192 tasks (`WARPINE_SESSION_MEMORY_MAX`, `WARPINE_SESSION_TASKS_MAX`). A runaway or hostile program can no longer take the machine's memory or tasks. Without a user manager the session runs as before, with a warning (`WARPINE_CGROUP=off` hides it); a session already under tighter limits stays under them.
 
