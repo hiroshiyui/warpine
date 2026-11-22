@@ -69,8 +69,8 @@ fn tlm_translate(offset: u32, len: usize) -> u32 {
 
 /// Whether `len` bytes at the guest-physical `offset` touch Warpine's
 /// protected memory (ADR-0113): the GDT, IDT and exception stubs (the
-/// system area below the TIB) and the paging arena (page tables, TSSs,
-/// ring-0 stacks). A guest at ring 3 cannot write them itself, and Warpine
+/// system area below the TIB) and the paging arena, both parts (page
+/// tables, TSSs, ring-0 stacks). A guest at ring 3 cannot write them itself, and Warpine
 /// does not write them on its behalf: every write through a guest-given
 /// pointer goes through the checked paths, and only Warpine's own setup
 /// uses the `*_system` ones. The address is the one given, before the
@@ -78,11 +78,12 @@ fn tlm_translate(offset: u32, len: usize) -> u32 {
 /// page in the arena does not.
 pub fn protected(offset: u32, len: usize) -> bool {
     use super::constants::{SYSTEM_AREA_BASE, TIB_BASE};
-    use super::paging::{PAGING_ARENA_BASE, PAGING_ARENA_END};
+    use super::paging::{PAGING_ARENA_BASE, PAGING_ARENA_END, PAGING_EXTRA_BASE, PAGING_EXTRA_END};
     let start = u64::from(offset);
     let end = start + len.max(1) as u64;
     let overlaps = |lo: u32, hi: u32| start < u64::from(hi) && end > u64::from(lo);
     overlaps(SYSTEM_AREA_BASE, TIB_BASE) || overlaps(PAGING_ARENA_BASE, PAGING_ARENA_END)
+        || overlaps(PAGING_EXTRA_BASE, PAGING_EXTRA_END)
 }
 
 // ── GuestMemory ───────────────────────────────────────────────────────────────

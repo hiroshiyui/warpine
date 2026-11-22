@@ -3657,12 +3657,12 @@ fn test_threads_limit_from_the_environment() {
 }
 
 /// threads_limit_test's `cap` mode with the session's limit above a
-/// process's own (ADR-0115): a process gets 482 threads, thread 1 and 481
+/// process's own (ADR-0115): a process gets 738 threads, thread 1 and 737
 /// more, each on its own paging block; the next DosCreateThread fails with
 /// ERROR_MAX_THRDS_REACHED (164); ended threads give their blocks back, so
 /// a second round gets as many.
 #[test]
-fn a_process_gets_482_threads() {
+fn a_process_gets_738_threads() {
     const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
     if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let run = tempfile::tempdir().unwrap();
@@ -3673,7 +3673,7 @@ fn a_process_gets_482_threads() {
     assert_eq!(code, 0, "stdout:\n{out}");
     assert!(!out.contains("FAIL"), "{out}");
     assert_eq!(out.matches("ok process cap rc=164").count(), 2, "{out}");
-    assert_eq!(out.matches("ok process cap: created threads=481").count(), 2, "{out}");
+    assert_eq!(out.matches("ok process cap: created threads=737").count(), 2, "{out}");
 }
 
 /// A process joining a session whose threads are all in use ends with
