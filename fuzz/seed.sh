@@ -5,11 +5,12 @@
 # DLLs for lx_parse, NE programs for ne_parse, message files for msgfile,
 # resource scripts for os2rc, and lx-link's inputs (ELF objects, resource
 # files, DLLs, message files) for lx_link, each behind the byte that picks
-# its kind (fuzz_targets/lx_link.rs). desktop_proto starts from nothing;
+# its kind (fuzz_targets/lx_link.rs), and bitmap files for bitmap.
+# desktop_proto starts from nothing;
 # libFuzzer finds its tags quickly.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/lx_link
+mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/lx_link corpus/bitmap
 n=0
 while IFS= read -r -d '' f; do
     case $(head -c 2 "$f" | od -An -c | tr -d ' ') in
@@ -24,6 +25,9 @@ done < <(find ../samples ../target -type f -name '*.msg' -size -1024k -print0 2>
 while IFS= read -r -d '' f; do
     cp -- "$f" "corpus/os2rc/$(sha256sum -- "$f" | cut -c1-16)"
 done < <(find ../samples ../sdk -type f -name '*.rc' -size -1024k -print0)
+while IFS= read -r -d '' f; do
+    cp -- "$f" "corpus/bitmap/$(sha256sum -- "$f" | cut -c1-16)"
+done < <(find ../samples ../sdk -type f -iname '*.bmp' -size -1024k -print0)
 # lx_link: the first byte picks the input's name: 0 .o, 1 .res, 2 .dll,
 # 3 .msg.
 m=0

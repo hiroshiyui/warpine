@@ -63,5 +63,11 @@ path = "fuzz_targets/lx_link.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "bitmap"
+path = "fuzz_targets/bitmap.rs"
+test = false
+doc = false
+
 [profile.release]
 debug = 1

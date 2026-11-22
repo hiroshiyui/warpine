@@ -172,7 +172,7 @@ id = "gpi"
 zone = "host"
 label = "GPI: presentation spaces, state, transforms, drawing, fonts, bitmaps, regions, clipping, paths (ADR-0024, ADR-0027)"
 modules = [
-  "loader/pm_gpi.rs", "loader/pm_bitmap.rs", "loader/pm_shapes.rs", "loader/pm_drawtext.rs",
+  "loader/pm_gpi.rs", "loader/pm_bitmap.rs", "loader/bitmap_codec.rs", "loader/pm_shapes.rs", "loader/pm_drawtext.rs",
   "loader/pm_region.rs", "loader/pm_area.rs", "loader/pm_text.rs", "loader/pm_xform.rs", "loader/pm_coords.rs",
   "loader/pm_psstate.rs",
 ]
