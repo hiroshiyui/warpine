@@ -8,7 +8,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 - **Scroll bars**: the keys a focused bar takes (the arrows along its axis, Page Up / Page Down on both kinds, no Home / End), `SB_ENDSCROLL` on the key's release; the tracking outline's look without `SBS_AUTOTRACK`.
 - **Pointers**: which controls send `WM_CONTROLPOINTER` (every built-in control class but frames, menus and title bars), the I-beam only for entry fields and MLEs; the sizing border's hit width (the renderer's 6 pels) for the sizing arrows.
-- **Keyboard menus** (ADR-0117): F10 highlighting without dropping, Alt's release as the toggle, the keys and the items they skip, F1's `WM_HELP` mp1 = 0 and that F1 is a system accelerator.
+- **Keyboard menus** (ADR-0117): F10 highlighting without dropping, Alt's release as the toggle, the keys and the items they skip, F1's `WM_HELP` mp1 = 0 and that F1 is a system accelerator; `WM_INITMENU` / `WM_MENUEND` with `FID_MENU` for the bar and the bar item's id for a pull-down, the menu bar's handle in mp2 for pull-downs (which are no windows in Warpine), and `WM_MENUSELECT(FALSE)` on every highlight change.
+- **Message boxes**: a box without `MB_MOVEABLE` keeping its title bar (and the close button); `MB_SYSTEMMODAL` as application modal; a non-modal `WinMessageBox2` returning its handle; `WM_MSGBOXINIT` / `WM_MSGBOXDISMISS` posted, not sent; at most 16 buttons; `PMERR_PARAMETER_OUT_OF_RANGE` for a bad button count; a program without a PM desktop getting the default button's id.
 - **Text controls**:
   - `DRAG_SCROLL_MS` 100 ms, also the default `SV_FIRSTSCROLLRATE` / `SV_SCROLLRATE`, and that timer serving text controls, spin buttons and sliders as well as scroll bars;
   - `SV_CURSORRATE` as the time between toggles;

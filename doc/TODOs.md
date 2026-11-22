@@ -72,8 +72,8 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - `WM_BEGINDRAG` from the keyboard;
   - a host drop's position on real displays (the last pointer position is used).
 - [ ] **Menus**:
-  - `WM_MEASUREITEM` for owner-drawn items, and a redraw when the highlight changes;
-  - `WM_MEASUREITEM` on deletion, partial `WM_DRAWITEM` (`fsStateOld`).
+  - `WM_MEASUREITEM` for owner-drawn items, sent when the menu is created; Warpine's pull-down rows are one fixed height, so the reply would need rows of the owner's height;
+  - a redraw of an owner-drawn item when the mouse highlights it (the keyboard highlight does), `MIA_NODISMISS`.
 - [ ] **Sliders and value sets**:
   - dragging the arm with button 2, `WC_CIRCULARSLIDER`;
   - value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
@@ -90,7 +90,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 - [ ] **Menus in dialogs**:
   - `WM_UPDATEFRAME(FCF_MENU)` to a dialog (`WinDefDlgProc` ignores it), and the other `FCF_*` flags of `WM_UPDATEFRAME`;
   - `WinSetParent` / `WinSetOwner` of a menu.
-- [ ] **Message boxes**: `MB_CUSTOMICON` / `WinMessageBox2`, the `HK_HELP` hook (`idWindow`), `MB_NONMODAL`, `MB_SYSTEMMODAL`, `MB_MOVEABLE`.
+- [ ] **Message boxes**: the `HK_HELP` hook (`idWindow`), `MB_SYSTEMMODAL` as system modal (it is application modal now).
 - [ ] **Standard dialogs**:
   - a default error box when `FDM_ERROR` returns 0;
   - filtering the style list, `FNTM_COLORCHANGED` / `FNTM_UPDATEPREVIEW`;
@@ -104,7 +104,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 ### Frames, input and messages
 
 - [ ] **Frames and system keys**:
-  - `WM_INITMENU` / `WM_MENUSELECT` while the menu bar is used from the keyboard (ADR-0117), and cascading submenus in its pull-downs;
+  - cascading submenus in the menu bar's pull-downs;
   - icons for minimized frames (`FCF_ICON`, `WinSetIcon`), min/max for dialogs;
   - `WinSetActiveWindow` on minimized or disabled frames;
   - `SWP_ZORDER` / `hwndInsertBehind` in a subclassed frame's `WM_FORMATFRAME`;

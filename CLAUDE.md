@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2305 unit tests (2215 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 220 integration tests
+cargo test                                 # 2312 unit tests (2222 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 220 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -77,7 +77,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - `main.rs` parses the executable (`src/lx/`, `src/ne/`).
    - `Loader::load` maps it into guest memory and applies its fixups.
    - `Loader::run` sets up the TIB / PIB and runs a vCPU (`vcpu.rs`).
-   - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 478 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 407 ordinals), 885 entry points in all (`--compat` lists them).
+   - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 478 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 408 ordinals), 886 entry points in all (`--compat` lists them).
 2. **Threads.** One OS/2 thread is one host thread with its own vCPU.
    - 32-bit threads run paged with their own page tables: memory is mapped one-to-one except the thread-local page (`paging.rs`, ADR-0088); host accesses there go to the running thread's page (`guest_mem.rs`).
    - Every thread, 32-bit or 16-bit, runs paged at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread, an exception's frame moved from the ring-0 stack to the guest's); the GDT, IDT, ring-0 window and every paging block (the paging arena, at most 738 threads, ADR-0115) are supervisor-only, the thunks read-only, CR0.WP set. There is no ring 0 for guests and no paging watch.

@@ -29,9 +29,11 @@ A frame's menu bar (`FID_MENU`) took only the mouse: Warpine's menu window has n
 - Alt's release, not its press, starts menu mode; Alt with any key between is not a toggle.
 - Which items the arrows skip; that a typed mnemonic of a disabled item does nothing.
 - F1's `WM_HELP` has mp1 = 0 and is posted to the active frame's client.
-- No `WM_INITMENU` / `WM_MENUSELECT` is sent for keyboard navigation (nor for the mouse, as before).
+- Which identities `WM_INITMENU` / `WM_MENUEND` carry (the bar: `FID_MENU`; a pull-down: its bar item's id), and that pull-downs, which are no windows here, give the menu bar's handle.
 
 ## Consequences
+
+- **Addendum (2026-11-23):** the client hears the menu bar, from the mouse and the keyboard alike, through owner calls (`MenuInit` / `MenuSelect` / `MenuEnd`): `WM_INITMENU`, `WM_MENUSELECT` — a chosen item's command is posted only on a TRUE reply, as the PM Reference says — and `WM_MENUEND`.
 
 - Keyboard-only programs can reach their menus; `samples/pm_menukey_test` and a golden picture (`pm_menukey`) check it.
 - A program that reads its queue with `WinPeekMsg` without removal sees the keys before menu mode takes them only when it removes them; a keystroke is taken once, when it is removed.
