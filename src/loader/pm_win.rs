@@ -441,7 +441,14 @@ impl super::Loader {
                 let prcl = read_stack(12);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                let hps = if hps_in != 0 && wm.ps_map.contains_key(&hps_in) {
+                // A presentation space given must be one (PM Reference:
+                // PMERR_INV_HPS, NULLHANDLE returned).
+                if hps_in != 0 && !wm.ps_map.contains_key(&hps_in) {
+                    drop(wm);
+                    self.pm_error(vcpu_id, PMERR_INV_HPS);
+                    return ApiResult::Normal(0);
+                }
+                let hps = if hps_in != 0 {
                     hps_in
                 } else {
                     let h = wm.create_ps(hwnd);
@@ -966,11 +973,19 @@ impl super::Loader {
                 if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let cp = self.window_codepage(hwnd_dlg);
                 let wm = self.shared.window_mgr.lock_or_recover();
-                let text = wm.find_child_by_id(hwnd_dlg, id_item)
-                    .and_then(|h| wm.get_window(wm.text_window(h)))
+                let item = wm.find_child_by_id(hwnd_dlg, id_item);
+                let text = item.and_then(|h| wm.get_window(wm.text_window(h)))
                     .map(|w| w.text.clone())
                     .unwrap_or_default();
                 drop(wm);
+                // An item the dialog does not have is an invalid window
+                // (PM Reference: PMERR_INVALID_HWND); the buffer gets an
+                // empty string.
+                if item.is_none() {
+                    self.pm_error(vcpu_id, PMERR_INVALID_HWND);
+                    if cch_max > 0 { self.guest_write::<u8>(buffer_ptr, 0); }
+                    return ApiResult::Normal(0);
+                }
                 let bytes = super::codepage::cp_encode(&text, cp);
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
                 self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
@@ -1130,7 +1145,12 @@ impl super::Loader {
                 let psz_text = read_stack(12);
                 if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd_dlg));
-                self.set_dlg_item_text(hwnd_dlg, id_item, text);
+                // An item the dialog does not have is an invalid window
+                // (PM Reference: PMERR_INVALID_HWND, FALSE).
+                if !self.set_dlg_item_text(hwnd_dlg, id_item, text) {
+                    self.pm_error(vcpu_id, PMERR_INVALID_HWND);
+                    return ApiResult::Normal(0);
+                }
                 ApiResult::Normal(1)
             }
             858 => {
@@ -1317,6 +1337,12 @@ impl super::Loader {
                 let p_pres_params   = read_stack(52);
                 if !self.pm_check_hwnd(vcpu_id, hwnd_parent, false)
                     || !self.pm_check_hwnd(vcpu_id, hwnd_owner, true) {
+                    return ApiResult::Normal(0);
+                }
+                // A window belongs to its thread's message queue: a thread
+                // without one gets PMERR_NO_MSG_QUEUE (PM Reference).
+                if !self.shared.window_mgr.lock_or_recover().tid_to_hmq.contains_key(&vcpu_id) {
+                    self.pm_error(vcpu_id, PMERR_NO_MSG_QUEUE);
                     return ApiResult::Normal(0);
                 }
 

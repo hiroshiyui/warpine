@@ -3444,7 +3444,7 @@ fn gui_pm_msgbox_test_matches_golden() {
 /// caret blink rate (SV_CURSORRATE) and rejects a rate of 0 / a bad desktop.
 #[test]
 fn gui_pm_error_test_reports_last_errors() {
-    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 114);
+    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 124);
 }
 
 /// pm_profile_test: PMSHAPI profiles — PrfWriteProfileString / Data,

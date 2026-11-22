@@ -144,10 +144,11 @@ impl Loader {
 
     /// Set the text of item `id` of `hwnd_dlg` (`WinSetDlgItemText`); a
     /// missing item is no error.
-    pub(super) fn set_dlg_item_text(&self, hwnd_dlg: u32, id: u32, text: String) {
+    /// False when the dialog has no item `id`.
+    pub(super) fn set_dlg_item_text(&self, hwnd_dlg: u32, id: u32, text: String) -> bool {
         let target = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
-            let Some(child) = wm.find_child_by_id(hwnd_dlg, id) else { return };
+            let Some(child) = wm.find_child_by_id(hwnd_dlg, id) else { return false };
             let target = wm.text_window(child);
             if let Some(win) = wm.get_window_mut(target) {
                 win.text = text;
@@ -158,6 +159,7 @@ impl Loader {
         if let Some(field) = target {
             self.set_field_text_done(field);
         }
+        true
     }
 
     /// `WinSetDlgItemShort(hwndDlg, idItem, usValue, fSigned)`.

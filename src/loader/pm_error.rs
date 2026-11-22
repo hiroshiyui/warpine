@@ -341,6 +341,34 @@ mod tests {
                    "no window was created");
     }
 
+    /// The errors the PM Reference lists for these calls (EDM2's copies of
+    /// its WinInvalidateRect, WinBeginPaint, WinCreateWindow and
+    /// Win*DlgItemText pages): a flag that is no BOOL, a presentation space
+    /// that is none, a thread without a message queue, a dialog item that
+    /// does not exist.
+    #[test]
+    fn documented_pm_errors_are_reported() {
+        let loader = Loader::new_mock();
+        let buf = 0x2000;
+        loader.guest_write_bytes(buf, b"x\0").unwrap();
+        // A thread without a queue cannot create a window.
+        assert_eq!(call(&loader, 0, ORD_WIN_CREATE_WINDOW, &[HWND_DESKTOP, buf, buf, 0, 0, 0, 10, 10, 0, 0, 1, 0, 0]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_NO_MSG_QUEUE));
+        let hmq = call(&loader, 0, ORD_WIN_CREATE_MSG_QUEUE, &[MOCK_HAB, 0]);
+        let hwnd = loader.shared.window_mgr.lock_or_recover().create_window("App".into(), 0, hmq);
+        assert_eq!(call(&loader, 0, ORD_WIN_INVALIDATE_RECT, &[hwnd, 0, 2]), 0, "fIncludeChildren is a BOOL");
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_FLAG));
+        assert_eq!(call(&loader, 0, ORD_WIN_INVALIDATE_RECT, &[hwnd, 0, 1]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_BEGIN_PAINT, &[hwnd, 0xBAD0, 0]), 0, "no such HPS");
+        assert_eq!(last_error(&loader, 0), err(PMERR_INV_HPS));
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_DLG_ITEM_TEXT, &[hwnd, 77, buf]), 0, "no item 77");
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HWND));
+        loader.guest_write_bytes(buf + 16, b"zz").unwrap();
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_DLG_ITEM_TEXT, &[hwnd, 77, 8, buf + 16]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HWND));
+        assert_eq!(loader.guest_read::<u8>(buf + 16), Some(0), "an empty string");
+    }
+
     /// WinEnableWindow repaints a built-in control whose state changes (a
     /// disabled button's label is greyed), and nothing else: not an
     /// application's window, not a control whose state stays.

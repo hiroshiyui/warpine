@@ -369,6 +369,12 @@ impl Loader {
     /// `HWND_DESKTOP` invalidates every frame with its children.
     pub(super) fn win_invalidate_rect(&self, tid: u32, hwnd: u32, prcl: u32, include: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(0); }
+        // fIncludeChildren is a BOOL: another bit is PMERR_INVALID_FLAG
+        // (PM Reference, WinInvalidateRect errors).
+        if include > 1 {
+            self.pm_error(tid, PMERR_INVALID_FLAG);
+            return ApiResult::Normal(0);
+        }
         let rect = match prcl {
             0 => None,
             p => match self.read_rectl(p) { Some(r) => Some(r), None => return ApiResult::Normal(0) },

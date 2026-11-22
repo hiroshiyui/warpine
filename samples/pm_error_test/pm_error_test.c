@@ -19,6 +19,10 @@
  *     QWL_MIN                              -> PMERR_PARAMETER_OUT_OF_RANGE
  *   - WinPeekMsg with an unknown fl bit    -> PMERR_INVALID_FLAG
  *   - WinSetAccelTable with no such table  -> PMERR_INVALID_HACCEL
+ *   - WinInvalidateRect with a flag that is no BOOL -> PMERR_INVALID_FLAG
+ *   - WinBeginPaint with an HPS that is none -> PMERR_INV_HPS
+ *   - WinSetDlgItemText / WinQueryDlgItemText of no such item -> PMERR_INVALID_HWND
+ *   - WinCreateWindow on a thread without a queue -> PMERR_NO_MSG_QUEUE
  *   - WinSetSysValue(SV_CURSORRATE, 0)       -> PMERR_PARAMETER_OUT_OF_RANGE
  *     (and with a handle that is no desktop  -> PMERR_INVALID_HWND), after
  *     setting the caret blink rate and reading it back
@@ -35,6 +39,7 @@
  * followed by "pm_error_test: done <passed>/<total>" when the program ends.
  */
 #define INCL_WIN
+#define INCL_GPIERRORS
 #define INCL_DOSPROCESS
 #define INCL_DOSSEMAPHORES
 #define INCL_DOSERRORS
@@ -52,6 +57,8 @@ static ULONG thr_destroy_rc;
 static ERRORID thr_destroy_err;
 static ULONG thr_peek_rc;
 static ERRORID thr_peek_err;
+static ULONG   thr_create_rc;
+static ERRORID thr_create_err;
 static ERRORID thr_initial_err;
 static HEV   thr_done;
 
@@ -129,6 +136,9 @@ static VOID APIENTRY second_thread( ULONG arg )
     thr_destroy_err = WinGetLastError( hab );
     thr_peek_rc     = WinPeekMsg( hab, &qmsg, NULLHANDLE, 0, 0, PM_REMOVE );
     thr_peek_err    = WinGetLastError( hab );
+    thr_create_rc   = (ULONG)WinCreateWindow( HWND_DESKTOP, WC_STATIC, "x", 0, 0, 0, 10, 10,
+                                              NULLHANDLE, HWND_TOP, 1, NULL, NULL );
+    thr_create_err  = WinGetLastError( hab );
     WinTerminate( hab );
     DosPostEventSem( thr_done );
 }
@@ -226,6 +236,17 @@ int main( void )
                  PMERR_PARAMETER_OUT_OF_RANGE );
     check_fails( hab, "WinQueryWindowULong(below QWL_MIN)", WinQueryWindowULong( client, QWL_MIN - 1 ),
                  PMERR_PARAMETER_OUT_OF_RANGE );
+    check_fails( hab, "WinInvalidateRect(fIncludeChildren 2)", WinInvalidateRect( client, NULL, 2 ),
+                 PMERR_INVALID_FLAG );
+    check_fails( hab, "WinBeginPaint(an HPS that is none)", (ULONG)WinBeginPaint( client, (HPS)0xBAD0, NULL ),
+                 PMERR_INV_HPS );
+    check_fails( hab, "WinSetDlgItemText(no such item)", WinSetDlgItemText( client, 77, "x" ),
+                 PMERR_INVALID_HWND );
+    {
+        char text[8];
+        check_fails( hab, "WinQueryDlgItemText(no such item)", WinQueryDlgItemText( client, 77, sizeof text, text ),
+                     PMERR_INVALID_HWND );
+    }
     check_fails( hab, "WinQueryWindowUShort(QWS_USER, cbWindowData 0)", WinQueryWindowUShort( client, QWS_USER ),
                  PMERR_PARAMETER_OUT_OF_RANGE );
     check_fails( hab, "WinPeekMsg(invalid fl)", WinPeekMsg( hab, &qmsg, NULLHANDLE, 0, 0, 0x10 ),
@@ -274,6 +295,8 @@ int main( void )
     check( "-> PMERR_INVALID_HMQ", ERRORIDERROR( thr_destroy_err ), PMERR_INVALID_HMQ );
     check( "second thread: WinPeekMsg without a queue fails", thr_peek_rc, 0 );
     check( "-> PMERR_NO_MSG_QUEUE", ERRORIDERROR( thr_peek_err ), PMERR_NO_MSG_QUEUE );
+    check( "second thread: WinCreateWindow without a queue fails", thr_create_rc, 0 );
+    check( "-> PMERR_NO_MSG_QUEUE (WinCreateWindow)", ERRORIDERROR( thr_create_err ), PMERR_NO_MSG_QUEUE );
     check( "main thread keeps its own error", ERRORIDERROR( WinGetLastError( hab ) ), PMERR_INVALID_HWND );
 
     /* Successes the reference defines as TRUE whatever the earlier state. */
