@@ -25,6 +25,8 @@ disassembly.
 
 Items below wait on data, information or binaries Warpine does not have, and that the clean-room policy only lets it take from a permissive public source. Each is also listed in its own section. Unblocking one starts with finding that source.
 
+Where no such source turns up and the original cannot be rebuilt (SOM, the WPS, IPF help …), a practical design of Warpine's own may close the item instead, even at the cost of compatibility (its own ordinals, formats or protocols): Warpine is an OS/2-API-compatible platform, not a clone. Each such choice is agreed first and recorded in an ADR that names what compatibility it gives up.
+
 **Unpublished formats or layouts**
 - **INF / HLP help files** ([Help viewer](#dialogs-menus-and-message-boxes)): the IPF format is unpublished; check the osFree / NewView descriptions first.
 - **Binary OS/2 INI files** ([Profiles](#kernel-and-processes)): the format is unpublished; profiles use Warpine's own format.
