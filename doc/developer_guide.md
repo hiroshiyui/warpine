@@ -2335,9 +2335,10 @@ samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
   - `lx_parse` and `ne_parse`, through a module whose path is `src/`, so their `header` submodules resolve;
   - `msgfile`, where parsed files must round-trip;
   - `os2rc`, the whole of `src/bin/os2rc.rs`: `compile_in_memory` compiles a script to a .res file without reading any file (no `#include`, `RCINCLUDE` or resource file);
+  - `bitmap`, `src/loader/bitmap_codec.rs` (the byte-slice codec `pm_bitmap.rs` builds surfaces on), with shims for six constants and `MAX_SURFACE_DIM`: an `RT_BITMAP` resource is split into its format and pel data, decoded when it has at most 2²⁰ pels;
   - `lx_link`, the whole of `src/bin/lx_link.rs`: `link_in_memory` reads one input (its first byte picks `.o`, `.res`, `.dll` or `.msg`; archives are told by their magic), links it, with `--gc-sections` when the byte's top bit is set, and writes the debug companion when it has DWARF.
 - **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs, message files, resource scripts and lx-link inputs into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
-- **In CI** the watcom entry runs each target for a minute after `cargo deny check` (advisories included) in both workspaces.
+- **In CI** the watcom entry runs each target for a minute after `cargo deny check` (advisories included) in both workspaces. `.github/workflows/fuzz.yml` runs every target for ten minutes each Monday, and on demand with another length (`ci/matrix.sh fuzz`, seeded from Open Watcom's and GCC's samples; `FUZZ_SECONDS=600 ci/run.sh fuzz` on a workstation).
 
 ### GUI regression tests
 

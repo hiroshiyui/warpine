@@ -47,7 +47,7 @@ The SDK's C++ runtime also took the records of frames it unwound off the chain w
    - That frame is a signal frame for hardware and asynchronous codes: its IP is the instruction itself, not a return address (`_Unwind_GetIPInfo`).
    - The frames that trapped are unwound and their destructors run, up to a catch above them. The handler's own record is unwound like any other.
    - The personality lets an exception pass a trapping instruction that lies outside every call site.
-   - **Unwind tables:** C++ code (`OS2_CXXFLAGS`) and the SDK's C library are built with `-fasynchronous-unwind-tables`. clang emits tables only where it thinks an exception can pass, which a trap can be.
+   - **Unwind tables:** C++ code (`OS2_CXXFLAGS`) and the SDK's C library are built with `-fasynchronous-unwind-tables`. clang emits tables only where it thinks an exception can pass, which a trap can be. Later, every program's C code is too (`OS2_BASEFLAGS`, and `build_sdk.sh`), as GCC and clang do for Linux by default: a trap in C code under a C++ `catch`, or an exception passing through C frames, unwinds instead of ending in `std::terminate`; a program without C++ only carries the tables.
 
 ## Warpine's choices (unverified)
 

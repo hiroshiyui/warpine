@@ -16,8 +16,11 @@
 //! - `THREADS=n` sets "the maximum number of threads … that OS/2 can run at
 //!   the same time"; the upper bound is 4095, and the kernel's default is 64.
 //!   Sources differ on the lower bound (32 in OS/2 2.x notes, 64 in later
-//!   ones): Warpine takes 64, **unverified**. A value outside the range is
-//!   clamped to it.
+//!   ones) and on the upper one (4096 in a WPS settings help, 4095 on
+//!   EDM2); a search in 2026-11 found no primary source for either
+//!   (IBM's Command Reference, `CMDREF.INF`, was not read). Warpine takes
+//!   64 to 4095, **unverified**. A value outside the range is clamped to
+//!   it.
 //! - `LIBPATH` lists directories separated by `;`, `.` being the current
 //!   directory; it is not an environment variable.
 //! - `SET` puts a variable in the environment programs start with.
