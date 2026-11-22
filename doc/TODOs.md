@@ -10,6 +10,7 @@ headers and osFree / ReactOS references only; no IBM binaries, ROM dumps or
 disassembly.
 
 **Contents:**
+- [Project Blockers](#project-blockers)
 - [Presentation Manager](#presentation-manager)
 - [Kernel and processes](#kernel-and-processes)
 - [Console and multimedia](#console-and-multimedia)
@@ -17,6 +18,34 @@ disassembly.
 - [Security Facilities](#security-facilities)
 - [Development toolchain](#development-toolchain)
 - [Long-term](#long-term)
+
+---
+
+## Project Blockers
+
+Items below wait on data, information or binaries Warpine does not have, and that the clean-room policy only lets it take from a permissive public source. Each is also listed in its own section. Unblocking one starts with finding that source.
+
+**Unpublished formats or layouts**
+- **INF / HLP help files** ([Help viewer](#dialogs-menus-and-message-boxes)): the IPF format is unpublished; check the osFree / NewView descriptions first.
+- **Binary OS/2 INI files** ([Profiles](#kernel-and-processes)): the format is unpublished; profiles use Warpine's own format.
+- **`WinGetErrorInfo` / `WinFreeErrorInfo`** ([PM errors](#frames-input-and-messages)): the `ERRINFO` layout is unknown.
+- **`select`, `bsdselect`, `os2_select`** ([Sockets](#application-compatibility)): their real ordinals and layouts.
+
+**Missing export lists or ordinals**
+- **DIVE** and **OpenGL / PGL** ([Graphics](#graphics)): their export lists.
+- **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the export lists of UCONV, MMPM/2, TCP/IP, PMCTLS and MSG; dates for the 22 `unknown` exports.
+- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them (Free Pascal's LGPL `som.pas` is not used).
+- **SOM Stage B2/B3**, classes built from IBM's static class data ([SOM](#som--workplace-shell)): waits for those ordinals, or a source for the initializer / destructor control-block protocol. It holds back IBM-built SOM programs, and with them the Workplace Shell's compatibility.
+
+**Behaviour the public documentation does not settle**
+- **`DB_RAISED` / `DB_DEPRESSED`** ([Presentation parameters and painting](#frames-input-and-messages)): no source documents them.
+- **The `THREADS=` range and parsing** ([CONFIG.SYS](#kernel-and-processes)): only IBM's Command Reference (`CMDREF.INF`) settles them; secondary sources disagree, and reading it needs an INF reader (see above).
+- **PM errors** ([PM errors](#frames-input-and-messages)): when `WinQueryWindowPos` reports `PMERR_INVALID_FLAG` (it has no flag parameter), and which values make `WinCreateWindow` report its parameter errors.
+
+**Third-party binaries**
+- **bitwiseworks GCC / LIBCn / LIBCx** as regression inputs ([Ported-software tier](#development-toolchain)): their licences must be checked first.
+
+Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace Shell), then the IPF format (the help viewer, and `CMDREF.INF`), then the DIVE and PGL export lists.
 
 ---
 
