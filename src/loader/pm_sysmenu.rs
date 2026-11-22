@@ -55,7 +55,7 @@ impl Loader {
             SC_SYSMENU if w.frame_flags & FCF_SYSMENU != 0 => {
                 GUIMessage::SystemMenu { frame, keyboard: mp2 >> 16 == 0 }
             }
-            SC_MOVE | SC_SIZE if can_track(w.frame_flags, state, cmd == SC_SIZE) => {
+            SC_MOVE | SC_SIZE if can_track(w.frame_flags, state, cmd == SC_SIZE) && !w.immovable => {
                 GUIMessage::TrackFrame { frame, size: cmd == SC_SIZE }
             }
             _ => return true,

@@ -242,6 +242,15 @@
     P("SIZEL", sizeof(SIZEL));
     P("SIZEL.cx", offsetof(SIZEL, cx));
     P("SIZEL.cy", offsetof(SIZEL, cy));
+    P("MB2D", sizeof(MB2D));
+    P("MB2D.idButton", offsetof(MB2D, idButton));
+    P("MB2D.flStyle", offsetof(MB2D, flStyle));
+    P("MB2INFO", sizeof(MB2INFO));
+    P("MB2INFO.hIcon", offsetof(MB2INFO, hIcon));
+    P("MB2INFO.cButtons", offsetof(MB2INFO, cButtons));
+    P("MB2INFO.flStyle", offsetof(MB2INFO, flStyle));
+    P("MB2INFO.hwndNotify", offsetof(MB2INFO, hwndNotify));
+    P("MB2INFO.mb2d", offsetof(MB2INFO, mb2d));
     P("QMSG", sizeof(QMSG));
     P("QMSG.hwnd", offsetof(QMSG, hwnd));
     P("QMSG.msg", offsetof(QMSG, msg));

@@ -77,8 +77,17 @@ pub enum OwnerCallKind {
     DrawListItem { index: usize },
     /// `WM_CONTROL(BN_PAINT)` for a user button.
     UserButton,
-    /// `WM_DRAWITEM` for the `MIS_OWNERDRAW` pull-down item `id` of a menu.
-    DrawMenuItem { id: u16 },
+    /// `WM_DRAWITEM` for the `MIS_OWNERDRAW` pull-down item `id` of a menu;
+    /// `hilite` `Some(on)` when its highlight changes (`MIA_HILITED` in
+    /// `fsAttribute` and the opposite in `fsAttributeOld`).
+    DrawMenuItem { id: u16, hilite: Option<bool> },
+    /// `WM_INITMENU(id, menu)` to the owner of a menu (`pm_menubar.rs`).
+    MenuInit { id: u16 },
+    /// `WM_MENUSELECT(MPFROM2SHORT(id, post), menu)`; with `post`, the
+    /// command message posted when the owner returns TRUE.
+    MenuSelect { id: u16, post: Option<(u32, u32, u32)> },
+    /// `WM_MENUEND(id, menu)`.
+    MenuEnd { id: u16 },
     /// `WM_ERASEBACKGROUND` from a frame to its client `control`
     /// (`pm_paint_style.rs`).
     EraseBackground,
@@ -296,7 +305,10 @@ impl Loader {
     /// How to make owner call `call` (see [`OwnerSetup`]).
     pub(crate) fn owner_call_setup(&self, call: &OwnerCall) -> OwnerSetup {
         match call.kind {
-            OwnerCallKind::DrawMenuItem { id } => return self.menu_item_setup(call.control, id),
+            OwnerCallKind::DrawMenuItem { id, hilite } => return self.menu_item_setup(call.control, id, hilite),
+            OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. } => {
+                return self.menu_notify_setup(call);
+            }
             OwnerCallKind::EraseBackground => return self.erase_background_setup(call.control),
             OwnerCallKind::SyncPaint => return self.sync_paint_setup(call.control),
             OwnerCallKind::FrameFormat { count } => return self.frame_format_setup(call.control, count),
@@ -415,6 +427,7 @@ impl Loader {
                 OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
             }
             OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::EraseBackground
+            | OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. }
             | OwnerCallKind::SyncPaint | OwnerCallKind::FrameFormat { .. } => OwnerSetup::Skip,
         }
     }
@@ -425,7 +438,7 @@ impl Loader {
     /// (`owner_menu_item_w()` × `MENU_DROPDOWN_ITEM_H`, the menu's face),
     /// `rclItem` = the bitmap, `fsAttribute` / `fsAttributeOld` = the item's
     /// `MIA_*` attributes, `idItem` = its id.
-    fn menu_item_setup(&self, menu: u32, id: u16) -> OwnerSetup {
+    fn menu_item_setup(&self, menu: u32, id: u16, hilite: Option<bool>) -> OwnerSetup {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let Some(m) = wm.get_window_mut(menu) else { return OwnerSetup::Skip };
         let Some(attr) = find_menu_item(&mut m.menu_items, id).map(|i| i.attr as u32) else { return OwnerSetup::Skip };
@@ -444,7 +457,12 @@ impl Loader {
         if let Some(ps) = wm.ps_map.get_mut(&hps) {
             ps.bitmap = hbm;
         }
-        let block = vec![menu, hps, attr, attr, attr, attr, 0, 0, w as u32, h as u32, id as u32, 0];
+        let hl = MIA_HILITED as u32;
+        let (now, old) = match hilite {
+            Some(on) => (if on { attr | hl } else { attr & !hl }, if on { attr & !hl } else { attr | hl }),
+            None => (attr, attr),
+        };
+        let block = vec![menu, hps, now, now, old, old, 0, 0, w as u32, h as u32, id as u32, 0];
         let menu_id = wm.get_window(menu).map_or(0, |m| m.id);
         OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: menu_id & 0xFFFF, mp2: 0, block, hps }
     }
@@ -484,7 +502,12 @@ impl Loader {
     /// passed, as the owner left it); `hps` is freed.
     pub(crate) fn owner_call_finish(&self, call: &OwnerCall, hps: u32, result: u32, block: &[u32]) {
         match call.kind {
-            OwnerCallKind::DrawMenuItem { id } => return self.menu_item_finish(call.control, id, hps, result),
+            OwnerCallKind::DrawMenuItem { id, .. } => return self.menu_item_finish(call.control, id, hps, result),
+            OwnerCallKind::MenuSelect { post: Some((msg, mp1, mp2)), .. } => {
+                if result != 0 { self.post_menu_command(call.control, msg, mp1, mp2); }
+                return;
+            }
+            OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. } => return,
             OwnerCallKind::EraseBackground => {
                 return self.erase_background_finish(call.control, hps, result, block);
             }
@@ -566,6 +589,7 @@ impl Loader {
             }
             OwnerCallKind::ContainerDrawItem { .. } => {}
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
+            | OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
             | OwnerCallKind::NotebookPending { .. }
@@ -573,6 +597,30 @@ impl Loader {
             | OwnerCallKind::ContainerInitDrag { .. } | OwnerCallKind::ContainerEdit { .. }
             | OwnerCallKind::FrameFormat { .. } | OwnerCallKind::ControlPointer { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+impl Loader {
+    /// Make the queued owner calls as a guest owner answering `reply(msg)`
+    /// would; returns each call made as (owner, msg, mp1, mp2).
+    pub(crate) fn drain_owner_calls(&self, reply: impl Fn(u32) -> u32) -> Vec<(u32, u32, u32, u32)> {
+        let mut made = Vec::new();
+        loop {
+            let call = {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if wm.owner_calls.is_empty() { break; }
+                wm.owner_calls.remove(0)
+            };
+            match self.owner_call_setup(&call) {
+                OwnerSetup::Call { owner, msg, mp1, mp2, block, hps, .. } => {
+                    made.push((owner, msg, mp1, mp2));
+                    self.owner_call_finish(&call, hps, reply(msg), &block);
+                }
+                OwnerSetup::Skip => self.owner_call_finish(&call, 0, 0, &[]),
+            }
+        }
+        made
     }
 }
 
@@ -778,6 +826,8 @@ mod tests {
         // Open the pull-down: only the owner-drawn item is queued.
         fx.send(menu, WM_BUTTON1DOWN, (MENU_BAR_ITEM_INSET as u32 + 2) | (2 << 16), 0);
         let sent = fx.run(|s| match s {
+            // WM_INITMENU before the pull-down drops: nothing to draw.
+            OwnerSetup::Call { msg, .. } if *msg != WM_DRAWITEM => (0, Vec::new()),
             OwnerSetup::Call { hps, .. } => {
                 // The owner fills the item black through its PS.
                 let target = fx.loader.shared.window_mgr.lock_or_recover().ps_draw_target(*hps).unwrap();
@@ -787,6 +837,9 @@ mod tests {
             }
             OwnerSetup::Skip => (0, Vec::new()),
         });
+        // WM_INITMENU for the bar and for File come first (pm_menubar.rs).
+        assert_eq!(sent.iter().map(|s| (s.1, s.2)).collect::<Vec<_>>()[..2], [(WM_INITMENU, FID_MENU), (WM_INITMENU, 10)]);
+        let sent: Vec<_> = sent.into_iter().filter(|s| s.1 == WM_DRAWITEM).collect();
         assert_eq!(sent.len(), 1, "{sent:?}");
         let (owner, msg, mp1, b) = &sent[0];
         assert_eq!((*owner, *msg, *mp1), (fx.client, WM_DRAWITEM, FID_MENU));

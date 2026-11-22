@@ -1186,7 +1186,7 @@ const KBDCALLS_ORDINALS: u32 = 3;
 const MOUCALLS_ORDINALS: u32 = 20;
 /// PMWIN ordinals dispatched by `pm_win.rs` and `pm_winutil.rs` (checked
 /// against their `N => { // WinName(` arms by a test).
-const PMWIN_ORDINALS: u32 = 217;
+const PMWIN_ORDINALS: u32 = 218;
 /// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`,
 /// `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs` (checked against
 /// their arms by a test), of which `PMGPI_STUBS` are stubs (`GpiLoadFonts`,

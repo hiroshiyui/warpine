@@ -1642,6 +1642,29 @@ pub const MB_CRITICAL:         u32 = MB_CUACRITICAL;
 pub const MB_ERROR:            u32 = MB_CRITICAL;
 /// Adds a Help push button that sends `WM_HELP` to the message box.
 pub const MB_HELP:             u32 = 0x2000;
+/// Modality: the owner is disabled (the default), system modal (Warpine:
+/// as application modal), or none (`WinMessageBox2`).
+pub const MB_APPLMODAL:        u32 = 0x0000;
+pub const MB_SYSTEMMODAL:      u32 = 0x1000;
+pub const MB_NONMODAL:         u32 = 0x8000;
+/// The box has a system menu and can be moved.
+pub const MB_MOVEABLE:         u32 = 0x4000;
+/// To a non-modal `WinMessageBox2`'s owner: created (mp1 = the box, mp2 =
+/// its identity) and dismissed (mp1 = the box, mp2 = the button's id).
+pub const WM_MSGBOXINIT:       u32 = 0x010E;
+pub const WM_MSGBOXDISMISS:    u32 = 0x010F;
+/// `MB2INFO` (pack 4): cb, hIcon, cButtons, flStyle, hwndNotify, then the
+/// `MB2D` array; an `MB2D` is achText[MAX_MBDTEXT + 1], a pad byte,
+/// idButton, flStyle.
+pub const MB2INFO_HICON:       u32 = 4;
+pub const MB2INFO_CBUTTONS:    u32 = 8;
+pub const MB2INFO_FLSTYLE:     u32 = 12;
+pub const MB2INFO_HWNDNOTIFY:  u32 = 16;
+pub const MB2INFO_MB2D:        u32 = 20;
+pub const MAX_MBDTEXT:         u32 = 70;
+pub const MB2D_IDBUTTON:       u32 = 72;
+pub const MB2D_FLSTYLE:        u32 = 76;
+pub const MB2D_SIZE:           u32 = 80;
 
 // System pointers (WinQuerySysPointer SPTR_*, <pmwin.h>); the icons are
 // also the message-box icons.

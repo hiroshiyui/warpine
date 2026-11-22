@@ -423,6 +423,7 @@ PMWIN.980     WinWaitMuxWaitSem
 PMWIN.986     WinLoadProcedure
 PMWIN.987     WinDeleteProcedure
 PMWIN.998     WinCheckInput
+PMWIN.1015    WinMessageBox2
 
 # ── PMGPI (graphics; ordinals from Open Watcom os2386.lib, the calls the GPI
 #    sub-dispatcher serves) ────────────────────────────────────────────────

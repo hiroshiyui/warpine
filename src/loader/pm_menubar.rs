@@ -24,11 +24,28 @@
 //! highlights the first item without dropping its pull-down, and that the
 //! Alt key's release is what starts menu mode are Warpine's choices.
 //!
+//! The client hears what the menu does (PM Reference: the menu control
+//! "sends" these to its owner, and a frame passes `FID_MENU`'s to
+//! `FID_CLIENT`), from the mouse as from the keyboard, as owner calls
+//! (`pm_owner.rs`): `WM_INITMENU(FID_MENU, menu)` when menu mode starts and
+//! `WM_INITMENU(item, menu)` before a pull-down drops, so the client can
+//! change its items first; `WM_MENUSELECT(MPFROM2SHORT(item, FALSE), menu)`
+//! when the highlight moves to an item, and with TRUE when one is chosen —
+//! the command is posted only when the client returns TRUE, which
+//! `WinDefWindowProc` does; `WM_MENUEND(FID_MENU, menu)` when menu mode
+//! ends. An `MIS_OWNERDRAW` item gets `WM_DRAWITEM` again when the
+//! keyboard highlight comes to it or leaves it, with `MIA_HILITED` in
+//! `fsAttribute` and the opposite in `fsAttributeOld`. TODO(unverified):
+//! which identity `WM_INITMENU` / `WM_MENUEND` carry for the bar and its
+//! pull-downs, and that pull-downs, which are not windows in Warpine, give
+//! the menu bar's handle.
+//!
 //! State: the open pull-down stays where the mouse code keeps it
 //! (`window_ulong[-1]`, 1-based); the keyboard state is in
 //! `window_ulong[-2]` ([`MenuMode::encode`]), which the renderer draws.
 
 use super::constants::*;
+use super::pm_owner::{OwnerCall, OwnerCallKind, OwnerSetup};
 use super::pm_types::{MenuItem, OS2Message};
 use super::{Loader, MutexExt};
 
@@ -196,7 +213,117 @@ pub fn chosen_message(item: MenuItemRef) -> (u32, u32, u32) {
     (msg, item.id as u32, super::pm_dialog::command_mp2(CMDSRC_MENU, false))
 }
 
+/// The item the keyboard highlights in `mode`: the row of the dropped
+/// pull-down, else the bar item.
+fn highlighted(items: &[MenuItem], mode: MenuMode) -> Option<&MenuItem> {
+    let bar = items.get(mode.item)?;
+    match mode.row { Some(r) => bar.children.get(r), None => Some(bar) }
+}
+
+/// The owner calls a change of menu mode from `old` to `new` makes on menu
+/// `menu_id`'s `items` (see the module documentation).
+pub fn transition_calls(items: &[MenuItem], menu_id: u16, old: Option<MenuMode>, new: Option<MenuMode>)
+        -> Vec<OwnerCallKind> {
+    let mut calls = Vec::new();
+    if old.is_none() && new.is_some() {
+        calls.push(OwnerCallKind::MenuInit { id: menu_id });
+    }
+    if let Some(n) = new && n.row.is_some() && old.is_none_or(|o| o.row.is_none() || o.item != n.item)
+        && let Some(bar) = items.get(n.item) {
+        calls.push(OwnerCallKind::MenuInit { id: bar.id });
+    }
+    let before = old.and_then(|m| highlighted(items, m));
+    let after = new.and_then(|m| highlighted(items, m));
+    if before.map(|i| i.id) != after.map(|i| i.id) || old.map(|m| (m.item, m.row)) != new.map(|m| (m.item, m.row)) {
+        let owner_drawn = |i: &&MenuItem| i.style & MIS_OWNERDRAW != 0;
+        if let Some(i) = before.filter(owner_drawn).filter(|_| old.is_some_and(|m| m.row.is_some())) {
+            calls.push(OwnerCallKind::DrawMenuItem { id: i.id, hilite: Some(false) });
+        }
+        if let Some(i) = after {
+            if new.is_some_and(|m| m.row.is_some()) && owner_drawn(&i) {
+                calls.push(OwnerCallKind::DrawMenuItem { id: i.id, hilite: Some(true) });
+            }
+            calls.push(OwnerCallKind::MenuSelect { id: i.id, post: None });
+        }
+    }
+    if old.is_some() && new.is_none() {
+        calls.push(OwnerCallKind::MenuEnd { id: menu_id });
+    }
+    calls
+}
+
 impl Loader {
+    /// The client a menu's notifications go to: the client of its frame
+    /// (or its owner), and its window procedure.
+    fn menu_owner(&self, menu: u32) -> (u32, u32) {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let owner = wm.notify_target(menu);
+        let owner = wm.frame_to_client.get(&owner).copied().unwrap_or(owner);
+        (owner, wm.get_window(owner).map_or(0, |o| o.pfn_wp))
+    }
+
+    /// `WM_INITMENU` / `WM_MENUSELECT` / `WM_MENUEND` for menu `call.control`.
+    /// Without a guest procedure to ask, a chosen item's command is posted
+    /// at once (as `WinDefWindowProc`'s TRUE would have it).
+    pub(super) fn menu_notify_setup(&self, call: &OwnerCall) -> OwnerSetup {
+        let menu = call.control;
+        let (owner, wnd_proc) = self.menu_owner(menu);
+        if wnd_proc == 0 || owner == 0 {
+            if let OwnerCallKind::MenuSelect { post: Some((msg, mp1, mp2)), .. } = call.kind {
+                self.post_menu_command(menu, msg, mp1, mp2);
+            }
+            return OwnerSetup::Skip;
+        }
+        let (msg, mp1) = match call.kind {
+            OwnerCallKind::MenuInit { id } => (WM_INITMENU, id as u32),
+            OwnerCallKind::MenuSelect { id, post } => (WM_MENUSELECT, id as u32 | (post.is_some() as u32) << 16),
+            OwnerCallKind::MenuEnd { id } => (WM_MENUEND, id as u32),
+            _ => return OwnerSetup::Skip,
+        };
+        OwnerSetup::Call { wnd_proc, owner, msg, mp1, mp2: menu, block: Vec::new(), hps: 0 }
+    }
+
+    /// Post a chosen item's command to the client of menu `menu`.
+    pub(super) fn post_menu_command(&self, menu: u32, msg: u32, mp1: u32, mp2: u32) {
+        let (owner, _) = self.menu_owner(menu);
+        if owner != 0 {
+            self.post_to_window(owner, msg, mp1, mp2);
+        }
+    }
+
+    /// A click dropped the pull-down of bar item `id` (`was_open`: another
+    /// was open): `WM_INITMENU` for the bar first if it was not.
+    pub(super) fn mouse_menu_opened(&self, menu: u32, was_open: bool, id: u16) {
+        let menu_id = self.shared.window_mgr.lock_or_recover().get_window(menu).map_or(0, |w| w.id as u16);
+        let mut calls = Vec::new();
+        if !was_open { calls.push(OwnerCallKind::MenuInit { id: menu_id }); }
+        calls.push(OwnerCallKind::MenuInit { id });
+        self.queue_menu_calls(menu, calls);
+    }
+
+    /// A click closed the pull-down without choosing.
+    pub(super) fn mouse_menu_closed(&self, menu: u32) {
+        let menu_id = self.shared.window_mgr.lock_or_recover().get_window(menu).map_or(0, |w| w.id as u16);
+        self.queue_menu_calls(menu, vec![OwnerCallKind::MenuEnd { id: menu_id }]);
+    }
+
+    /// A click chose pull-down item `id` of `style`.
+    pub(super) fn mouse_menu_chose(&self, menu: u32, id: u16, style: u16) {
+        let (msg, mp1, _) = chosen_message(MenuItemRef { id, style });
+        let post = (msg, mp1, super::pm_dialog::command_mp2(CMDSRC_MENU, true));
+        let menu_id = self.shared.window_mgr.lock_or_recover().get_window(menu).map_or(0, |w| w.id as u16);
+        self.queue_menu_calls(menu, vec![OwnerCallKind::MenuSelect { id, post: Some(post) },
+                                         OwnerCallKind::MenuEnd { id: menu_id }]);
+    }
+
+    /// Queue the owner calls of `kinds` for menu `menu`.
+    fn queue_menu_calls(&self, menu: u32, kinds: Vec<OwnerCallKind>) {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        for kind in kinds {
+            wm.queue_owner_call(OwnerCall { control: menu, kind });
+        }
+    }
+
     /// The menu bar (`FID_MENU`) of `frame`, if it has one with items.
     fn frame_menu_bar(&self, frame: u32) -> Option<u32> {
         let wm = self.shared.window_mgr.lock_or_recover();
@@ -213,6 +340,12 @@ impl Loader {
     /// Put `menu` into `mode` (`None`: out of menu mode), with the
     /// pull-down `mode` drops, and redraw it.
     fn set_menu_mode(&self, menu: u32, mode: Option<MenuMode>) {
+        let old = self.menu_mode(menu);
+        let calls = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.get_window(menu).map(|w| transition_calls(&w.menu_items, w.id as u16, old, mode)).unwrap_or_default()
+        };
+        self.queue_menu_calls(menu, calls);
         {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let Some(w) = wm.get_window_mut(menu) else { return };
@@ -324,10 +457,9 @@ impl Loader {
             MenuKey::Stay(m) => self.set_menu_mode(menu, Some(m)),
             MenuKey::Leave => self.set_menu_mode(menu, None),
             MenuKey::Choose(item) => {
+                // WM_MENUSELECT(TRUE) first; its reply decides the post.
+                self.queue_menu_calls(menu, vec![OwnerCallKind::MenuSelect { id: item.id, post: Some(chosen_message(item)) }]);
                 self.set_menu_mode(menu, None);
-                let (m, mp1, mp2) = chosen_message(item);
-                *msg = OS2Message { hwnd: client, msg: m, mp1, mp2, time: msg.time, x: 0, y: 0 };
-                return true;
             }
         }
         swallow(msg)
@@ -468,12 +600,57 @@ mod tests {
             .and_then(|w| w.window_ulong.get(&OPEN_ITEM_KEY).copied());
         assert_eq!(open, Some(1), "the pull-down is dropped");
         f.key(VK_DOWN, false);
-        assert_eq!(f.key(VK_ENTER, false), (f.client, WM_COMMAND, 14), "Exit chosen");
+        assert_eq!(f.key(VK_ENTER, false).1, WM_NULL, "the menu takes Enter");
         assert_eq!(f.mode(), None);
+        // No window procedure to ask: WM_MENUSELECT's TRUE is assumed and
+        // Exit's command posted.
+        f.l.drain_owner_calls(|_| 1);
+        let posted: Vec<_> = {
+            let wm = f.l.shared.window_mgr.lock_or_recover();
+            let mq = wm.get_mq(wm.find_hmq_for_hwnd(f.client).unwrap()).unwrap();
+            let mq = mq.lock_or_recover();
+            mq.messages.iter().map(|m| (m.hwnd, m.msg, m.mp1)).collect()
+        };
+        assert!(posted.contains(&(f.client, WM_COMMAND, 14)), "Exit chosen: {posted:?}");
         let open = f.l.shared.window_mgr.lock_or_recover().get_window(f.menu)
             .and_then(|w| w.window_ulong.get(&OPEN_ITEM_KEY).copied());
         assert_eq!(open, None, "and the pull-down closed");
         assert_eq!(f.key(VK_DOWN, false).1, WM_CHAR, "keys go to the client again");
+    }
+
+    #[test]
+    fn the_client_hears_init_select_and_end_and_its_reply_decides_the_post() {
+        let f = fx();
+        f.l.shared.window_mgr.lock_or_recover().get_window_mut(f.client).unwrap().pfn_wp = 0x5000;
+        f.l.start_menu_mode(f.menu, false);
+        f.key(VK_DOWN, false);
+        f.key(VK_ENTER, false);
+        let fid = FID_MENU & 0xFFFF;
+        let made = f.l.drain_owner_calls(|msg| (msg != WM_MENUSELECT) as u32);
+        let msgs: Vec<_> = made.iter().map(|&(o, m, mp1, mp2)| { assert_eq!((o, mp2), (f.client, f.menu)); (m, mp1) }).collect();
+        assert_eq!(msgs, vec![
+            (WM_INITMENU, fid), (WM_MENUSELECT, 1),           // menu mode: File highlighted
+            (WM_INITMENU, 1), (WM_MENUSELECT, 11),             // File's pull-down: Open
+            (WM_MENUSELECT, 11 | 1 << 16), (WM_MENUEND, fid),  // chosen
+        ]);
+        let posted = {
+            let wm = f.l.shared.window_mgr.lock_or_recover();
+            let mq = wm.get_mq(wm.find_hmq_for_hwnd(f.client).unwrap()).unwrap();
+            let mq = mq.lock_or_recover();
+            mq.messages.iter().any(|m| m.msg == WM_COMMAND)
+        };
+        assert!(!posted, "the client returned FALSE: nothing posted");
+    }
+
+    #[test]
+    fn owner_drawn_rows_are_drawn_again_when_the_highlight_moves() {
+        let mut b = bar();
+        b[0].children[0].style |= MIS_OWNERDRAW;
+        let calls = transition_calls(&b, 0x8005, Some(at(0, None)), Some(at(0, Some(0))));
+        assert!(calls.contains(&OwnerCallKind::DrawMenuItem { id: 11, hilite: Some(true) }), "{calls:?}");
+        let calls = transition_calls(&b, 0x8005, Some(at(0, Some(0))), Some(at(0, Some(3))));
+        assert!(calls.contains(&OwnerCallKind::DrawMenuItem { id: 11, hilite: Some(false) }), "{calls:?}");
+        assert!(calls.contains(&OwnerCallKind::MenuSelect { id: 14, post: None }));
     }
 
     #[test]

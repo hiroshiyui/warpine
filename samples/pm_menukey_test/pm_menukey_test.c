@@ -14,7 +14,10 @@
  *   Alt+F4                          -> closes the window
  *
  * In menu mode the menu takes the keys: the client must see no character
- * but the x. main() also sends MM_STARTMENUMODE / MM_ENDMENUMODE to the
+ * but the x. The client also hears the menu: WM_INITMENU for the bar and
+ * for the Edit pull-down before it drops, WM_MENUSELECT with the post flag
+ * for each chosen item (its TRUE reply lets the command be posted), and
+ * WM_MENUEND each time menu mode ends. main() also sends MM_STARTMENUMODE / MM_ENDMENUMODE to the
  * FID_MENU window. Each check is written to stdout:
  *
  *   pm_menukey_test: <name>: ok
@@ -36,6 +39,7 @@ static ULONG commands[MAX_LOG];
 static int   n_commands = 0;
 static int   menu_sources = 0;     /* WM_COMMANDs with CMDSRC_MENU, fPointer FALSE */
 static int   helps = 0;
+static int   init_bar = 0, init_edit = 0, chosen_paste = 0, chosen_open = 0, ends = 0;
 static char  chars[MAX_LOG + 1];
 static int   n_chars = 0;
 
@@ -92,6 +96,17 @@ static MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM 
         if( SHORT1FROMMP( mp2 ) == CMDSRC_MENU && SHORT2FROMMP( mp2 ) == FALSE )
             menu_sources++;
         return 0;
+    case WM_INITMENU:
+        if( SHORT1FROMMP( mp1 ) == FID_MENU ) init_bar++;
+        if( SHORT1FROMMP( mp1 ) == IDM_EDIT ) init_edit++;
+        break;
+    case WM_MENUSELECT:
+        if( SHORT2FROMMP( mp1 ) && SHORT1FROMMP( mp1 ) == IDM_PASTE ) chosen_paste++;
+        if( SHORT2FROMMP( mp1 ) && SHORT1FROMMP( mp1 ) == IDM_OPEN ) chosen_open++;
+        break;   /* WinDefWindowProc returns TRUE: post the command */
+    case WM_MENUEND:
+        ends++;
+        break;
     case WM_HELP:
         helps++;
         return 0;
@@ -139,6 +154,11 @@ int main( void )
     check( "  File / Open (the separator and disabled item skipped)", commands[1], IDM_OPEN );
     check( "  both from the menu, by keyboard", menu_sources, 2 );
     check( "F1 posts WM_HELP", helps, 1 );
+    check( "WM_INITMENU for the menu bar", init_bar >= 3, TRUE );
+    check( "WM_INITMENU for Edit before it dropped", init_edit, 1 );
+    check( "WM_MENUSELECT(TRUE) for Paste", chosen_paste, 1 );
+    check( "WM_MENUSELECT(TRUE) for Open", chosen_open, 1 );
+    check( "WM_MENUEND whenever menu mode ended", ends >= 3, TRUE );
     check( "the client saw one character", n_chars, 1 );
     check( "  the x typed after Esc", chars[0], 'x' );
 

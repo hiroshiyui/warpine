@@ -151,6 +151,14 @@ pub struct OS2Window {
     /// The dialog is a `WinMessageBox` (its modal loop passes
     /// `MSGF_MESSAGEBOX` to the message-filter hooks).
     pub message_box: bool,
+    /// A message box's application icon (`WinMessageBox2`, `MB_CUSTOMICON`):
+    /// a pointer handle, painted instead of `msgbox_icon`; 0 = none.
+    pub msgbox_hicon: u32,
+    /// A non-modal message box (`MB_NONMODAL`): the window told
+    /// `WM_MSGBOXDISMISS` when it is dismissed; 0 = a modal box.
+    pub msgbox_notify: u32,
+    /// The frame cannot be moved: a message box without `MB_MOVEABLE`.
+    pub immovable: bool,
     /// Check state of a check box / radio button (`WC_BUTTON`): 0 unchecked,
     /// 1 checked, 2 indeterminate (`BM_SETCHECK` / `BM_QUERYCHECK`).
     pub check_state: u32,
@@ -934,6 +942,9 @@ impl WindowManager {
             frame_flags: 0,
             msgbox_icon: 0,
             message_box: false,
+            msgbox_hicon: 0,
+            msgbox_notify: 0,
+            immovable: false,
             check_state: 0,
             hilite: false,
             update: crate::gui::region::Region::empty(),

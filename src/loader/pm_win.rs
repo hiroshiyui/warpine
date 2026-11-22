@@ -592,6 +592,13 @@ impl super::Loader {
                 }
                 self.message_box(vcpu_id, hwnd_owner, caption, &text, style)
             }
+            1015 => {
+                // WinMessageBox2(hwndParent, hwndOwner, pszText, pszTitle,
+                // ulWindow, PMB2INFO): the box of an MB2INFO (pm_msgbox.rs).
+                let hwnd_owner = read_stack(8);
+                let (text_ptr, title_ptr, id, info) = (read_stack(12), read_stack(16), read_stack(20), read_stack(24));
+                self.win_message_box2(vcpu_id, hwnd_owner, text_ptr, title_ptr, id, info)
+            }
             883 => {
                 // WinShowWindow(HWND hwnd, BOOL fShow)
                 let hwnd = read_stack(4);
@@ -2338,6 +2345,8 @@ impl super::Loader {
             WM_HELP => return self.help_hook(vcpu_id, hwnd, mp1, mp2),
             // The pointer the control proposed.
             WM_CONTROLPOINTER => return ApiResult::Normal(mp2),
+            // "Set rc to TRUE": the menu posts the chosen item's command.
+            WM_MENUSELECT => return ApiResult::Normal(1),
             // "The default window procedure sets the pointer shape":
             // the arrow (pm_pointer.rs).
             WM_MOUSEMOVE => { self.default_mouse_pointer(hwnd, mp1); }
@@ -3199,6 +3208,9 @@ mod tests {
             .get_window(menu_hwnd).unwrap()
             .window_ulong.get(&-1).copied().unwrap_or(0);
         assert_eq!(open_item, 0, "open_item should be 0 after clicking Exit");
+        // WM_MENUSELECT(TRUE) decides; without a window procedure the
+        // command is posted (pm_menubar.rs).
+        loader.drain_owner_calls(|_| 1);
         // WM_COMMAND with id=202 should be in the client's message queue
         let mq_arc = loader.shared.window_mgr.lock_or_recover()
             .get_mq(hmq).expect("mq should exist");

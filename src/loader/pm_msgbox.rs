@@ -16,8 +16,28 @@
 //! open; Close from the title bar ends the box with `MBID_CANCEL` whatever
 //! its buttons.
 //!
+//! `WinMessageBox2` builds the same box from an `MB2INFO`: its own button
+//! texts and ids (the one with `BS_DEFAULT` is the default), an application
+//! icon (`MB_CUSTOMICON` with `hIcon`), and `MB_NONMODAL`: the box is then
+//! not modal — the call returns its window handle at once and nothing is
+//! disabled — and its owner (`hwndNotify`, else the owner) gets
+//! `WM_MSGBOXINIT` when it shows and `WM_MSGBOXDISMISS` with the button's
+//! id when a button ends it; the box is then hidden, and destroying it is
+//! the owner's business (PM Reference, `WinMessageBox2`, `WM_MSGBOXINIT`,
+//! `WM_MSGBOXDISMISS`).
+//!
+//! `MB_MOVEABLE` gives a box its system menu and lets it be moved; without
+//! it the box keeps its title bar but has no system menu and stays where it
+//! is (PM Reference: "Dialog is moveable", with a system menu of Move,
+//! Close and the window list). `MB_SYSTEMMODAL` is treated as
+//! application modal.
+//!
 //! The layout — sizes, margins, where the text wraps — and the pictograms
-//! are Warpine's own.
+//! are Warpine's own. TODO(unverified): what a non-modal `WinMessageBox2`
+//! returns (Warpine: the box's handle; the reference has the owner keep
+//! "the window handle returned by this function"); that `WM_MSGBOXINIT` /
+//! `WM_MSGBOXDISMISS` are posted, not sent; that a box without
+//! `MB_MOVEABLE` keeps its title bar.
 
 use super::constants::*;
 use super::pm_edit::EditBuffer;
@@ -45,6 +65,42 @@ const MB_ICON_MASK: u32 = 0x00F0;
 /// Mask and shift of the default-button choice (`MB_DEFBUTTON1/2/3`).
 const MB_DEFBUTTON_MASK: u32 = 0x0300;
 const MB_DEFBUTTON_SHIFT: u32 = 8;
+/// Room left and right of a button's label.
+const MSGBOX_BUTTON_PAD: i32 = 12;
+/// Most buttons a `WinMessageBox2` may ask for (TODO(unverified): the
+/// reference gives no limit).
+pub const MAX_MB2_BUTTONS: u32 = 16;
+/// The flags `WinMessageBox2`'s `flStyle` may hold; others fail with
+/// `PMERR_INVALID_FLAG`.
+pub const MB2_STYLE_FLAGS: u32 = MB_ICON_MASK | MB_SYSTEMMODAL | MB_MOVEABLE | MB_NONMODAL;
+
+/// What a message box holds besides its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoxSpec {
+    /// The box's style: `MB_MOVEABLE`, `MB_NONMODAL` matter here.
+    pub style: u32,
+    /// The pictogram (`SPTR_ICON*`), or 0.
+    pub icon: u32,
+    /// An application icon (a pointer handle) instead; 0 = none.
+    pub hicon: u32,
+    /// Each button: the value it returns and its label.
+    pub buttons: Vec<(u32, String)>,
+    /// Index of the default button.
+    pub default: usize,
+    /// The box's window identity (passed to the help hook).
+    pub id_window: u32,
+    /// Where a non-modal box's notifications go.
+    pub notify: u32,
+}
+
+impl BoxSpec {
+    /// The box `WinMessageBox` shows for `style`.
+    pub fn from_style(style: u32, id_window: u32) -> BoxSpec {
+        let buttons: Vec<(u32, String)> = buttons(style).into_iter().map(|(id, l)| (id, l.to_string())).collect();
+        let default = default_button(style, buttons.len());
+        BoxSpec { style: style & !MB_NONMODAL, icon: icon(style), hicon: 0, buttons, default, id_window, notify: 0 }
+    }
+}
 
 /// The buttons of a message box with style `style`, left to right: the
 /// `MBID_*` value each returns and its label. `MB_HELP` adds Help last
@@ -107,9 +163,9 @@ pub struct Layout {
     pub icon: Option<(u32, i32, i32)>,
     /// Each line of text and the bottom-left of its row.
     pub rows: Vec<(String, i32, i32)>,
-    /// Each button: `(MBID_*, label, x, y)`; all `MSGBOX_BUTTON_W` ×
-    /// `MSGBOX_BUTTON_H`.
-    pub buttons: Vec<(u32, &'static str, i32, i32)>,
+    /// Each button: `(id, label, x, y, width)`; `MSGBOX_BUTTON_H` high,
+    /// at least `MSGBOX_BUTTON_W` wide (wider for a long label).
+    pub buttons: Vec<(u32, String, i32, i32, i32)>,
 }
 
 /// Lay out a message box with `text`, the icon and the buttons of `style`,
@@ -118,18 +174,28 @@ pub struct Layout {
 /// at most `max_rows` rows are kept (the rest is cut). An icon goes in the
 /// top-left corner with the text to its right, centred against it when
 /// shorter. Buttons are centred below.
+#[cfg(test)]
 pub fn layout(text: &str, style: u32, measure: impl Fn(&str) -> i32 + Copy + 'static,
               line_h: i32, max_rows: usize) -> Layout {
+    layout_spec(text, &BoxSpec::from_style(style, 0), measure, line_h, max_rows)
+}
+
+/// [`layout`] for the buttons and icon of `spec`.
+pub fn layout_spec(text: &str, spec: &BoxSpec, measure: impl Fn(&str) -> i32 + Copy + 'static,
+                   line_h: i32, max_rows: usize) -> Layout {
     let mut buf = EditBuffer::new(text, 0, true);
     buf.set_wrap(MSGBOX_TEXT_MAX_W, measure);
     let lines: Vec<String> = buf.lines().into_iter().take(max_rows.max(1))
         .map(|r| buf.slice(r).trim_end().to_string()).collect();
     let text_w = lines.iter().map(|l| measure(l)).max().unwrap_or(0);
-    let set = buttons(style);
-    let n = set.len() as i32;
-    let buttons_w = n * MSGBOX_BUTTON_W + (n - 1) * MSGBOX_BUTTON_GAP;
+    let widths: Vec<i32> = spec.buttons.iter()
+        .map(|(_, l)| (measure(&super::pm_types::menu_label(l)) + 2 * MSGBOX_BUTTON_PAD).max(MSGBOX_BUTTON_W))
+        .collect();
+    let n = widths.len() as i32;
+    let buttons_w = widths.iter().sum::<i32>() + (n - 1).max(0) * MSGBOX_BUTTON_GAP;
     let border = CHROME_BORDER_W;
-    let sptr = icon(style);
+    // A custom icon is laid out as a pictogram is.
+    let sptr = if spec.hicon != 0 { u32::MAX } else { spec.icon };
     let icon_w = if sptr != 0 { MSGBOX_ICON_SIZE + MSGBOX_ICON_GAP } else { 0 };
     let content_w = (icon_w + text_w).max(buttons_w).max(MSGBOX_MIN_CONTENT_W);
     let cx = content_w + 2 * (MSGBOX_MARGIN + border);
@@ -146,12 +212,29 @@ pub fn layout(text: &str, style: u32, measure: impl Fn(&str) -> i32 + Copy + 'st
         let (x, y) = icon_origin(cy);
         (sptr, x, y)
     });
-    let left = (cx - buttons_w) / 2;
-    let buttons = set.iter().enumerate()
-        .map(|(i, &(id, label))| (id, label, left + i as i32 * (MSGBOX_BUTTON_W + MSGBOX_BUTTON_GAP),
-                                  border + MSGBOX_MARGIN))
+    let mut x = (cx - buttons_w) / 2;
+    let buttons = spec.buttons.iter().zip(&widths)
+        .map(|((id, label), &w)| {
+            let b = (*id, label.clone(), x, border + MSGBOX_MARGIN, w);
+            x += w + MSGBOX_BUTTON_GAP;
+            b
+        })
         .collect();
     Layout { cx, cy, icon, rows, buttons }
+}
+
+/// An RGBA image `w` × `h` (top row first) as `MSGBOX_ICON_SIZE`² icon
+/// pels: centred, cut to the square, transparent below half alpha.
+pub fn image_icon_pels(w: u32, h: u32, rgba: &[u8]) -> Vec<Option<u32>> {
+    let n = MSGBOX_ICON_SIZE;
+    let (ox, oy) = ((w as i32 - n) / 2, (h as i32 - n) / 2);
+    (0..n * n).map(|i| {
+        let (x, y) = (i % n + ox, i / n + oy);
+        if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 { return None; }
+        let at = ((y as u32 * w + x as u32) * 4) as usize;
+        let p = rgba.get(at..at + 4)?;
+        (p[3] >= 0x80).then(|| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
+    }).collect()
 }
 
 // Pictogram colours (Warpine's own).
@@ -327,13 +410,21 @@ impl Loader {
     /// queue.
     pub(super) fn message_box(&self, vcpu_id: u32, owner: u32, caption: String, text: &str,
                               style: u32) -> ApiResult {
+        self.message_box_spec(vcpu_id, owner, caption, text, BoxSpec::from_style(style, 0))
+    }
+
+    /// The box of `spec` (see [`Self::message_box`]); a non-modal one
+    /// returns its handle at once.
+    pub(super) fn message_box_spec(&self, vcpu_id: u32, owner: u32, caption: String, text: &str,
+                                   spec: BoxSpec) -> ApiResult {
+        let nonmodal = spec.style & MB_NONMODAL != 0;
         let line_h = super::CONTROL_LINE_H;
         let (dw, dh) = desktop_size();
         let max_rows = ((dh as i32 - 2 * MSGBOX_BUTTON_H - CHROME_TITLE_H) / line_h).max(1) as usize;
         // The text is drawn in the CJK face of the thread's queue codepage
         // (the box's controls belong to that queue); measure it in the same.
         let face = super::pm_controls::system_font(self.thread_codepage(vcpu_id));
-        let lay = layout(text, style, super::pm_controls::measure_in(face), line_h, max_rows);
+        let lay = layout_spec(text, &spec, super::pm_controls::measure_in(face), line_h, max_rows);
         let (hwnd_dlg, hmq, focus) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let Some(hmq) = wm.thread_queue(vcpu_id) else {
@@ -344,12 +435,17 @@ impl Loader {
                 w.owner = owner;
                 w.visible = true;
                 w.text = caption;
-                w.frame_flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_DLGBORDER;
+                let moveable = spec.style & MB_MOVEABLE != 0;
+                w.frame_flags = FCF_TITLEBAR | FCF_DLGBORDER | if moveable { FCF_SYSMENU } else { 0 };
+                w.immovable = !moveable;
+                w.id = spec.id_window;
                 w.cx = lay.cx;
                 w.cy = lay.cy;
                 w.x = (dw as i32 - lay.cx) / 2;
                 w.y = (dh as i32 - lay.cy) / 2;
-                w.msgbox_icon = lay.icon.map_or(0, |i| i.0);
+                w.msgbox_icon = if spec.hicon != 0 { 0 } else { lay.icon.map_or(0, |i| i.0) };
+                w.msgbox_hicon = spec.hicon;
+                w.msgbox_notify = if nonmodal { if spec.notify != 0 { spec.notify } else { owner } } else { 0 };
                 w.message_box = true;
             }
             let add = |wm: &mut super::pm_types::WindowManager, class: &str, text: &str,
@@ -371,36 +467,118 @@ impl Loader {
                 // Static text has no id of its own (-1, as in templates).
                 add(&mut wm, "WC_STATIC", line, (*x, *y, text_w, line_h), 0xFFFF, SS_TEXT);
             }
-            let default = default_button(style, lay.buttons.len());
+            let default = spec.default;
             let mut focus = 0;
-            for (i, &(id, label, x, y)) in lay.buttons.iter().enumerate() {
+            for (i, (id, label, x, y, bw)) in lay.buttons.iter().enumerate() {
+                let (id, x, y) = (*id, *x, *y);
                 let mut bstyle = BS_PUSHBUTTON | WS_TABSTOP;
                 if i == 0 { bstyle |= WS_GROUP; }
                 if i == default { bstyle |= BS_DEFAULT; }
                 // Help sends WM_HELP to the box instead of a command.
                 if id == MBID_HELP { bstyle |= BS_HELP; }
-                let b = add(&mut wm, "WC_BUTTON", label, (x, y, MSGBOX_BUTTON_W, MSGBOX_BUTTON_H), id, bstyle);
+                let b = add(&mut wm, "WC_BUTTON", label, (x, y, *bw, MSGBOX_BUTTON_H), id, bstyle);
                 if i == default { focus = b; }
             }
             wm.z_push_top(h);
             wm.focused_hwnd = h;
             wm.focus_hwnd = focus;
-            wm.begin_modal_dialog(h, true);
+            if !nonmodal {
+                wm.begin_modal_dialog(h, true);
+            }
             (h, hmq, focus)
         };
         self.queue_dialog_start(hwnd_dlg, hmq, focus, 0);
+        if nonmodal {
+            let notify = self.shared.window_mgr.lock_or_recover().get_window(hwnd_dlg).map_or(0, |w| w.msgbox_notify);
+            if notify != 0 {
+                self.post_to_window(notify, WM_MSGBOXINIT, hwnd_dlg, spec.id_window);
+            }
+            return ApiResult::Normal(hwnd_dlg);
+        }
         ApiResult::DlgRunLoop { dlg_proc: 0, hwnd_dlg, hmq }
+    }
+
+    /// WinMessageBox2: read the `MB2INFO` at `info` and show its box.
+    /// `MBID_ERROR` with `PMERR_INVALID_FLAG` for an unknown `flStyle` bit,
+    /// `PMERR_PARAMETER_OUT_OF_RANGE` for no buttons, more than
+    /// [`MAX_MB2_BUTTONS`] or a `cb` too small for them (TODO(unverified):
+    /// the reference names only `PMERR_INVALID_FLAG` and
+    /// `PMERR_INVALID_HWND`), `PMERR_INVALID_HWND` for an owner that is no
+    /// window. A NULL title shows "Error", as documented.
+    pub(super) fn win_message_box2(&self, vcpu_id: u32, owner: u32, text_ptr: u32, title_ptr: u32,
+                                   id_window: u32, info: u32) -> ApiResult {
+        let err = |code| { self.pm_error(vcpu_id, code); ApiResult::Normal(MBID_ERROR) };
+        let read = |off: u32| self.guest_read::<u32>(info.wrapping_add(off));
+        let (Some(cb), Some(hicon), Some(count), Some(style), Some(notify)) = (read(0), read(MB2INFO_HICON),
+            read(MB2INFO_CBUTTONS), read(MB2INFO_FLSTYLE), read(MB2INFO_HWNDNOTIFY)) else {
+            return err(PMERR_PARAMETER_OUT_OF_RANGE);
+        };
+        if style & !MB2_STYLE_FLAGS != 0 {
+            return err(PMERR_INVALID_FLAG);
+        }
+        if count == 0 || count > MAX_MB2_BUTTONS || cb < MB2INFO_MB2D + count * MB2D_SIZE {
+            return err(PMERR_PARAMETER_OUT_OF_RANGE);
+        }
+        if owner != 0 && owner != HWND_DESKTOP && !self.shared.window_mgr.lock_or_recover().is_window(owner) {
+            return err(PMERR_INVALID_HWND);
+        }
+        let cp = self.thread_codepage(vcpu_id);
+        let mut buttons = Vec::new();
+        let mut default = 0;
+        for i in 0..count {
+            let b = info + MB2INFO_MB2D + i * MB2D_SIZE;
+            let Some(bytes) = self.guest_read_bytes(b, MAX_MBDTEXT as usize + 1) else {
+                return err(PMERR_PARAMETER_OUT_OF_RANGE);
+            };
+            let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
+            let label = super::codepage::cp_decode(&bytes[..end], cp);
+            let (Some(idb), Some(bs)) = (self.guest_read::<u32>(b + MB2D_IDBUTTON), self.guest_read::<u32>(b + MB2D_FLSTYLE))
+                else { return err(PMERR_PARAMETER_OUT_OF_RANGE) };
+            if bs & BS_DEFAULT != 0 && default == 0 { default = i as usize; }
+            buttons.push((idb, label));
+        }
+        let custom = style & MB_ICON_MASK == MB_CUSTOMICON;
+        let spec = BoxSpec {
+            style, icon: if custom { 0 } else { icon(style) }, hicon: if custom { hicon } else { 0 },
+            buttons, default, id_window, notify,
+        };
+        let text = self.read_guest_string_cp(text_ptr, cp);
+        let title = if title_ptr == 0 { "Error".to_string() } else { self.read_guest_string_cp(title_ptr, cp) };
+        if self.shared.window_mgr.lock_or_recover().gui_tx.is_none() {
+            // A program without a PM desktop: the default button at once.
+            return ApiResult::Normal(spec.buttons[spec.default].0);
+        }
+        self.message_box_spec(vcpu_id, owner, title, &text, spec)
+    }
+
+    /// A non-modal box `hwnd` ends with `id`: hidden, its owner told
+    /// (`WM_MSGBOXDISMISS`). Returns false for a modal box.
+    fn dismiss_nonmodal_box(&self, hwnd: u32, id: u32) -> bool {
+        let notify = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(w) = wm.get_window_mut(hwnd) else { return false };
+            if w.msgbox_notify == 0 { return false; }
+            w.visible = false;
+            w.style &= !WS_VISIBLE;
+            let n = w.msgbox_notify;
+            let frame = wm.find_frame_for_hwnd(hwnd);
+            wm.mark_dirty(frame);
+            n
+        };
+        self.post_to_window(notify, WM_MSGBOXDISMISS, hwnd, id);
+        true
     }
 
     /// Paint a message box's icon (`OS2Window::msgbox_icon`) onto the face
     /// of dialog `dlg`, whose painter is `d`; nothing for other dialogs.
     pub(super) fn paint_message_box_icon(&self, d: &Painter, dlg: u32) {
-        let (sptr, cy, border) = {
+        let (sptr, hicon, cy, border) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(w) = wm.get_window(dlg) else { return };
-            (w.msgbox_icon, w.cy, frame_border_width(w.frame_flags))
+            (w.msgbox_icon, w.msgbox_hicon, w.cy, frame_border_width(w.frame_flags))
         };
-        let Some(pels) = icon_pels(sptr) else { return };
+        let pels = if hicon != 0 { self.custom_icon_pels(hicon) } else { icon_pels(sptr) };
+        let Some(pels) = pels else { return };
         let (x, y) = icon_origin(cy);
         let n = MSGBOX_ICON_SIZE as usize;
         // The blit takes the bottom row first.
@@ -410,6 +588,19 @@ impl Loader {
             x: x - border, y, w: n as u32, h: n as u32, src: Some(src),
             rop: ROP_SRCCOPY as u8, pattern: Pattern::solid(0),
         });
+    }
+
+    /// The `MSGBOX_ICON_SIZE`² pels of pointer `hptr` as a message-box
+    /// icon: a system icon's pictogram, or a loaded pointer's image centred
+    /// (cut to the square), transparent where its alpha is below half.
+    fn custom_icon_pels(&self, hptr: u32) -> Option<Vec<Option<u32>>> {
+        use crate::gui::pointer::PointerShape;
+        let shape = self.shared.pointers.lock_or_recover().shape(hptr)?;
+        let img = match shape {
+            PointerShape::System(_) => return icon_pels(hptr.checked_sub(super::pm_pointer::PointerManager::system_handle(0))?),
+            PointerShape::Image(img) => img,
+        };
+        Some(image_icon_pels(img.width, img.height, &img.rgba))
     }
 
     /// A message for a dialog without a dialog procedure (a message box):
@@ -429,13 +620,15 @@ impl Loader {
             WM_COMMAND => {
                 let id = mp1 & 0xFFFF;
                 let known = self.shared.window_mgr.lock_or_recover().find_child_by_id(hwnd, id).is_some();
-                if known {
+                if known && !self.dismiss_nonmodal_box(hwnd, id) {
                     self.dismiss_dialog(hwnd, id);
                 }
                 ApiResult::Normal(0)
             }
             WM_CLOSE => {
-                self.dismiss_dialog(hwnd, MBID_CANCEL);
+                if !self.dismiss_nonmodal_box(hwnd, MBID_CANCEL) {
+                    self.dismiss_dialog(hwnd, MBID_CANCEL);
+                }
                 ApiResult::Normal(0)
             }
             WM_HELP => {
@@ -790,5 +983,122 @@ mod tests {
         let loader = Loader::new_mock();
         assert!(matches!(loader.message_box(0, 0, String::new(), "x", MB_OK),
                          ApiResult::Normal(MBID_ERROR)));
+    }
+
+    #[test]
+    fn only_a_moveable_box_has_a_system_menu_and_moves() {
+        let (loader, frame) = with_owner();
+        for (style, moveable) in [(MB_OK, false), (MB_OK | MB_MOVEABLE, true)] {
+            let dlg = open(&loader, frame, style);
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let d = wm.get_window(dlg).unwrap();
+            assert_eq!((d.frame_flags & FCF_SYSMENU != 0, d.immovable), (moveable, !moveable), "{style:#x}");
+            drop(wm);
+            loader.procless_dialog_message(dlg, WM_CLOSE, 0, 0);
+            loader.shared.window_mgr.lock_or_recover().finish_modal_dialog(dlg);
+        }
+    }
+
+    /// An MB2INFO at `at` with `buttons` (label, id, flStyle).
+    fn write_mb2info(loader: &Loader, at: u32, style: u32, hicon: u32, notify: u32, buttons: &[(&str, u32, u32)]) {
+        let mut b = Vec::new();
+        let cb = MB2INFO_MB2D + buttons.len() as u32 * MB2D_SIZE;
+        for v in [cb, hicon, buttons.len() as u32, style, notify] { b.extend_from_slice(&v.to_le_bytes()); }
+        for (label, id, bs) in buttons {
+            let mut text = [0u8; 72];
+            text[..label.len()].copy_from_slice(label.as_bytes());
+            b.extend_from_slice(&text);
+            b.extend_from_slice(&id.to_le_bytes());
+            b.extend_from_slice(&bs.to_le_bytes());
+        }
+        loader.guest_write_bytes(at, &b).unwrap();
+    }
+
+    const INFO: u32 = 0x0010_0000;
+
+    fn with_desktop(loader: &Loader) -> crate::gui::GUIReceiver {
+        let (tx, rx) = crate::gui::create_gui_channel();
+        loader.shared.window_mgr.lock_or_recover().gui_tx = Some(tx);
+        rx
+    }
+
+    #[test]
+    fn message_box2_shows_its_own_buttons_and_icon() {
+        let (loader, frame) = with_owner();
+        let _gui = with_desktop(&loader);
+        let hicon = super::super::pm_pointer::PointerManager::system_handle(SPTR_ICONWARNING);
+        write_mb2info(&loader, INFO, MB_CUSTOMICON | MB_MOVEABLE, hicon, 0,
+                      &[("~Keep", 501, 0), ("A much longer label than usual", 502, BS_DEFAULT)]);
+        let dlg = match loader.win_message_box2(0, frame, 0, 0, 77, INFO) {
+            ApiResult::DlgRunLoop { hwnd_dlg, .. } => hwnd_dlg,
+            other => panic!("expected the dialog loop, got {other:?}"),
+        };
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let d = wm.get_window(dlg).unwrap();
+        assert_eq!((d.text.as_str(), d.id, d.msgbox_hicon, d.msgbox_icon), ("Error", 77, hicon, 0),
+                   "a NULL title shows Error; the identity; the custom icon");
+        let keep = wm.get_window(wm.find_child_by_id(dlg, 501).unwrap()).unwrap();
+        let long = wm.get_window(wm.find_child_by_id(dlg, 502).unwrap()).unwrap();
+        assert_eq!(keep.text, "~Keep");
+        assert!(long.cx > keep.cx, "a long label widens its button");
+        assert_ne!(long.style & BS_DEFAULT, 0);
+        assert_eq!(wm.focus_hwnd, wm.find_child_by_id(dlg, 502).unwrap());
+        drop(wm);
+        assert_eq!(loader.custom_icon_pels(hicon), icon_pels(SPTR_ICONWARNING));
+        loader.procless_dialog_message(dlg, WM_COMMAND, 501, 0);
+        assert_eq!(result(&loader, dlg), (true, 501));
+    }
+
+    #[test]
+    fn a_nonmodal_box_returns_at_once_and_tells_its_owner() {
+        let (loader, frame) = with_owner();
+        let _gui = with_desktop(&loader);
+        let client = loader.shared.window_mgr.lock_or_recover().frame_to_client[&frame];
+        write_mb2info(&loader, INFO, MB_NONMODAL, 0, client, &[("OK", 1, 0)]);
+        take_messages(&loader);
+        let dlg = match loader.win_message_box2(0, frame, 0, 0, 9, INFO) {
+            ApiResult::Normal(h) => h,
+            other => panic!("expected the handle, got {other:?}"),
+        };
+        assert!(loader.shared.window_mgr.lock_or_recover().is_window(dlg));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(frame).unwrap().style & WS_DISABLED, 0,
+                   "the owner stays enabled");
+        let msgs = take_messages(&loader);
+        assert!(msgs.contains(&(client, WM_MSGBOXINIT, dlg, 9)), "{msgs:?}");
+        loader.procless_dialog_message(dlg, WM_COMMAND, 1, 0);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert!(wm.is_window(dlg) && !wm.get_window(dlg).unwrap().visible, "hidden, left to the owner to destroy");
+        drop(wm);
+        assert!(take_messages(&loader).contains(&(client, WM_MSGBOXDISMISS, dlg, 1)));
+    }
+
+    #[test]
+    fn message_box2_refuses_bad_infos() {
+        let (loader, frame) = with_owner();
+        let _gui = with_desktop(&loader);
+        for (style, buttons, code) in [
+            (0x0001, vec![("OK", 1, 0)], PMERR_INVALID_FLAG),
+            (0, vec![], PMERR_PARAMETER_OUT_OF_RANGE),
+        ] {
+            write_mb2info(&loader, INFO, style, 0, 0, &buttons);
+            assert!(matches!(loader.win_message_box2(0, frame, 0, 0, 0, INFO), ApiResult::Normal(MBID_ERROR)));
+            assert_eq!(loader.shared.pm_errors.take(0) & 0xFFFF, code);
+        }
+        write_mb2info(&loader, INFO, 0, 0, 0, &[("OK", 1, 0)]);
+        assert!(matches!(loader.win_message_box2(0, 0xDEAD, 0, 0, 0, INFO), ApiResult::Normal(MBID_ERROR)));
+        assert_eq!(loader.shared.pm_errors.take(0) & 0xFFFF, PMERR_INVALID_HWND);
+    }
+
+    #[test]
+    fn a_pointer_image_becomes_icon_pels() {
+        // 2 x 2: red opaque, green transparent, blue opaque, white half.
+        let rgba = [255, 0, 0, 255, 0, 255, 0, 0, 0, 0, 255, 255, 255, 255, 255, 128];
+        let pels = image_icon_pels(2, 2, &rgba);
+        let n = MSGBOX_ICON_SIZE as usize;
+        let at = |x: usize, y: usize| pels[y * n + x];
+        // Centred: the image's (0, 0) is at (15, 15).
+        assert_eq!((at(15, 15), at(16, 15), at(15, 16), at(16, 16)),
+                   (Some(0xFF0000), None, Some(0x0000FF), Some(0xFFFFFF)));
+        assert_eq!(at(0, 0), None);
     }
 }

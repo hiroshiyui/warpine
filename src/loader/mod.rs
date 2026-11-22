@@ -1077,6 +1077,12 @@ impl Loader {
                     if let Some(idx) = hit_idx {
                         // Toggle: clicking the already-open item closes it.
                         let new_open = if open_item == idx as u32 + 1 { 0 } else { idx as u32 + 1 };
+                        // The client hears of it first (pm_menubar.rs), so
+                        // WM_INITMENU comes before the items are drawn.
+                        match items.get(idx) {
+                            Some(item) if new_open != 0 => self.mouse_menu_opened(hwnd, open_item != 0, item.id),
+                            _ => self.mouse_menu_closed(hwnd),
+                        }
                         {
                             let mut wm = self.shared.window_mgr.lock_or_recover();
                             if let Some(win) = wm.get_window_mut(hwnd) {
@@ -1088,7 +1094,7 @@ impl Loader {
                             if new_open != 0 && let Some(parent) = items.get(idx) {
                                 for child in parent.children.iter().filter(|c| c.style & MIS_OWNERDRAW != 0) {
                                     wm.queue_owner_call(pm_owner::OwnerCall {
-                                        control: hwnd, kind: pm_owner::OwnerCallKind::DrawMenuItem { id: child.id },
+                                        control: hwnd, kind: pm_owner::OwnerCallKind::DrawMenuItem { id: child.id, hilite: None },
                                     });
                                 }
                             }
@@ -1097,6 +1103,7 @@ impl Loader {
                         return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
                     } else if open_item > 0 {
                         // Click on empty part of menu bar: close dropdown.
+                        self.mouse_menu_closed(hwnd);
                         { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
                         return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
                     }
@@ -1122,38 +1129,21 @@ impl Loader {
                             // Determine which child item was clicked.
                             let child_idx = ((drop_y2 - 1 - click_y) / ITEM_H) as usize;
                             if let Some(child) = parent_item.children.get(child_idx)
-                                && child.style & MIS_SEPARATOR == 0
+                                && child.style & MIS_SEPARATOR == 0 && child.attr & MIA_DISABLED == 0
                             {
-                                let cmd_id = child.id as u32;
                                 // Close dropdown before dispatching.
                                 { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
                                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
-                                // Post WM_COMMAND to the client window.
-                                // parent = frame_hwnd; client = frame_to_client[frame_hwnd].
-                                let (client_hwnd, mq_arc_opt) = {
-                                    let wm = self.shared.window_mgr.lock_or_recover();
-                                    let client = wm.frame_to_client.get(&parent).copied().unwrap_or(parent);
-                                    let hmq = wm.find_hmq_for_hwnd(client);
-                                    let mq = hmq.and_then(|h| wm.get_mq(h));
-                                    (client, mq)
-                                };
-                                if let Some(mq_arc) = mq_arc_opt {
-                                    let mut mq = mq_arc.lock_or_recover();
-                                    // mp1 = command id, mp2 =
-                                    // MPFROM2SHORT(CMDSRC_MENU, fPointer = TRUE).
-                                    mq.messages.push_back(OS2Message {
-                                        hwnd: client_hwnd,
-                                        msg: WM_COMMAND,
-                                        mp1: cmd_id,
-                                        mp2: pm_dialog::command_mp2(CMDSRC_MENU, true),
-                                        time: 0, x: 0, y: 0,
-                                    });
-                                    mq.cond.notify_one();
-                                }
+                                // WM_MENUSELECT(TRUE) to the client, whose
+                                // reply decides whether the command (with
+                                // MPFROM2SHORT(CMDSRC_MENU, fPointer = TRUE))
+                                // is posted; then WM_MENUEND (pm_menubar.rs).
+                                self.mouse_menu_chose(hwnd, child.id, child.style);
                                 return ApiResult::Normal(0);
                             }
                         } else {
                             // Click outside dropdown: close it.
+                            self.mouse_menu_closed(hwnd);
                             { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
                             return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
                         }

@@ -1941,8 +1941,10 @@ impl SdlRenderer {
                             self.open_frame_menu(shared, hwnd, false);
                             self.swallow_release = self.popup.is_some();
                         }
-                        // A maximized frame is not dragged.
-                        ChromeHit::TitleBar if state & WS_MAXIMIZED != 0 => {}
+                        // A maximized frame is not dragged, nor a message
+                        // box without MB_MOVEABLE.
+                        ChromeHit::TitleBar if state & WS_MAXIMIZED != 0
+                            || shared.window_mgr.lock_or_recover().get_window(hwnd).is_some_and(|w| w.immovable) => {}
                         ChromeHit::Minimize => {
                             // VDR-C4: post WM_SYSCOMMAND(SC_MINIMIZE) to the client.
                             syscommand(SC_MINIMIZE, CMDSRC_MENU);

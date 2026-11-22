@@ -283,7 +283,29 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #define MB_SYSTEMMODAL       0x1000
 #define MB_HELP              0x2000
 #define MB_MOVEABLE          0x4000
+#define MB_NONMODAL          0x8000
 #define MB_CUSTOMICON        0x0080
+
+/* WinMessageBox2: the box's buttons, and a non-modal box's notifications */
+#define MAX_MBDTEXT          70
+#define WM_MSGBOXINIT        0x010E
+#define WM_MSGBOXDISMISS     0x010F
+
+typedef struct _MB2D {
+    CHAR   achText[MAX_MBDTEXT + 1];
+    CHAR   packbyte;
+    ULONG  idButton;
+    LONG   flStyle;
+} MB2D, *PMB2D;
+
+typedef struct _MB2INFO {
+    ULONG    cb;
+    HPOINTER hIcon;
+    ULONG    cButtons;
+    ULONG    flStyle;
+    HWND     hwndNotify;
+    MB2D     mb2d[1];
+} MB2INFO, *PMB2INFO;
 
 /* WinMessageBox results */
 #define MBID_OK      0x0001
@@ -940,6 +962,8 @@ BOOL    APIENTRY WinPtInRect(HAB hab, PRECTL prcl, PPOINTL pptl);
 /* Dialogs and message boxes */
 ULONG   APIENTRY WinMessageBox(HWND hwndParent, HWND hwndOwner, PCSZ pszText, PCSZ pszCaption, ULONG idWindow,
                                ULONG flStyle);
+ULONG   APIENTRY WinMessageBox2(HWND hwndParent, HWND hwndOwner, PCSZ pszText, PCSZ pszTitle, ULONG ulWindow,
+                                PMB2INFO pmb2info);
 ULONG   APIENTRY WinDlgBox(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg,
                            PVOID pCreateParams);
 HWND    APIENTRY WinLoadDlg(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg,

@@ -3067,7 +3067,7 @@ const MENUKEY_STEPS: &str = "\
 #[test]
 fn gui_pm_menukey_test_drives_the_menu_bar_with_keys() {
     let steps = format!("{MENUKEY_STEPS}3100 key alt+f4\n6000 quit\n");
-    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 9, &steps);
+    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 14, &steps);
 }
 
 /// Keyboard menu mode: Edit highlighted on the bar, its pull-down dropped
@@ -3436,11 +3436,15 @@ const MSGBOX_TEST_STEPS: &str = "1500 key enter\n2200 key esc\n2900 click 468 41
 /// window procedure keeps getting timer messages. Then Enter on OK, and in
 /// the last box a click on Help (desktop (600, 416); the box stays open)
 /// and one on the close button (desktop (643, 334)), which ends it with
-/// MBID_CANCEL although it has no Cancel button.
+/// MBID_CANCEL although it has no Cancel button (MB_MOVEABLE gives it the
+/// close button). Then WinMessageBox2: Enter on its BS_DEFAULT button, and
+/// on a non-modal box, which returned at once and tells its owner with
+/// WM_MSGBOXINIT / WM_MSGBOXDISMISS.
 #[test]
 fn gui_pm_msgbox_test_answers_message_boxes() {
-    let steps = format!("{MSGBOX_TEST_STEPS}3700 key enter\n4400 click 600 416\n5100 click 643 334\n9000 quit\n");
-    assert_scripted_checks_pass("samples/pm_msgbox_test/pm_msgbox_test.exe", "pm_msgbox_test", 9, &steps);
+    let steps = format!("{MSGBOX_TEST_STEPS}3700 key enter\n4400 click 600 416\n5100 click 643 334\n\
+                         5900 key enter\n6700 key enter\n9000 quit\n");
+    assert_scripted_checks_pass("samples/pm_msgbox_test/pm_msgbox_test.exe", "pm_msgbox_test", 18, &steps);
 }
 
 /// pm_destroy_test: WinDestroyWindow sends WM_DESTROY to the window and then

@@ -9,13 +9,19 @@
  *   MB_OKCANCEL, Esc                        -> MBID_CANCEL
  *   MB_YESNO, click on Yes                  -> MBID_YES
  *   MB_OK with two lines of text, Enter     -> MBID_OK
- *   MB_YESNO | MB_HELP, click on Help, then
+ *   MB_YESNO | MB_HELP | MB_MOVEABLE, click on Help, then
  *     a click on the close button           -> MBID_CANCEL
+ *   WinMessageBox2, buttons Keep / Discard
+ *     (BS_DEFAULT), a custom icon, Enter    -> 502 (Discard)
+ *   WinMessageBox2 MB_NONMODAL, Enter       -> returns its handle at once;
+ *     WM_MSGBOXINIT, then WM_MSGBOXDISMISS with the button's id reach the
+ *     client, which destroys the box
  *
  * The boxes show the four icons (question, none, warning, information,
  * error). Help sends WM_HELP to the message box itself, which stays open;
  * the box's parent is the desktop, so the owner's client never sees it.
- * Close ends a box with MBID_CANCEL although it has no Cancel button.
+ * Close ends a box with MBID_CANCEL although it has no Cancel button;
+ * only a box with MB_MOVEABLE has the system menu and the close button.
  *
  * A timer keeps running on the client while the boxes are open: the
  * owner's window procedure gets its WM_TIMERs during the modal loop, and
@@ -90,6 +96,30 @@ static void check( const char *what, LONG got, LONG want )
     n_checks++;
 }
 
+/* An MB2INFO with two buttons. */
+typedef struct { MB2INFO info; MB2D more[1]; } MB2INFO2;
+
+static ULONG box2( HWND owner, ULONG style, HWND notify, ULONG id )
+{
+    MB2INFO2 mb;
+    memset( &mb, 0, sizeof( mb ) );
+    mb.info.cb = sizeof( mb );
+    mb.info.hIcon = WinQuerySysPointer( HWND_DESKTOP, SPTR_ICONWARNING, FALSE );
+    mb.info.cButtons = 2;
+    mb.info.flStyle = style;
+    mb.info.hwndNotify = notify;
+    strcpy( mb.info.mb2d[0].achText, "~Keep" );
+    mb.info.mb2d[0].idButton = 501;
+    strcpy( mb.more[0].achText, "~Discard" );
+    mb.more[0].idButton = 502;
+    mb.more[0].flStyle = BS_DEFAULT;
+    return WinMessageBox2( HWND_DESKTOP, owner, "Keep the draft?", "Message Box 2", id, &mb.info );
+}
+
+static HWND  nonmodal = NULLHANDLE;
+static int   inits = 0;
+static ULONG dismissed_with = 0;
+
 static ULONG box( HWND owner, PSZ text, ULONG style )
 {
     ULONG rc;
@@ -114,12 +144,31 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
                box( hwnd, "The operation completed.\nTwo lines of text in one box.", MB_OK | MB_INFORMATION ),
                MBID_OK );
         check( "Close without a Cancel button",
-               box( hwnd, "Delete the file anyway?", MB_YESNO | MB_HELP | MB_ERROR ), MBID_CANCEL );
+               box( hwnd, "Delete the file anyway?", MB_YESNO | MB_HELP | MB_ERROR | MB_MOVEABLE ), MBID_CANCEL );
         check( "WM_HELP stays with the message box", help_seen, 0 );
         WinStopTimer( hab, hwnd, ID_TIMER );
         check( "the owner's timer ran while a box was open", ticks_while_open > 0, TRUE );
         check( "the owner was disabled while a box was open", owner_disabled, TRUE );
         check( "and is enabled again", WinIsWindowEnabled( frame ), TRUE );
+        check( "WinMessageBox2: Enter picks the BS_DEFAULT button",
+               box2( hwnd, MB_CUSTOMICON | MB_MOVEABLE, NULLHANDLE, 0 ), 502 );
+        check( "WinMessageBox2 with an unknown flag", box2( hwnd, 0x0001, NULLHANDLE, 0 ), MBID_ERROR );
+        check( "  -> PMERR_INVALID_FLAG", ERRORIDERROR( WinGetLastError( hab ) ), PMERR_INVALID_FLAG );
+        nonmodal = (HWND)box2( hwnd, MB_NONMODAL, hwnd, 33 );
+        check( "a non-modal box returns its handle at once", WinIsWindow( hab, nonmodal ), TRUE );
+        check( "  and leaves its owner enabled", WinIsWindowEnabled( frame ), TRUE );
+        return 0;
+
+    case WM_MSGBOXINIT:
+        if( (HWND)mp1 == nonmodal && LONGFROMMP( mp2 ) == 33 ) inits++;
+        return 0;
+
+    case WM_MSGBOXDISMISS:
+        dismissed_with = LONGFROMMP( mp2 );
+        check( "WM_MSGBOXINIT came first, with the box and its identity", inits, 1 );
+        check( "WM_MSGBOXDISMISS: the box", (HWND)mp1 == nonmodal, TRUE );
+        check( "  and Enter's default button", dismissed_with, 502 );
+        check( "the owner destroys the box", WinDestroyWindow( nonmodal ), TRUE );
         WinPostMsg( hwnd, WM_QUIT, 0, 0 );
         return 0;
 
