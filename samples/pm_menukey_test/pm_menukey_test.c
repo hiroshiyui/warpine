@@ -17,7 +17,9 @@
  * but the x. The client also hears the menu: WM_INITMENU for the bar and
  * for the Edit pull-down before it drops, WM_MENUSELECT with the post flag
  * for each chosen item (its TRUE reply lets the command be posted), and
- * WM_MENUEND each time menu mode ends.
+ * WM_MENUEND each time menu mode ends. The View pull-down holds an
+ * owner-drawn item: opened with F10, Left, Down, it is measured first
+ * (WM_MEASUREITEM, answered 28) and then drawn 28 pels high (WM_DRAWITEM).
  *
  * Before that, main() works on the menu with the MM_* item messages and
  * their macros: WinCheckMenuItem (Copy stays checked, so the golden
@@ -46,6 +48,7 @@ static ULONG commands[MAX_LOG];
 static int   n_commands = 0;
 static int   menu_sources = 0;     /* WM_COMMANDs with CMDSRC_MENU, fPointer FALSE */
 static int   helps = 0;
+static int   measured = 0, drawn = 0, drawn_h = 0;
 static int   init_bar = 0, init_edit = 0, chosen_paste = 0, chosen_open = 0, ends = 0;
 static char  chars[MAX_LOG + 1];
 static int   n_chars = 0;
@@ -102,7 +105,7 @@ static void check_items( HWND frame, HWND client, HWND menu )
     HWND     sys;
     QMSG     q;
 
-    check( "MM_QUERYITEMCOUNT", SHORT1FROMMR( WinSendMsg( menu, MM_QUERYITEMCOUNT, 0, 0 ) ), 2 );
+    check( "MM_QUERYITEMCOUNT", SHORT1FROMMR( WinSendMsg( menu, MM_QUERYITEMCOUNT, 0, 0 ) ), 3 );
     check( "WinCheckMenuItem", WinCheckMenuItem( menu, IDM_COPY, TRUE ), TRUE );
     check( "WinIsMenuItemChecked", WinIsMenuItemChecked( menu, IDM_COPY ) != FALSE, TRUE );
     check( "WinEnableMenuItem(FALSE)", WinEnableMenuItem( menu, IDM_COPY, FALSE ), TRUE );
@@ -130,9 +133,9 @@ static void check_items( HWND frame, HWND client, HWND menu )
     mi.afStyle = MIS_TEXT;
     mi.id = 300;
     check( "MM_INSERTITEM at the end", SHORT1FROMMR( WinSendMsg( menu, MM_INSERTITEM, MPFROMP( &mi ),
-           MPFROMP( "~Extra" ) ) ), 2 );
-    check( "MM_DELETEITEM leaves two", SHORT1FROMMR( WinSendMsg( menu, MM_DELETEITEM,
-           MPFROM2SHORT( 300, FALSE ), 0 ) ), 2 );
+           MPFROMP( "~Extra" ) ) ), 3 );
+    check( "MM_DELETEITEM leaves three", SHORT1FROMMR( WinSendMsg( menu, MM_DELETEITEM,
+           MPFROM2SHORT( 300, FALSE ), 0 ) ), 3 );
 
     sys = WinWindowFromID( frame, FID_SYSMENU );
     check( "the frame has a system menu window", sys != NULLHANDLE, TRUE );
@@ -164,6 +167,21 @@ static MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM 
         break;   /* WinDefWindowProc returns TRUE: post the command */
     case WM_MENUEND:
         ends++;
+        break;
+    case WM_MEASUREITEM:
+        if( SHORT1FROMMP( mp1 ) == FID_MENU && ( (POWNERITEM)mp2 )->idItem == IDM_SWATCH ) {
+            measured++;
+            return MRFROMSHORT( 28 );
+        }
+        break;
+    case WM_DRAWITEM:
+        if( SHORT1FROMMP( mp1 ) == FID_MENU ) {
+            POWNERITEM oi = (POWNERITEM)mp2;
+            if( measured ) drawn++;
+            drawn_h = oi->rclItem.yTop - oi->rclItem.yBottom;
+            WinFillRect( oi->hps, &oi->rclItem, CLR_BLUE );
+            return (MRESULT)TRUE;
+        }
         break;
     case WM_HELP:
         helps++;
@@ -218,6 +236,9 @@ int main( void )
     check( "WM_MENUSELECT(TRUE) for Paste", chosen_paste, 1 );
     check( "WM_MENUSELECT(TRUE) for Open", chosen_open, 1 );
     check( "WM_MENUEND whenever menu mode ended", ends >= 3, TRUE );
+    check( "WM_MEASUREITEM for the owner-drawn item", measured, 1 );
+    check( "WM_DRAWITEM after it", drawn >= 1, TRUE );
+    check( "  in a row of the measured height", drawn_h, 28 );
     check( "the client saw one character", n_chars, 1 );
     check( "  the x typed after Esc", chars[0], 'x' );
 

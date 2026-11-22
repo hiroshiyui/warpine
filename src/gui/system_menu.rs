@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn menu_templates_become_popup_items() {
-        let item = |id, style, attr, text: &str| MenuItem { id, style, attr, text: text.into(), children: vec![], image: None };
+        let item = |id, style, attr, text: &str| MenuItem { id, style, attr, text: text.into(), children: vec![], image: None, row_h: 0 };
         let items = menu_popup_items(&[
             item(10, 0, 0, "~Open\tCtrl+O"),
             item(0, MIS_SEPARATOR, 0, ""),

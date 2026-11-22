@@ -535,6 +535,17 @@ pub struct MenuItem {
     /// (`pm_owner.rs`): `owner_menu_item_w()` × `MENU_DROPDOWN_ITEM_H`
     /// pels, rows top down; `None` = drawn as text.
     pub image: Option<std::sync::Arc<Vec<u32>>>,
+    /// For an item with a submenu: the height of its pull-down's rows, as
+    /// the owner measured its `MIS_OWNERDRAW` items (`WM_MEASUREITEM`,
+    /// `pm_owner.rs`); 0 = not measured, the default height.
+    pub row_h: i32,
+}
+
+impl MenuItem {
+    /// The height of this item's pull-down rows.
+    pub fn row_h(&self) -> i32 {
+        if self.row_h > 0 { self.row_h } else { super::constants::MENU_DROPDOWN_ITEM_H }
+    }
 }
 
 /// Width of an owner-drawn pull-down item: the pull-down less its edges.
@@ -637,6 +648,9 @@ pub struct WindowManager {
     /// receives the pointer's moves and the release wherever the pointer
     /// is — a button pops up, a text control extends its selection.
     pub pressed_control: u32,
+    /// The push button under the pointer, drawn with the hover face in the
+    /// modern theme (ADR-0118); 0 = none.
+    pub hover_control: u32,
     /// Where the pointer last was over `pressed_control` while it is held,
     /// relative to the control's bottom-left corner: the drag scroll timer
     /// (`WM_TIMER(TID_SCROLL)`) replays it while the pointer rests outside.
@@ -854,6 +868,7 @@ impl WindowManager {
             first_scroll_rate_ms: super::constants::DRAG_SCROLL_MS as u32,
             scroll_rate_ms: super::constants::DRAG_SCROLL_MS as u32,
             alt_alone: false,
+            hover_control: 0,
             cursors: HashMap::new(),
             cursor_blink_off: false,
             text_caret: None,

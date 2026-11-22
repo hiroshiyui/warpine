@@ -220,6 +220,17 @@ fn highlighted(items: &[MenuItem], mode: MenuMode) -> Option<&MenuItem> {
     match mode.row { Some(r) => bar.children.get(r), None => Some(bar) }
 }
 
+/// The owner calls the pull-down of `parent` makes when it drops: its
+/// `MIS_OWNERDRAW` items are measured (`WM_MEASUREITEM`) the first time,
+/// then drawn (`WM_DRAWITEM`).
+pub fn pulldown_owner_calls(parent: &MenuItem) -> Vec<OwnerCallKind> {
+    let drawn: Vec<u16> = parent.children.iter().filter(|c| c.style & MIS_OWNERDRAW != 0).map(|c| c.id).collect();
+    let measure = parent.row_h == 0;
+    drawn.iter().filter(|_| measure).map(|&id| OwnerCallKind::MeasureMenuItem { id })
+        .chain(drawn.iter().map(|&id| OwnerCallKind::DrawMenuItem { id, hilite: None }))
+        .collect()
+}
+
 /// The owner calls a change of menu mode from `old` to `new` makes on menu
 /// `menu_id`'s `items` (see the module documentation).
 pub fn transition_calls(items: &[MenuItem], menu_id: u16, old: Option<MenuMode>, new: Option<MenuMode>)
@@ -231,6 +242,7 @@ pub fn transition_calls(items: &[MenuItem], menu_id: u16, old: Option<MenuMode>,
     if let Some(n) = new && n.row.is_some() && old.is_none_or(|o| o.row.is_none() || o.item != n.item)
         && let Some(bar) = items.get(n.item) {
         calls.push(OwnerCallKind::MenuInit { id: bar.id });
+        calls.extend(pulldown_owner_calls(bar));
     }
     let before = old.and_then(|m| highlighted(items, m));
     let after = new.and_then(|m| highlighted(items, m));
@@ -479,7 +491,7 @@ mod tests {
 
     fn item(id: u16, text: &str, children: Vec<MenuItem>) -> MenuItem {
         MenuItem { id, style: MIS_TEXT | if children.is_empty() { 0 } else { MIS_SUBMENU }, attr: 0,
-                   text: text.into(), children, image: None }
+                   text: text.into(), children, image: None, row_h: 0 }
     }
 
     fn bar() -> Vec<MenuItem> {

@@ -458,7 +458,7 @@ fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i3
 
 /// Height of the pull-down listing `parent`'s children.
 fn pulldown_h(parent: &MenuItem) -> i32 {
-    parent.children.len() as i32 * MENU_DROPDOWN_ITEM_H
+    parent.children.len() as i32 * parent.row_h()
 }
 
 /// Draw the pull-down of `parent` with its top-left corner at
@@ -471,10 +471,14 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
     let (dx1, dy1) = (drop_x + MENU_DROPDOWN_W, bar_bot + drop_h);
     draw_filled_rect(buf, buf_w, drop_x, bar_bot, dx1, dy1, MENU_EDGE_COLOR);
     draw_filled_rect(buf, buf_w, drop_x + 1, bar_bot, dx1 - 1, dy1 - 1, MENU_BG_COLOR);
+    // Rows are the owner's measured height when it measured them
+    // (WM_MEASUREITEM, pm_owner.rs); text is centred in its row.
+    let row_h = parent.row_h();
+    let text_dy = (row_h - MENU_DROPDOWN_ITEM_H) / 2;
     for (ci, child) in parent.children.iter().enumerate() {
-        let row_top = bar_bot + ci as i32 * MENU_DROPDOWN_ITEM_H;
+        let row_top = bar_bot + ci as i32 * row_h;
         if child.style & MIS_SEPARATOR != 0 {
-            let sep_y = row_top + MENU_DROPDOWN_ITEM_H / 2;
+            let sep_y = row_top + row_h / 2;
             draw_filled_rect(buf, buf_w, drop_x + 2, sep_y, dx1 - 2, sep_y + 1, MENU_EDGE_COLOR);
         } else if let Some(image) = &child.image {
             // MIS_OWNERDRAW: what the owner drew (pm_owner.rs), rows top down.
@@ -492,16 +496,16 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
         } else {
             let lit = hilite == Some(ci);
             if lit {
-                draw_filled_rect(buf, buf_w, drop_x + 1, row_top, dx1 - 1, row_top + MENU_DROPDOWN_ITEM_H, MENU_HILITE_COLOR);
+                draw_filled_rect(buf, buf_w, drop_x + 1, row_top, dx1 - 1, row_top + row_h, MENU_HILITE_COLOR);
             }
             // A disabled item is greyed; a checked one has a mark at the
             // right (MM_SETITEMATTR, pm_menuitems.rs).
             let color = if child.attr & MIA_DISABLED != 0 { MENU_DISABLED_TEXT }
                 else if lit { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR };
             if child.attr & MIA_CHECKED != 0 {
-                super::popup_menu::draw_check(buf, buf_w, dx1 - PULLDOWN_CHECK_X, row_top + MENU_DROPDOWN_ITEM_H / 2, color);
+                super::popup_menu::draw_check(buf, buf_w, dx1 - PULLDOWN_CHECK_X, row_top + row_h / 2, color);
             }
-            draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top, &menu_label(&child.text),
+            draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top + text_dy, &menu_label(&child.text),
                              color, FontSpec { cjk, ..FontSpec::SYSTEM });
         }
     }
@@ -675,7 +679,9 @@ impl FramePlacement {
     /// its shadow when rounded.
     fn extent(&self) -> Rect {
         let e = self.frame.union(&self.pulldown);
-        if self.rounded { e.union(&super::frame_shape::shadow_extent(self.frame)) } else { e }
+        if !self.rounded { return e; }
+        let e = e.union(&super::frame_shape::shadow_extent(self.frame));
+        if self.pulldown.is_empty() { e } else { e.union(&super::frame_shape::shadow_extent(self.pulldown)) }
     }
 }
 
@@ -1661,10 +1667,14 @@ impl SdlRenderer {
         self.placed = placed;
         // The pop-up menu: where it was and where it is now.
         let overlay_rect = self.popup.as_ref().map_or(Rect::EMPTY, PopupMenu::rect);
+        // A modern pop-up menu casts a shadow (frame_shape.rs).
+        let overlay_extent = |r: Rect| if theme::current().rounded_frames() && !r.is_empty() {
+            r.union(&super::frame_shape::shadow_extent(r))
+        } else { r };
         if std::mem::take(&mut self.overlay_changed) {
             self.overlay_generation += 1;
-            damage.add(self.overlay_placed);
-            damage.add(overlay_rect);
+            damage.add(overlay_extent(self.overlay_placed));
+            damage.add(overlay_extent(overlay_rect));
         }
         self.overlay_placed = overlay_rect;
         if damage.is_empty() {
@@ -3152,7 +3162,7 @@ mod tests {
     use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
 
     fn menu_item(text: &str, style: u16, children: Vec<MenuItem>) -> MenuItem {
-        MenuItem { id: 0, style, attr: 0, text: text.to_string(), children, image: None }
+        MenuItem { id: 0, style, attr: 0, text: text.to_string(), children, image: None, row_h: 0 }
     }
 
     #[test]
@@ -4024,8 +4034,8 @@ mod compositor_tests {
     }
 
     fn items() -> Vec<MenuItem> {
-        let child = MenuItem { id: 11, style: 0, attr: 0, text: "~Open".into(), children: vec![], image: None };
-        vec![MenuItem { id: 1, style: 0, attr: 0, text: "~File".into(), children: vec![child.clone(), child], image: None }]
+        let child = MenuItem { id: 11, style: 0, attr: 0, text: "~Open".into(), children: vec![], image: None, row_h: 0 };
+        vec![MenuItem { id: 1, style: 0, attr: 0, text: "~File".into(), children: vec![child.clone(), child], image: None, row_h: 0 }]
     }
 
     #[test]
@@ -4054,7 +4064,7 @@ mod compositor_tests {
     #[test]
     fn chrome_cache_follows_the_cjk_face() {
         let mut c = ChromeCache::new();
-        let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![], image: None }];
+        let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![], image: None, row_h: 0 }];
         assert!(!c.set_cjk(CjkRegion::Auto), "unchanged");
         c.set_cjk(CjkRegion::Japanese);
         c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196);

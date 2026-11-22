@@ -34,6 +34,21 @@ pub enum Theme {
 
 /// The modern edge line around a frame (inside its border).
 pub const MODERN_EDGE_COLOR: u32 = 0x0080_8080;
+/// Corner radius of a modern control's box (buttons, fields, lists).
+pub const CONTROL_RADIUS: i32 = 3;
+/// The modern accent: the focus ring and a focused field's border.
+pub const MODERN_ACCENT_COLOR: u32 = 0x0030_6FD0;
+/// The face of a modern push button under the pointer.
+pub const MODERN_HOVER_FACE: u32 = 0x00E6_E3DC;
+
+/// How far row `k` (0 = the outermost) of a box with corners of radius
+/// `r` is inset at each end; 0 from row `r` on.
+pub fn corner_inset(r: i32, k: i32) -> i32 {
+    if k >= r { return 0; }
+    let dy = r as f32 - k as f32 - 0.5;
+    let dx = ((r * r) as f32 - dy * dy).max(0.0).sqrt();
+    (r as f32 - dx).round() as i32
+}
 
 impl Theme {
     /// The theme a `WARPINE_THEME` value names; classic for anything else.
@@ -74,5 +89,15 @@ mod tests {
         assert_eq!(Theme::from_name(None), Theme::Classic);
         assert!(Theme::Modern.rounded_frames() && !Theme::Modern.bevelled());
         assert!(!Theme::Classic.rounded_frames() && Theme::Classic.bevelled());
+    }
+
+    #[test]
+    fn control_corners_are_inset_only_near_the_ends() {
+        let r = CONTROL_RADIUS;
+        let insets: Vec<i32> = (0..=r).map(|k| corner_inset(r, k)).collect();
+        assert!(insets[0] > 0, "the outermost row is inset: {insets:?}");
+        assert!(insets.windows(2).all(|w| w[0] >= w[1]), "insets shrink inwards: {insets:?}");
+        assert_eq!(insets[r as usize], 0);
+        assert_eq!(corner_inset(0, 0), 0, "no radius, no inset");
     }
 }

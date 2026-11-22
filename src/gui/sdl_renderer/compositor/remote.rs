@@ -216,7 +216,7 @@ impl RemoteDesktop {
                 }
                 if let Some((s, h)) = &layer.pulldown && !p.pulldown.is_empty() {
                     items.push(Item { frame: p.hwnd, pixmap: s.id, x: p.pulldown.x0, y: p.pulldown.y0,
-                                      parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)], rounded: false });
+                                      parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)], rounded: p.rounded });
                 }
             }
         }
@@ -244,7 +244,8 @@ impl RemoteDesktop {
             self.overlay = Some((s, o.generation));
         }
         let (s, _) = self.overlay.as_ref()?;
-        Some(Item { frame: 0, pixmap: s.id, x: o.rect.x0, y: o.rect.y0, parts: vec![Area::new(0, 0, w, h)], rounded: false })
+        Some(Item { frame: 0, pixmap: s.id, x: o.rect.x0, y: o.rect.y0, parts: vec![Area::new(0, 0, w, h)],
+                   rounded: crate::gui::theme::current().rounded_frames() })
     }
 }
 

@@ -81,6 +81,9 @@ pub enum OwnerCallKind {
     /// `hilite` `Some(on)` when its highlight changes (`MIA_HILITED` in
     /// `fsAttribute` and the opposite in `fsAttributeOld`).
     DrawMenuItem { id: u16, hilite: Option<bool> },
+    /// `WM_MEASUREITEM` for the `MIS_OWNERDRAW` pull-down item `id` of a
+    /// menu: the reply (or `rclItem.yTop`) sets its pull-down's row height.
+    MeasureMenuItem { id: u16 },
     /// `WM_INITMENU(id, menu)` to the owner of a menu (`pm_menubar.rs`).
     MenuInit { id: u16 },
     /// `WM_MENUSELECT(MPFROM2SHORT(id, post), menu)`; with `post`, the
@@ -134,6 +137,14 @@ pub enum OwnerCallKind {
     /// `WM_CONTROLPOINTER` with the pointer `hptr` the control shows; the
     /// pointer the owner returns is shown instead (`pm_pointer.rs`).
     ControlPointer { hptr: u32 },
+}
+
+/// `OWNERITEM.rclItem.yTop`, as a word of an owner call's block.
+const OWNERITEM_YTOP: usize = 9;
+
+/// The items of menu window `menu`.
+fn m_items(wm: &WindowManager, menu: u32) -> Vec<MenuItem> {
+    wm.get_window(menu).map(|w| w.menu_items.clone()).unwrap_or_default()
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -306,6 +317,7 @@ impl Loader {
     pub(crate) fn owner_call_setup(&self, call: &OwnerCall) -> OwnerSetup {
         match call.kind {
             OwnerCallKind::DrawMenuItem { id, hilite } => return self.menu_item_setup(call.control, id, hilite),
+            OwnerCallKind::MeasureMenuItem { id } => return self.menu_measure_setup(call.control, id),
             OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. } => {
                 return self.menu_notify_setup(call);
             }
@@ -426,7 +438,7 @@ impl Loader {
                 let block = vec![call.control, hps, 0, 0, 0, 0, 0, 0, cx as u32, cy as u32, VDA_BACKGROUND, 0];
                 OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
             }
-            OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::EraseBackground
+            OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::EraseBackground | OwnerCallKind::MeasureMenuItem { .. }
             | OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. }
             | OwnerCallKind::SyncPaint | OwnerCallKind::FrameFormat { .. } => OwnerSetup::Skip,
         }
@@ -448,7 +460,7 @@ impl Loader {
         if wnd_proc == 0 {
             return OwnerSetup::Skip;
         }
-        let (w, h) = (owner_menu_item_w(), MENU_DROPDOWN_ITEM_H);
+        let (w, h) = (owner_menu_item_w(), super::pm_menuitems::pulldown_row_h(&m_items(&wm, menu), id));
         let mut surface = Surface::new(w as u32, h as u32);
         surface.draw(DrawOp::Box { x1: 0, y1: 0, x2: w - 1, y2: h - 1, color: super::CONTROL_FACE_COLOR,
                                    fill: true, mix: Mix::Overpaint });
@@ -474,9 +486,9 @@ impl Loader {
     fn menu_item_finish(&self, menu: u32, id: u16, hps: u32, result: u32) {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let hbm = wm.ps_map.remove(&hps).map_or(0, |ps| ps.bitmap);
+        let h = super::pm_menuitems::pulldown_row_h(&m_items(&wm, menu), id);
         let image = wm.bitmaps.remove(&hbm).and_then(|b| {
             let s = b.surface.lock_or_recover();
-            let h = MENU_DROPDOWN_ITEM_H;
             let rows: Option<Vec<Vec<u32>>> = (0..h).rev().map(|y| s.row_pels(y)).collect();
             rows.map(|r| r.concat())
         });
@@ -484,6 +496,36 @@ impl Loader {
         if let Some(m) = wm.get_window_mut(menu)
             && let Some(item) = find_menu_item(&mut m.menu_items, id) {
             item.image = if result != 0 { image.map(std::sync::Arc::new) } else { None };
+        }
+        wm.mark_dirty(frame);
+    }
+
+    /// `WM_MEASUREITEM` for menu item `id` of `menu`: mp1 = the menu's id,
+    /// mp2 = an `OWNERITEM` with `rclItem` = the default row
+    /// (`owner_menu_item_w()` × the default height), `idItem` = the item.
+    fn menu_measure_setup(&self, menu: u32, id: u16) -> OwnerSetup {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let owner = wm.notify_target(menu);
+        let owner = wm.frame_to_client.get(&owner).copied().unwrap_or(owner);
+        let wnd_proc = wm.get_window(owner).map_or(0, |o| o.pfn_wp);
+        let menu_id = wm.get_window(menu).map_or(0, |m| m.id);
+        if wnd_proc == 0 { return OwnerSetup::Skip; }
+        let block = vec![menu, 0, 0, 0, 0, 0, 0, 0, owner_menu_item_w() as u32, MENU_DROPDOWN_ITEM_H as u32, id as u32, 0];
+        OwnerSetup::Call { wnd_proc, owner, msg: WM_MEASUREITEM, mp1: menu_id & 0xFFFF, mp2: 0, block, hps: 0 }
+    }
+
+    /// The owner measured menu item `id`: the reply's low word is the
+    /// height (PM Reference: "returns sHeight"); a reply of 0 takes the
+    /// height the owner left in `rclItem.yTop` (the reference's example).
+    fn menu_measure_finish(&self, menu: u32, id: u16, result: u32, block: &[u32]) {
+        let h = match result as u16 as i16 as i32 {
+            h if h > 0 => h,
+            _ => block.get(OWNERITEM_YTOP).map_or(0, |&v| v as i32),
+        };
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let frame = wm.notify_target(menu);
+        if h > 0 && let Some(m) = wm.get_window_mut(menu) {
+            super::pm_menuitems::measured(&mut m.menu_items, id, h);
         }
         wm.mark_dirty(frame);
     }
@@ -503,6 +545,7 @@ impl Loader {
     pub(crate) fn owner_call_finish(&self, call: &OwnerCall, hps: u32, result: u32, block: &[u32]) {
         match call.kind {
             OwnerCallKind::DrawMenuItem { id, .. } => return self.menu_item_finish(call.control, id, hps, result),
+            OwnerCallKind::MeasureMenuItem { id } => return self.menu_measure_finish(call.control, id, result, block),
             OwnerCallKind::MenuSelect { post: Some((msg, mp1, mp2)), .. } => {
                 if result != 0 { self.post_menu_command(call.control, msg, mp1, mp2); }
                 return;
@@ -588,7 +631,7 @@ impl Loader {
                 self.paint_container_item(&p, call.control, rect, rec, fi, part);
             }
             OwnerCallKind::ContainerDrawItem { .. } => {}
-            OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
+            OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::MeasureMenuItem { .. }
             | OwnerCallKind::MenuInit { .. } | OwnerCallKind::MenuSelect { .. } | OwnerCallKind::MenuEnd { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
@@ -814,7 +857,7 @@ mod tests {
             let mut wm = fx.loader.shared.window_mgr.lock_or_recover();
             let frame = wm.get_window(fx.client).unwrap().parent;
             let menu = wm.create_window("#Menu".into(), frame, 0);
-            let item = |id, style| MenuItem { id, style, attr: 0, text: "x".into(), children: vec![], image: None };
+            let item = |id, style| MenuItem { id, style, attr: 0, text: "x".into(), children: vec![], image: None, row_h: 0 };
             let mut file = item(10, MIS_SUBMENU);
             file.children = vec![item(11, MIS_OWNERDRAW), item(12, 0)];
             let m = wm.get_window_mut(menu).unwrap();
@@ -891,5 +934,38 @@ mod tests {
         fx.insert(list, "alpha");
         let sent = fx.run(|s| (0, block_of(s)));
         assert!(sent.is_empty());
+    }
+
+    #[test]
+    fn owner_drawn_menu_items_are_measured_before_they_are_drawn() {
+        let fx = fixture();
+        let menu = {
+            let mut wm = fx.loader.shared.window_mgr.lock_or_recover();
+            let frame = wm.get_window(fx.client).unwrap().parent;
+            let menu = wm.create_window("#Menu".into(), frame, 0);
+            let item = |id, style| MenuItem { id, style, attr: 0, text: "x".into(), children: vec![], image: None, row_h: 0 };
+            let mut file = item(10, MIS_SUBMENU);
+            file.children = vec![item(11, MIS_OWNERDRAW), item(12, 0)];
+            let m = wm.get_window_mut(menu).unwrap();
+            (m.menu_items, m.owner, m.id) = (vec![file], frame, FID_MENU);
+            (m.cx, m.cy) = (400, MENU_BAR_HEIGHT as i32);
+            menu
+        };
+        fx.send(menu, WM_BUTTON1DOWN, (MENU_BAR_ITEM_INSET as u32 + 2) | (2 << 16), 0);
+        // The owner asks for 30-pel rows and draws the item.
+        let made = fx.loader.drain_owner_calls(|msg| match msg { WM_MEASUREITEM => 30, WM_DRAWITEM => 1, _ => 0 });
+        let order: Vec<u32> = made.iter().map(|m| m.1).filter(|&m| m == WM_MEASUREITEM || m == WM_DRAWITEM).collect();
+        assert_eq!(order, vec![WM_MEASUREITEM, WM_DRAWITEM], "measured first");
+        let wm = fx.loader.shared.window_mgr.lock_or_recover();
+        let file = &wm.get_window(menu).unwrap().menu_items[0];
+        assert_eq!(file.row_h(), 30, "every row of the pull-down is 30 pels");
+        let image = file.children[0].image.as_ref().expect("drawn");
+        assert_eq!(image.len(), (owner_menu_item_w() * 30) as usize, "a picture of the measured row");
+        drop(wm);
+        // Measured once: dropping it again draws without measuring.
+        fx.send(menu, WM_BUTTON1DOWN, (MENU_BAR_ITEM_INSET as u32 + 2) | (2 << 16), 0);
+        fx.send(menu, WM_BUTTON1DOWN, (MENU_BAR_ITEM_INSET as u32 + 2) | (2 << 16), 0);
+        let made = fx.loader.drain_owner_calls(|_| 1);
+        assert!(!made.iter().any(|m| m.1 == WM_MEASUREITEM));
     }
 }

@@ -8,3 +8,5 @@
 #define IDM_EDIT     200
 #define IDM_COPY     201
 #define IDM_PASTE    202
+#define IDM_VIEW     400
+#define IDM_SWATCH   401

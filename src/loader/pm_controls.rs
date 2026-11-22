@@ -396,18 +396,34 @@ impl Loader {
              style & BS_DEFAULT != 0, wm.focus_hwnd == hwnd)
         };
         let push = |flag: bool| push && flag;
-        let face = self.button_face(hwnd).unwrap_or(CONTROL_FACE_COLOR);
-        control_box(p, (x, y, cx, cy), if push(pressed) { CONTROL_PRESSED_COLOR } else { face });
-        if push(default) {
-            p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color: CONTROL_EMPHASIS_COLOR,
-                               fill: false, mix: crate::gui::surface::Mix::Overpaint });
+        let modern = !crate::gui::theme::current().bevelled();
+        let hovered = modern && self.shared.window_mgr.lock_or_recover().hover_control == hwnd;
+        let face = match self.button_face(hwnd) {
+            Some(f) => f,
+            None if push(hovered) => crate::gui::theme::MODERN_HOVER_FACE,
+            None => CONTROL_FACE_COLOR,
+        };
+        let face = if push(pressed) { CONTROL_PRESSED_COLOR } else { face };
+        if modern {
+            // The default button's edge is the emphasis colour.
+            let edge = if push(default) { CONTROL_EMPHASIS_COLOR } else { super::CONTROL_BORDER_COLOR };
+            super::control_box_edged(p, (x, y, cx, cy), face, edge);
+        } else {
+            control_box(p, (x, y, cx, cy), face);
+            if push(default) {
+                p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color: CONTROL_EMPHASIS_COLOR,
+                                   fill: false, mix: crate::gui::surface::Mix::Overpaint });
+            }
         }
         let max_w = cx - 2 * CONTROL_TEXT_INSET;
         let (shown, _) = super::pm_dialog::mnemonic_label(text);
         let w = font::text_width(font::fit_text(&shown, max_w, p.font()), p.font());
         let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
         super::control_label(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, text, max_w);
-        if push(focused) {
+        if push(focused) && modern {
+            // A focus ring in the accent colour, just inside the edge.
+            super::rounded_box(p, (x + 1, y + 1, cx - 2, cy - 2), None, crate::gui::theme::MODERN_ACCENT_COLOR);
+        } else if push(focused) {
             let i = BUTTON_FOCUS_INSET;
             p.op(DrawOp::Box { x1: x + i, y1: y + i, x2: x + cx - i, y2: y + cy - i,
                                color: CONTROL_EMPHASIS_COLOR, fill: false,
@@ -438,7 +454,11 @@ impl Loader {
         let selected = if hilite {
             0..buf.chars().len()
         } else if focused { relative(buf.selection(), first) } else { 0..0 };
-        control_box(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
+        // Modern: a focused field's edge is the accent colour.
+        let edge = if focused && !crate::gui::theme::current().bevelled() {
+            crate::gui::theme::MODERN_ACCENT_COLOR
+        } else { super::CONTROL_BORDER_COLOR };
+        super::control_box_edged(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR), edge);
         let line_y = y + (cy - CONTROL_LINE_H) / 2;
         let caret_x = draw_edit_line(p, (x + CONTROL_TEXT_INSET + shift, line_y),
                                      view_w, &buf.chars()[first..], selected,

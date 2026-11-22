@@ -75,6 +75,36 @@ fn list_of<'a>(items: &'a mut Vec<MenuItem>, path: &[usize]) -> Option<(&'a mut 
     Some((list, last))
 }
 
+/// The height of the pull-down rows item `id` sits in: its parent's
+/// [`MenuItem::row_h`]; the default height for a bar item or an unknown id.
+pub fn pulldown_row_h(items: &[MenuItem], id: u16) -> i32 {
+    fn parent_row_h(items: &[MenuItem], id: u16) -> Option<i32> {
+        items.iter().find_map(|item| if item.children.iter().any(|c| c.id == id) {
+            Some(item.row_h())
+        } else {
+            parent_row_h(&item.children, id)
+        })
+    }
+    parent_row_h(items, id).unwrap_or(MENU_DROPDOWN_ITEM_H)
+}
+
+/// Item `id` measured `h` pels high (`WM_MEASUREITEM`): the rows of the
+/// pull-down it sits in take the tallest measure, never less than the
+/// default (PM Reference: every item of a menu has one height, at least
+/// the font's), and at most [`MAX_MENU_ROW_H`].
+pub fn measured(items: &mut [MenuItem], id: u16, h: i32) {
+    for item in items.iter_mut() {
+        if item.children.iter().any(|c| c.id == id) {
+            item.row_h = item.row_h().max(h).clamp(MENU_DROPDOWN_ITEM_H, MAX_MENU_ROW_H);
+            return;
+        }
+        measured(&mut item.children, id, h);
+    }
+}
+
+/// The tallest pull-down row an owner can ask for, in pels.
+pub const MAX_MENU_ROW_H: i32 = 256;
+
 /// `MM_SETITEMATTR`: the `mask` bits of item `id` become those of `data`.
 pub fn set_attr(items: &mut [MenuItem], id: u16, deep: bool, mask: u16, data: u16) -> bool {
     let Some(path) = item_path(items, id, deep) else { return false };
@@ -103,14 +133,14 @@ pub fn is_valid(items: &[MenuItem], id: u16, deep: bool) -> bool {
 pub fn system_menu_items(frame_flags: u32) -> Vec<MenuItem> {
     let children = crate::gui::system_menu::frame_system_menu_items(frame_flags, 0).into_iter().map(|p| {
         if p.separator {
-            MenuItem { id: 0xFFFF, style: MIS_SEPARATOR, attr: 0, text: String::new(), children: vec![], image: None }
+            MenuItem { id: 0xFFFF, style: MIS_SEPARATOR, attr: 0, text: String::new(), children: vec![], image: None, row_h: 0 }
         } else {
             MenuItem { id: p.id as u16, style: MIS_TEXT | MIS_SYSCOMMAND, attr: 0, text: p.text, children: vec![],
-                       image: None }
+                       image: None, row_h: 0 }
         }
     }).collect();
     vec![MenuItem { id: SC_SYSMENU as u16, style: MIS_SUBMENU | MIS_BITMAP, attr: 0, text: String::new(), children,
-                    image: None }]
+                    image: None, row_h: 0 }]
 }
 
 impl WindowManager {
@@ -283,7 +313,7 @@ impl Loader {
         } else { Vec::new() };
         let Some(w) = wm.get_window_mut(menu) else { return MIT_ERROR_REPLY };
         let at = if pos == MIT_END || pos < 0 { w.menu_items.len() } else { (pos as usize).min(w.menu_items.len()) };
-        w.menu_items.insert(at, MenuItem { id, style, attr, text, children, image: None });
+        w.menu_items.insert(at, MenuItem { id, style, attr, text, children, image: None, row_h: 0 });
         let frame = wm.find_frame_for_hwnd(menu);
         wm.mark_dirty(frame);
         at as u32
@@ -296,11 +326,25 @@ mod tests {
 
     fn item(id: u16, attr: u16, children: Vec<MenuItem>) -> MenuItem {
         MenuItem { id, style: MIS_TEXT | if children.is_empty() { 0 } else { MIS_SUBMENU }, attr,
-                   text: format!("~Item {id}"), children, image: None }
+                   text: format!("~Item {id}"), children, image: None, row_h: 0 }
     }
 
     fn bar() -> Vec<MenuItem> {
         vec![item(1, 0, vec![item(11, 0, vec![]), item(12, 0, vec![])]), item(2, MIA_DISABLED, vec![item(21, 0, vec![])])]
+    }
+
+    #[test]
+    fn a_pull_downs_rows_take_the_tallest_measure() {
+        let mut b = bar();
+        assert_eq!(pulldown_row_h(&b, 11), MENU_DROPDOWN_ITEM_H, "not measured yet");
+        measured(&mut b, 11, 30);
+        measured(&mut b, 12, 24);
+        assert_eq!(pulldown_row_h(&b, 12), 30, "every row of the pull-down");
+        assert_eq!(pulldown_row_h(&b, 21), MENU_DROPDOWN_ITEM_H, "another pull-down keeps its own");
+        measured(&mut b, 21, 4);
+        assert_eq!(pulldown_row_h(&b, 21), MENU_DROPDOWN_ITEM_H, "never below the font's");
+        measured(&mut b, 21, 10_000);
+        assert_eq!(pulldown_row_h(&b, 21), MAX_MENU_ROW_H);
     }
 
     #[test]

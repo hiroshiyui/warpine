@@ -1827,7 +1827,7 @@ impl super::Loader {
                 Vec::new()
             };
 
-            items.push(MenuItem { id, style, attr, text, children, image: None });
+            items.push(MenuItem { id, style, attr, text, children, image: None, row_h: 0 });
             if use_count { remaining -= 1; }
             if is_last { break; }
         }
@@ -3183,10 +3183,10 @@ mod tests {
                 id: 200, style: MIS_TEXT | MIS_SUBMENU, attr: 0,
                 text: "~File".to_string(),
                 children: vec![
-                    MenuItem { id: 201, style: MIS_TEXT, attr: 0, text: "~About".to_string(), children: vec![], image: None },
-                    MenuItem { id: 202, style: MIS_TEXT, attr: 0, text: "Exit".to_string(),   children: vec![], image: None },
+                    MenuItem { id: 201, style: MIS_TEXT, attr: 0, text: "~About".to_string(), children: vec![], image: None, row_h: 0 },
+                    MenuItem { id: 202, style: MIS_TEXT, attr: 0, text: "Exit".to_string(),   children: vec![], image: None, row_h: 0 },
                 ],
-                image: None,
+                image: None, row_h: 0,
             };
             wm.get_window_mut(menu).unwrap().menu_items = vec![file_item];
             (frame, menu, client, hmq)

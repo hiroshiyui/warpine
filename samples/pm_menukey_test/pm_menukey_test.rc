@@ -18,4 +18,8 @@ BEGIN
         MENUITEM "~Copy", IDM_COPY
         MENUITEM "~Paste", IDM_PASTE
     END
+    SUBMENU "~View", IDM_VIEW
+    BEGIN
+        MENUITEM "Swatch", IDM_SWATCH, MIS_OWNERDRAW
+    END
 END

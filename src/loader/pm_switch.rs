@@ -509,7 +509,7 @@ impl super::Loader {
         let items: Vec<super::pm_types::MenuItem> = shown.iter().enumerate().map(|(i, (_, c))| {
             super::pm_types::MenuItem {
                 id: (SC_WINDOWLIST_FIRST + i as u32) as u16, style: MIS_TEXT | MIS_SYSCOMMAND,
-                attr: 0, text: super::codepage::cp_decode(&c.title, cp), children: Vec::new(), image: None,
+                attr: 0, text: super::codepage::cp_decode(&c.title, cp), children: Vec::new(), image: None, row_h: 0,
             }
         }).collect();
         let (dw, dh) = desktop_size();

@@ -3074,12 +3074,17 @@ const MENUKEY_STEPS: &str = "\
     2500 key enter\n\
     2700 key f10\n\
     2800 key esc\n\
-    2900 text x\n";
+    2900 text x\n\
+    3000 key f10\n\
+    3100 key left\n\
+    3200 key down\n\
+    3400 key esc\n\
+    3500 key esc\n";
 
 #[test]
 fn gui_pm_menukey_test_drives_the_menu_bar_with_keys() {
-    let steps = format!("{MENUKEY_STEPS}3100 key alt+f4\n6000 quit\n");
-    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 36, &steps);
+    let steps = format!("{MENUKEY_STEPS}3700 key alt+f4\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 39, &steps);
 }
 
 /// Keyboard menu mode: Edit highlighted on the bar, its pull-down dropped
@@ -3099,6 +3104,22 @@ fn gui_pm_menukey_test_matches_golden() {
 fn gui_modern_theme_matches_golden() {
     check_gui_golden_modern("pm_dialog_modern", "samples/pm_dialog_test/pm_dialog_test.exe",
         "1500 key ctrl+d\n2500 dump {dump}\n2600 quit\n");
+}
+
+/// The modern theme's built-in controls: rounded boxes, the focused entry
+/// field's accent edge (pm_controls_test after typing).
+#[test]
+fn gui_modern_controls_match_golden() {
+    check_gui_golden_modern("pm_controls_modern", "samples/pm_controls_test/pm_controls_test.exe",
+        "700 click 230 300\n900 text  Hello\n1600 dump {dump}\n1700 quit\n");
+}
+
+/// The modern theme's menus: the Edit pull-down from the keyboard, rounded
+/// and shadowed, Copy checked and Paste highlighted (pm_menukey_test).
+#[test]
+fn gui_modern_menu_matches_golden() {
+    check_gui_golden_modern("pm_menukey_modern", "samples/pm_menukey_test/pm_menukey_test.exe",
+        "1000 key f10\n1200 key right\n1400 key down\n1600 key down\n2200 dump {dump}\n2300 quit\n");
 }
 
 /// The modern theme in-process, software and layered: the same picture as

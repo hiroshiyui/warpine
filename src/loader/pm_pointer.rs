@@ -471,6 +471,8 @@ impl super::Loader {
     /// windows that are not controls.
     pub(super) fn control_mouse_pointer(&self, hwnd: u32, class: &str) {
         let Some(sptr) = control_sptr(class) else { return };
+        let push = class == "WC_BUTTON" && self.shared.window_mgr.lock_or_recover().is_push_button(hwnd);
+        self.set_hover(if push { hwnd } else { 0 });
         let hptr = PointerManager::system_handle(sptr);
         {
             let mut mgr = self.shared.pointers.lock_or_recover();
@@ -498,7 +500,28 @@ impl super::Loader {
     /// WinDefWindowProc's WM_MOUSEMOVE at `mp1` (relative to `hwnd`): the
     /// sizing arrow of the edge or corner over a frame's sizing border
     /// ([`sizing_sptr`]), else the arrow.
+    /// The push button under the pointer is `hwnd` (0: none): in the
+    /// modern theme the one it left and the one it reached are redrawn
+    /// (the hover face, ADR-0118).
+    pub(super) fn set_hover(&self, hwnd: u32) {
+        self.set_hover_in(crate::gui::theme::current(), hwnd);
+    }
+
+    /// [`Self::set_hover`] in theme `theme`.
+    pub(super) fn set_hover_in(&self, theme: crate::gui::theme::Theme, hwnd: u32) {
+        if theme.bevelled() { return; }
+        let old = std::mem::replace(&mut self.shared.window_mgr.lock_or_recover().hover_control, hwnd);
+        if old != hwnd {
+            for h in [old, hwnd] {
+                if h != 0 && self.shared.window_mgr.lock_or_recover().is_window(h) {
+                    self.repaint_control(h);
+                }
+            }
+        }
+    }
+
     pub(super) fn default_mouse_pointer(&self, hwnd: u32, mp1: u32) {
+        self.set_hover(0);
         let sptr = {
             let wm = self.shared.window_mgr.lock_or_recover();
             wm.get_window(hwnd).and_then(|w| {
@@ -949,6 +972,29 @@ mod tests {
         assert_eq!(control_sptr("WC_MLE"), Some(SPTR_TEXT));
         // WinDefWindowProc keeps the proposal.
         assert!(matches!(l.def_window_proc(1, client, WM_CONTROLPOINTER, 7, text), ApiResult::Normal(h) if h == text));
+    }
+
+    #[test]
+    fn the_modern_theme_tracks_the_push_button_under_the_pointer() {
+        use crate::gui::theme::Theme;
+        let l = Loader::new_mock();
+        let (a, b) = {
+            let mut wm = l.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            let client = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+            let a = wm.create_window("WC_BUTTON".into(), client, hmq);
+            let b = wm.create_window("WC_BUTTON".into(), client, hmq);
+            (a, b)
+        };
+        let hover = || l.shared.window_mgr.lock_or_recover().hover_control;
+        l.set_hover_in(Theme::Classic, a);
+        assert_eq!(hover(), 0, "the classic theme has no hover");
+        l.set_hover_in(Theme::Modern, a);
+        assert_eq!(hover(), a);
+        l.set_hover_in(Theme::Modern, b);
+        assert_eq!(hover(), b, "moving to another button");
+        l.set_hover_in(Theme::Modern, 0);
+        assert_eq!(hover(), 0, "leaving the buttons");
     }
 
     #[test]
