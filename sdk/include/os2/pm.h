@@ -639,6 +639,34 @@ typedef struct _MB2INFO {
 /* Menus */
 #define MM_STARTMENUMODE     0x0185
 #define MM_ENDMENUMODE       0x0186
+#define MM_INSERTITEM          0x0180
+#define MM_DELETEITEM          0x0181
+#define MM_QUERYITEM           0x0182
+#define MM_QUERYITEMCOUNT      0x0184
+#define MM_REMOVEITEM          0x0188
+#define MM_QUERYITEMTEXT       0x018b
+#define MM_QUERYITEMTEXTLENGTH 0x018c
+#define MM_SETITEMTEXT         0x018e
+#define MM_ITEMPOSITIONFROMID  0x018f
+#define MM_ITEMIDFROMPOSITION  0x0190
+#define MM_QUERYITEMATTR       0x0191
+#define MM_SETITEMATTR         0x0192
+#define MM_ISITEMVALID         0x0193
+
+#define WinCheckMenuItem(hwndMenu, id, fcheck) \
+    ((BOOL)WinSendMsg(hwndMenu, MM_SETITEMATTR, MPFROM2SHORT(id, TRUE), \
+    MPFROM2SHORT(MIA_CHECKED, (USHORT)(fcheck) ? MIA_CHECKED : 0)))
+#define WinIsMenuItemChecked(hwndMenu, id) \
+    ((BOOL)WinSendMsg(hwndMenu, MM_QUERYITEMATTR, MPFROM2SHORT(id, TRUE), MPFROMLONG(MIA_CHECKED)))
+#define WinEnableMenuItem(hwndMenu, id, fEnable) \
+    ((BOOL)WinSendMsg(hwndMenu, MM_SETITEMATTR, MPFROM2SHORT(id, TRUE), \
+    MPFROM2SHORT(MIA_DISABLED, (USHORT)(fEnable) ? 0 : MIA_DISABLED)))
+#define WinIsMenuItemEnabled(hwndMenu, id) \
+    (!(BOOL)WinSendMsg(hwndMenu, MM_QUERYITEMATTR, MPFROM2SHORT(id, TRUE), MPFROMLONG(MIA_DISABLED)))
+#define WinSetMenuItemText(hwndMenu, id, psz) \
+    ((BOOL)WinSendMsg(hwndMenu, MM_SETITEMTEXT, MPFROMLONG(id), MPFROMP(psz)))
+#define WinIsMenuItemValid(hwndMenu, id) \
+    ((BOOL)WinSendMsg(hwndMenu, MM_ISITEMVALID, MPFROM2SHORT(id, TRUE), MPFROMLONG(FALSE)))
 #define MIS_TEXT             0x0001
 #define MIS_BITMAP           0x0002
 #define MIS_SEPARATOR        0x0004

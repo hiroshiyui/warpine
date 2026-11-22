@@ -237,22 +237,23 @@
 <!-- pmwin -->
 <g id="node14" class="node">
 <title>pmwin</title>
-<path fill="#bbdefb" stroke="black" d="M924.92,-747.12C924.92,-747.12 55.08,-747.12 55.08,-747.12 49.08,-747.12 43.07,-741.12 43.07,-735.12 43.07,-735.12 43.07,-672.6 43.07,-672.6 43.07,-666.6 49.07,-660.6 55.07,-660.6 55.07,-660.6 924.92,-660.6 924.92,-660.6 930.92,-660.6 936.92,-666.6 936.92,-672.6 936.92,-672.6 936.92,-735.12 936.92,-735.12 936.92,-741.12 930.92,-747.12 924.92,-747.12"/>
-<text xml:space="preserve" text-anchor="start" x="53.88" y="-731.91" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM window manager: PMWIN windows, messages, hooks (ADR&#45;0026), input, painting, presentation parameters, atoms, DDE, dialogs embedded in windows (ADR&#45;0042)</text>
-<text xml:space="preserve" text-anchor="start" x="344.88" y="-723.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_win.rs, loader/pm_types.rs, loader/pm_window.rs, loader/pm_winutil.rs</text>
-<text xml:space="preserve" text-anchor="start" x="355.75" y="-715.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_track.rs, loader/track.rs, loader/pm_input.rs, loader/pm_dialog.rs</text>
-<text xml:space="preserve" text-anchor="start" x="336.62" y="-707.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_msgbox.rs, loader/pm_destroy.rs, loader/pm_error.rs, loader/pm_pointer.rs</text>
-<text xml:space="preserve" text-anchor="start" x="330.25" y="-699.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_minmax.rs, loader/pm_sysmenu.rs, loader/pm_menubar.rs, loader/pm_paint.rs</text>
-<text xml:space="preserve" text-anchor="start" x="338.88" y="-691.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_query.rs, loader/pm_keystate.rs, loader/pm_syscolor.rs, loader/pm_rect.rs</text>
-<text xml:space="preserve" text-anchor="start" x="338.12" y="-683.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_cursor.rs, loader/pm_message.rs, loader/pm_hook.rs, loader/pm_frame.rs</text>
-<text xml:space="preserve" text-anchor="start" x="338.5" y="-675.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_accel.rs, loader/pm_winmisc.rs, loader/pm_remote.rs, loader/pm_enum.rs</text>
-<text xml:space="preserve" text-anchor="start" x="330.25" y="-667.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_presparam.rs, loader/pm_paint_style.rs, loader/pm_atom.rs, loader/pm_dde.rs</text>
+<path fill="#bbdefb" stroke="black" d="M924.92,-751.12C924.92,-751.12 55.08,-751.12 55.08,-751.12 49.08,-751.12 43.07,-745.12 43.07,-739.12 43.07,-739.12 43.07,-668.6 43.07,-668.6 43.07,-662.6 49.07,-656.6 55.07,-656.6 55.07,-656.6 924.92,-656.6 924.92,-656.6 930.92,-656.6 936.92,-662.6 936.92,-668.6 936.92,-668.6 936.92,-739.12 936.92,-739.12 936.92,-745.12 930.92,-751.12 924.92,-751.12"/>
+<text xml:space="preserve" text-anchor="start" x="53.88" y="-735.91" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM window manager: PMWIN windows, messages, hooks (ADR&#45;0026), input, painting, presentation parameters, atoms, DDE, dialogs embedded in windows (ADR&#45;0042)</text>
+<text xml:space="preserve" text-anchor="start" x="344.88" y="-727.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_win.rs, loader/pm_types.rs, loader/pm_window.rs, loader/pm_winutil.rs</text>
+<text xml:space="preserve" text-anchor="start" x="355.75" y="-719.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_track.rs, loader/track.rs, loader/pm_input.rs, loader/pm_dialog.rs</text>
+<text xml:space="preserve" text-anchor="start" x="336.62" y="-711.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_msgbox.rs, loader/pm_destroy.rs, loader/pm_error.rs, loader/pm_pointer.rs</text>
+<text xml:space="preserve" text-anchor="start" x="319.38" y="-703.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_minmax.rs, loader/pm_sysmenu.rs, loader/pm_menubar.rs, loader/pm_menuitems.rs</text>
+<text xml:space="preserve" text-anchor="start" x="337" y="-695.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_paint.rs, loader/pm_query.rs, loader/pm_keystate.rs, loader/pm_syscolor.rs</text>
+<text xml:space="preserve" text-anchor="start" x="341.88" y="-687.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_rect.rs, loader/pm_cursor.rs, loader/pm_message.rs, loader/pm_hook.rs</text>
+<text xml:space="preserve" text-anchor="start" x="338.12" y="-679.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_frame.rs, loader/pm_accel.rs, loader/pm_winmisc.rs, loader/pm_remote.rs</text>
+<text xml:space="preserve" text-anchor="start" x="326.88" y="-671.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_enum.rs, loader/pm_presparam.rs, loader/pm_paint_style.rs, loader/pm_atom.rs</text>
+<text xml:space="preserve" text-anchor="start" x="458.5" y="-663.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_dde.rs</text>
 </g>
 <!-- dispatch&#45;&gt;pmwin -->
 <g id="edge12" class="edge">
 <title>dispatch&#45;&gt;pmwin</title>
-<path fill="none" stroke="#455a64" d="M1322.07,-814.92C1217.74,-809.76 1078.44,-800.83 956,-786.12 878.09,-776.76 793.42,-763.06 717.89,-749.58"/>
-<polygon fill="#455a64" stroke="#455a64" points="718.77,-746.18 708.3,-747.85 717.53,-753.07 718.77,-746.18"/>
+<path fill="none" stroke="#455a64" d="M1322.07,-814.92C1217.74,-809.76 1078.44,-800.83 956,-786.12 885.76,-777.68 810.03,-765.72 740.45,-753.56"/>
+<polygon fill="#455a64" stroke="#455a64" points="741.29,-750.15 730.83,-751.87 740.08,-757.05 741.29,-750.15"/>
 </g>
 <!-- gpi -->
 <g id="node16" class="node">
@@ -406,13 +407,13 @@
 <!-- pmwin&#45;&gt;controls -->
 <g id="edge27" class="edge">
 <title>pmwin&#45;&gt;controls</title>
-<path fill="none" stroke="#455a64" d="M810.37,-660.13C865.57,-653.25 922.41,-646.47 976,-640.6 1128.32,-623.91 1297.27,-608.13 1440.44,-595.56"/>
+<path fill="none" stroke="#455a64" d="M842.86,-656.12C887.64,-650.64 932.88,-645.32 976,-640.6 1128.32,-623.91 1297.27,-608.13 1440.44,-595.56"/>
 <polygon fill="#455a64" stroke="#455a64" points="1440.41,-599.08 1450.07,-594.72 1439.8,-592.1 1440.41,-599.08"/>
 </g>
 <!-- pmwin&#45;&gt;gpi -->
 <g id="edge28" class="edge">
 <title>pmwin&#45;&gt;gpi</title>
-<path fill="none" stroke="#455a64" d="M582.04,-660.11C607.12,-648.2 634.2,-635.1 659,-622.6 759.52,-571.93 875.11,-509.17 939.96,-473.54"/>
+<path fill="none" stroke="#455a64" d="M590.47,-656.1C613.11,-645.3 636.96,-633.71 659,-622.6 759.52,-571.93 875.11,-509.17 939.96,-473.54"/>
 <polygon fill="#455a64" stroke="#455a64" points="941.52,-476.68 948.59,-468.79 938.14,-470.54 941.52,-476.68"/>
 <text xml:space="preserve" text-anchor="middle" x="826.49" y="-563.54" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">paint</text>
 </g>
@@ -427,7 +428,7 @@
 <!-- pmwin&#45;&gt;desklink -->
 <g id="edge37" class="edge">
 <title>pmwin&#45;&gt;desklink</title>
-<path fill="none" stroke="#455a64" d="M490,-660.29C490,-633.71 490,-598.78 490,-567.84 490,-567.84 490,-567.84 490,-342.3 490,-310.25 650.35,-284.05 789.61,-267.34"/>
+<path fill="none" stroke="#455a64" d="M490,-656.31C490,-630.28 490,-597.26 490,-567.84 490,-567.84 490,-567.84 490,-342.3 490,-310.25 650.35,-284.05 789.61,-267.34"/>
 <polygon fill="#455a64" stroke="#455a64" points="789.86,-270.84 799.38,-266.18 789.03,-263.88 789.86,-270.84"/>
 <text xml:space="preserve" text-anchor="middle" x="557.88" y="-441.02" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">calls on other programs&#39; windows</text>
 </g>
@@ -479,8 +480,8 @@
 <!-- desktop&#45;&gt;pmwin -->
 <g id="edge31" class="edge">
 <title>desktop&#45;&gt;pmwin</title>
-<path fill="none" stroke="#455a64" d="M765.23,-372.95C729.59,-384.18 694.75,-399.68 665,-421.06 654.24,-428.8 568.43,-571.18 521.09,-650.52"/>
-<polygon fill="#455a64" stroke="#455a64" points="518.13,-648.66 516.01,-659.04 524.14,-652.24 518.13,-648.66"/>
+<path fill="none" stroke="#455a64" d="M765.23,-372.95C729.59,-384.18 694.75,-399.68 665,-421.06 654.4,-428.68 570.97,-566.96 523.24,-646.93"/>
+<polygon fill="#455a64" stroke="#455a64" points="520.49,-644.7 518.38,-655.08 526.5,-648.28 520.49,-644.7"/>
 <text xml:space="preserve" text-anchor="middle" x="689.23" y="-500.28" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">input events, GUIMessage replies</text>
 </g>
 <!-- desktop&#45;&gt;desklink -->

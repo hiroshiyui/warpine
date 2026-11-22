@@ -1322,8 +1322,13 @@ impl super::Loader {
                 let hwnd_parent = read_stack(4);
                 let id = read_stack(8);
                 if !self.pm_check_hwnd(vcpu_id, hwnd_parent, false) { return ApiResult::Normal(0); }
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let result = wm.find_child_by_id(hwnd_parent, id).unwrap_or(0);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                // A frame's system menu window is made when first asked
+                // for (pm_menuitems.rs).
+                let result = match wm.find_child_by_id(hwnd_parent, id) {
+                    None if id == FID_SYSMENU => wm.system_menu_window(hwnd_parent).unwrap_or(0),
+                    found => found.unwrap_or(0),
+                };
                 ApiResult::Normal(result)
             }
             909 => {
@@ -2371,8 +2376,11 @@ impl super::Loader {
             }
             // The system command Close (system menu, Alt+F4) asks the
             // window to close.
+            // ... unless Close is disabled in its system menu (pm_menuitems.rs).
             WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
-                self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+                if !self.shared.window_mgr.lock_or_recover().close_disabled(hwnd) {
+                    self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+                }
             }
             // Hide (the hide button): the frame becomes invisible
             // (PM Reference, WM_SYSCOMMAND: "Sets the visibility

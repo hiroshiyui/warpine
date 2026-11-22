@@ -17,7 +17,14 @@
  * but the x. The client also hears the menu: WM_INITMENU for the bar and
  * for the Edit pull-down before it drops, WM_MENUSELECT with the post flag
  * for each chosen item (its TRUE reply lets the command be posted), and
- * WM_MENUEND each time menu mode ends. main() also sends MM_STARTMENUMODE / MM_ENDMENUMODE to the
+ * WM_MENUEND each time menu mode ends.
+ *
+ * Before that, main() works on the menu with the MM_* item messages and
+ * their macros: WinCheckMenuItem (Copy stays checked, so the golden
+ * picture shows its mark), WinEnableMenuItem, WinIsMenuItem*, item text,
+ * positions, MM_QUERYITEM, MM_INSERTITEM / MM_DELETEITEM; and on the system
+ * menu (WinWindowFromID FID_SYSMENU): with Close disabled, SC_CLOSE does
+ * nothing. main() also sends MM_STARTMENUMODE / MM_ENDMENUMODE to the
  * FID_MENU window. Each check is written to stdout:
  *
  *   pm_menukey_test: <name>: ok
@@ -87,6 +94,57 @@ static void check( const char *what, LONG got, LONG want )
     write_stdout( line );
 }
 
+/* The MM_* item messages, their macros and the system menu. */
+static void check_items( HWND frame, HWND client, HWND menu )
+{
+    char     buf[32];
+    MENUITEM mi;
+    HWND     sys;
+    QMSG     q;
+
+    check( "MM_QUERYITEMCOUNT", SHORT1FROMMR( WinSendMsg( menu, MM_QUERYITEMCOUNT, 0, 0 ) ), 2 );
+    check( "WinCheckMenuItem", WinCheckMenuItem( menu, IDM_COPY, TRUE ), TRUE );
+    check( "WinIsMenuItemChecked", WinIsMenuItemChecked( menu, IDM_COPY ) != FALSE, TRUE );
+    check( "WinEnableMenuItem(FALSE)", WinEnableMenuItem( menu, IDM_COPY, FALSE ), TRUE );
+    check( "WinIsMenuItemEnabled", WinIsMenuItemEnabled( menu, IDM_COPY ), FALSE );
+    check( "WinIsMenuItemValid of a disabled item", WinIsMenuItemValid( menu, IDM_COPY ), FALSE );
+    WinEnableMenuItem( menu, IDM_COPY, TRUE );
+    check( "WinIsMenuItemValid of the disabled resource item", WinIsMenuItemValid( menu, IDM_DISABLED ), FALSE );
+    check( "MM_QUERYITEMTEXT", SHORT1FROMMR( WinSendMsg( menu, MM_QUERYITEMTEXT,
+           MPFROM2SHORT( IDM_OPEN, sizeof( buf ) ), MPFROMP( buf ) ) ), 5 );
+    check( "  the text", strcmp( buf, "~Open" ), 0 );
+    check( "WinSetMenuItemText", WinSetMenuItemText( menu, IDM_NEW, "~New file" ), TRUE );
+    check( "MM_QUERYITEMTEXTLENGTH", SHORT1FROMMR( WinSendMsg( menu, MM_QUERYITEMTEXTLENGTH,
+           MPFROMSHORT( IDM_NEW ), 0 ) ), 9 );
+    WinSetMenuItemText( menu, IDM_NEW, "~New" );
+    check( "MM_ITEMPOSITIONFROMID in a submenu", SHORT1FROMMR( WinSendMsg( menu, MM_ITEMPOSITIONFROMID,
+           MPFROM2SHORT( IDM_OPEN, TRUE ), 0 ) ), 3 );
+    check( "MM_ITEMIDFROMPOSITION", SHORT1FROMMR( WinSendMsg( menu, MM_ITEMIDFROMPOSITION,
+           MPFROMSHORT( 1 ), 0 ) ), IDM_EDIT );
+    check( "MM_QUERYITEM", (LONG)WinSendMsg( menu, MM_QUERYITEM, MPFROM2SHORT( IDM_EDIT, FALSE ),
+           MPFROMP( &mi ) ), TRUE );
+    check( "  its id and submenu style", mi.id == IDM_EDIT && ( mi.afStyle & MIS_SUBMENU ), TRUE );
+    check( "  a submenu handle", mi.hwndSubMenu != NULLHANDLE, TRUE );
+    memset( &mi, 0, sizeof( mi ) );
+    mi.iPosition = MIT_END;
+    mi.afStyle = MIS_TEXT;
+    mi.id = 300;
+    check( "MM_INSERTITEM at the end", SHORT1FROMMR( WinSendMsg( menu, MM_INSERTITEM, MPFROMP( &mi ),
+           MPFROMP( "~Extra" ) ) ), 2 );
+    check( "MM_DELETEITEM leaves two", SHORT1FROMMR( WinSendMsg( menu, MM_DELETEITEM,
+           MPFROM2SHORT( 300, FALSE ), 0 ) ), 2 );
+
+    sys = WinWindowFromID( frame, FID_SYSMENU );
+    check( "the frame has a system menu window", sys != NULLHANDLE, TRUE );
+    check( "  the same one again", WinWindowFromID( frame, FID_SYSMENU ) == sys, TRUE );
+    check( "Close can be disabled in it", WinEnableMenuItem( sys, SC_CLOSE, FALSE ), TRUE );
+    WinSendMsg( client, WM_SYSCOMMAND, MPFROMSHORT( SC_CLOSE ), MPFROM2SHORT( CMDSRC_OTHER, FALSE ) );
+    check( "then SC_CLOSE does nothing", WinPeekMsg( WinQueryAnchorBlock( client ), &q, client, WM_CLOSE,
+           WM_CLOSE, PM_NOREMOVE ), FALSE );
+    WinEnableMenuItem( sys, SC_CLOSE, TRUE );
+    WinCheckMenuItem( menu, IDM_COPY, TRUE );
+}
+
 static MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 {
     switch( msg ) {
@@ -143,6 +201,7 @@ int main( void )
     check( "the frame has a menu bar", menu != NULLHANDLE, TRUE );
     check( "MM_STARTMENUMODE", (LONG)WinSendMsg( menu, MM_STARTMENUMODE, MPFROMSHORT( TRUE ), 0 ), TRUE );
     WinSendMsg( menu, MM_ENDMENUMODE, MPFROMSHORT( TRUE ), 0 );
+    check_items( frame, client, menu );
     WinSetFocus( HWND_DESKTOP, client );
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )

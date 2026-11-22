@@ -321,7 +321,7 @@ impl PopupMenu {
 }
 
 /// A check mark 8 pels wide whose middle left is at `(x, y)`.
-fn draw_check(px: &mut [u32], w: usize, x: i32, y: i32, color: u32) {
+pub(super) fn draw_check(px: &mut [u32], w: usize, x: i32, y: i32, color: u32) {
     let mut dot = |x: i32, y: i32| {
         let r = Rect::at(x, y, 2, 2);
         fill_clipped(px, w, r, r, color);

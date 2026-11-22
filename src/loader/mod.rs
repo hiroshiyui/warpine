@@ -43,6 +43,7 @@ pub mod vio_frame;
 pub mod pm_minmax;
 mod pm_sysmenu;
 pub(crate) mod pm_menubar;
+mod pm_menuitems;
 mod pm_rect;
 mod pm_drawtext;
 mod pm_paint;
@@ -1034,6 +1035,8 @@ impl Loader {
                 self.button_message(hwnd, msg, mp1)
             }
 
+            MM_INSERTITEM..=MM_ISITEMVALID if class_name == "#Menu"
+                && let Some(r) = self.menu_item_message(hwnd, msg, mp1, mp2) => r,
             MM_STARTMENUMODE if class_name == "#Menu" => {
                 ApiResult::Normal(self.start_menu_mode(hwnd, mp1 & 0xFFFF != 0) as u32)
             }

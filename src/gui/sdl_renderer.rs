@@ -23,7 +23,7 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     WS_MINIMIZED, WS_MAXIMIZED, CMDSRC_MENU, CMDSRC_OTHER};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
-    MIS_SEPARATOR, MIS_SYSCOMMAND, MIS_HELP, SC_MOVE, SC_SIZE, WM_COMMAND, WM_HELP};
+    MIA_CHECKED, MIA_DISABLED, MIS_SEPARATOR, MIS_SYSCOMMAND, MIS_HELP, SC_MOVE, SC_SIZE, WM_COMMAND, WM_HELP};
 use super::frame_track::{KeyTrack, TrackKey, TrackOutcome};
 use super::system_menu::{can_track, frame_system_menu_items, menu_popup_items};
 use crate::loader::pm_minmax::WinRect;
@@ -376,7 +376,9 @@ fn draw_frame_border(buf: &mut [u32], buf_w: usize, c: &FrameChrome, clip: Rect)
 /// Line height of the PM system font (pixels).
 const GLYPH_H: i32 = font::SYSTEM_FONT_PX as i32;
 use super::popup_menu::{MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_TEXT_COLOR, MENU_HILITE_COLOR,
-                         MENU_HILITE_TEXT};
+                         MENU_HILITE_TEXT, MENU_DISABLED_TEXT};
+/// Room at the right of a pull-down row for an `MIA_CHECKED` item's mark.
+const PULLDOWN_CHECK_X: i32 = 14;
 
 /// Draw a frame's menu bar and, when `open_item` (1-based) is non-zero, the
 /// pull-down of that top-level item, into a desktop-space pixel buffer.
@@ -419,9 +421,10 @@ fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i3
                 open_x = Some(item_x);
             }
         }
+        let color = if is_open { MENU_HILITE_TEXT }
+            else if item.attr & MIA_DISABLED != 0 { MENU_DISABLED_TEXT } else { MENU_TEXT_COLOR };
         draw_text_screen(buf, buf_w, buf_h, item_x + MENU_BAR_ITEM_PAD / 2, text_y,
-                         &menu_label(&item.text),
-                         if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR },
+                         &menu_label(&item.text), color,
                          FontSpec { cjk, ..FontSpec::SYSTEM });
         item_x += label_w;
     }
@@ -466,8 +469,15 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
             if lit {
                 draw_filled_rect(buf, buf_w, drop_x + 1, row_top, dx1 - 1, row_top + MENU_DROPDOWN_ITEM_H, MENU_HILITE_COLOR);
             }
+            // A disabled item is greyed; a checked one has a mark at the
+            // right (MM_SETITEMATTR, pm_menuitems.rs).
+            let color = if child.attr & MIA_DISABLED != 0 { MENU_DISABLED_TEXT }
+                else if lit { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR };
+            if child.attr & MIA_CHECKED != 0 {
+                super::popup_menu::draw_check(buf, buf_w, dx1 - PULLDOWN_CHECK_X, row_top + MENU_DROPDOWN_ITEM_H / 2, color);
+            }
             draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top, &menu_label(&child.text),
-                             if lit { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR }, FontSpec { cjk, ..FontSpec::SYSTEM });
+                             color, FontSpec { cjk, ..FontSpec::SYSTEM });
         }
     }
 }
@@ -985,7 +995,14 @@ impl SdlRenderer {
             let Some(f) = wm.get_window(frame).filter(|f| f.visible && f.frame_flags & FCF_SYSMENU != 0)
                 else { return };
             let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
-            (frame_system_menu_items(f.frame_flags, state), f.x + SYSMENU_ICON_X,
+            // What the program changed in its FID_SYSMENU window shows.
+            let items = frame_system_menu_items(f.frame_flags, state).into_iter().map(|mut p| {
+                let attr = wm.system_menu_attr(frame, p.id);
+                p.enabled &= attr & MIA_DISABLED == 0;
+                p.checked |= attr & MIA_CHECKED != 0;
+                p
+            }).collect();
+            (items, f.x + SYSMENU_ICON_X,
              dh as i32 - f.y - f.cy + title_bar_h(f.frame_flags))
         };
         self.end_frame_track(shared);
@@ -3222,6 +3239,30 @@ mod tests {
         // Separator rule in the middle of the second row.
         let sep_y = bar_bot + MENU_DROPDOWN_ITEM_H + MENU_DROPDOWN_ITEM_H / 2;
         assert_eq!(px(MENU_BAR_ITEM_INSET + 60, sep_y), MENU_EDGE_COLOR);
+    }
+
+    /// A disabled item is drawn greyed and a checked one gets a mark at the
+    /// right of its row (MM_SETITEMATTR).
+    #[test]
+    fn disabled_items_are_grey_and_checked_ones_marked() {
+        const W: usize = 200;
+        let mut buf = vec![0xFFFF_FFFFu32; W * 100];
+        let mut grey = menu_item("~Grey", MIS_TEXT, vec![]);
+        grey.attr = super::MIA_DISABLED;
+        let mut tick = menu_item("~Tick", MIS_TEXT, vec![]);
+        tick.attr = super::MIA_CHECKED;
+        let items = vec![menu_item("~File", MIS_TEXT | MIS_SUBMENU, vec![grey, tick])];
+        draw_menu_chrome(&mut buf, W, 0, 10, W as i32, &items, 1);
+        let bar_bot = 10 + MENU_BAR_HEIGHT as i32;
+        let row = |r: i32, x0: i32, x1: i32| (bar_bot + r * MENU_DROPDOWN_ITEM_H..bar_bot + (r + 1) * MENU_DROPDOWN_ITEM_H)
+            .flat_map(move |y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| buf[y as usize * W + x as usize]).collect::<Vec<_>>();
+        let text = (MENU_BAR_ITEM_INSET + 2, MENU_BAR_ITEM_INSET + 40);
+        // Text is antialiased: drawn (not all face) but nowhere black.
+        assert!(row(0, text.0, text.1).iter().any(|&p| p != MENU_BG_COLOR), "greyed text is drawn");
+        assert!(!row(0, text.0, text.1).contains(&super::MENU_TEXT_COLOR));
+        let right = MENU_BAR_ITEM_INSET + MENU_DROPDOWN_W;
+        assert!(row(1, right - super::PULLDOWN_CHECK_X - 1, right - 2).contains(&super::MENU_TEXT_COLOR), "a check mark");
+        assert!(!row(0, right - super::PULLDOWN_CHECK_X - 1, right - 2).contains(&super::MENU_DISABLED_TEXT), "none unchecked");
     }
 
     /// Chrome for a 200×100 frame at (10, 10) in a 240×140 buffer.

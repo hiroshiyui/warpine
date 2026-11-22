@@ -688,7 +688,10 @@ impl Loader {
                 ApiResult::Normal(0)
             }
             WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
-                self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+                // Not with Close disabled in the system menu (pm_menuitems.rs).
+                if !self.shared.window_mgr.lock_or_recover().close_disabled(hwnd) {
+                    self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+                }
                 ApiResult::Normal(0)
             }
             // The window list (pm_switch.rs), the system menu and keyboard

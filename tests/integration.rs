@@ -3067,7 +3067,7 @@ const MENUKEY_STEPS: &str = "\
 #[test]
 fn gui_pm_menukey_test_drives_the_menu_bar_with_keys() {
     let steps = format!("{MENUKEY_STEPS}3100 key alt+f4\n6000 quit\n");
-    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 14, &steps);
+    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 36, &steps);
 }
 
 /// Keyboard menu mode: Edit highlighted on the bar, its pull-down dropped
