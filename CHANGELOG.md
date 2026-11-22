@@ -6,11 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Security
+- **A cgroup per session** (ADR-0116): a session's first process asks the systemd user manager for a scope holding itself, which every process of the session inherits, with 8 GB of memory and 8192 tasks (`WARPINE_SESSION_MEMORY_MAX`, `WARPINE_SESSION_TASKS_MAX`). A runaway or hostile program can no longer take the machine's memory or tasks. Without a user manager the session runs as before, with a warning (`WARPINE_CGROUP=off` hides it); a session already under tighter limits stays under them.
+
 ### Added
 - **A fuzz target for bitmaps** (ADR-0112): a program's `RT_BITMAP` resources are split and decoded, uncompressed or RLE. The codec moved out of `pm_bitmap.rs` into `bitmap_codec.rs` for it.
 - **Weekly long fuzz runs**: `.github/workflows/fuzz.yml` runs every fuzz target for ten minutes each Monday, and on demand (`ci/matrix.sh fuzz`).
 
 ### Changed
+- **A process can have 738 threads** (was 482; ADR-0115). The free 4 MB between the API thunks and the system area hold 256 more paging blocks, mapped supervisor-only like the rest of the arena.
 - **The SDK builds C code with unwind tables** (`-fasynchronous-unwind-tables` in `OS2_BASEFLAGS`, ADR-0110), as GCC and clang do for Linux: a C++ exception from a trap in C code, or passing through C frames, unwinds instead of ending in `std::terminate`. Only C++ and the C library had them before.
 
 ## [0.0.12] - 2026-11-22

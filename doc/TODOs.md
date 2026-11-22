@@ -253,10 +253,9 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Threads per process**: the paging arena caps a process at 482 threads (ADR-0115), below `THREADS=`'s 4095; the free 4 MB after the thunks would make 738, blocks from the allocator would lift the cap (both weighed in ADR-0115).
+- [ ] **Threads per process**: the paging arena caps a process at 738 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
-  - a cgroup v2 scope per session (memory, tasks), as the tests and the pre-commit hook already use, against runaway or hostile guests;
   - seccomp filters per process role (guest processes, the desktop server);
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
 - [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs and bitmaps, a minute per target on each push and ten minutes weekly): the other resources Warpine reads from a running program (dialog and menu templates, string tables), which first need their parsers taken out of `pm_dialog.rs` / `pm_win.rs` as `bitmap_codec.rs` was.
