@@ -4,6 +4,7 @@
 # workstation as on the CI runner:
 #
 #   ci/run.sh watcom gcc clang    # (default: all three)
+#   FUZZ_SECONDS=600 ci/run.sh fuzz   # the weekly long fuzz runs
 #
 # Builds the image if needed (vendor/setup_ci_image.sh), then runs
 # ci/matrix.sh in it with /dev/kvm, the repository mounted at its own
@@ -21,5 +22,6 @@ for mode in "$@"; do
     echo "##### $mode #####"
     podman run --rm --device /dev/kvm --userns=keep-id --security-opt label=disable \
         -e CI_JOBS="${CI_JOBS:-2}" -e CARGO_TARGET_DIR="$ROOT/target/ci" \
+        ${FUZZ_SECONDS:+-e FUZZ_SECONDS="$FUZZ_SECONDS"} \
         -v "$ROOT:$ROOT" -w "$ROOT" "$IMAGE" ci/matrix.sh "$mode"
 done

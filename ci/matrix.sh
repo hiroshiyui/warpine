@@ -6,13 +6,14 @@
 #   ci/matrix.sh watcom   # Open Watcom's samples: every test, clippy, the generators, cargo deny, fuzzing
 #   ci/matrix.sh gcc      # every C sample from the pinned GCC, the integration tests on them
 #   ci/matrix.sh clang    # the same with the pinned clang
+#   ci/matrix.sh fuzz     # every fuzz target for FUZZ_SECONDS (default 600), seeded from Open Watcom's and GCC's samples
 #
 # CI_JOBS (default 2) sets cargo's jobs and the test threads. Each Warpine
 # a test starts runs under the tests' own timeouts; the entry fails if any
 # is left when the tests end.
 set -euo pipefail
 
-MODE=${1:?usage: ci/matrix.sh watcom|gcc|clang}
+MODE=${1:?usage: ci/matrix.sh watcom|gcc|clang|fuzz}
 JOBS=${CI_JOBS:-2}
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 cd "$ROOT"
@@ -28,6 +29,24 @@ chmod 700 "$SCRATCH"
 export XDG_DATA_HOME="$SCRATCH" XDG_RUNTIME_DIR="$SCRATCH"
 
 step() { echo; echo "=== $* ==="; }
+
+# Every fuzz target for $1 seconds, seeded from the samples built (fuzz/).
+# A crash prints its input to rerun.
+fuzz_all() {
+    step "fuzzing, $1 s per target"
+    fuzz/seed.sh
+    for target in desktop_proto lx_parse ne_parse msgfile os2rc lx_link bitmap; do
+        if ! FUZZ_TARGET_DIR="$CARGO_TARGET_DIR/fuzz" fuzz/run.sh "$target" "$1" >"$CARGO_TARGET_DIR/fuzz-$target.log" 2>&1; then
+            tail -40 "$CARGO_TARGET_DIR/fuzz-$target.log"
+            for crash in fuzz/artifacts/"$target"/*; do
+                [ -f "$crash" ] && { echo "input $crash (base64):"; base64 -w 76 "$crash"; }
+            done
+            echo "ci/matrix.sh: fuzz target $target failed" >&2
+            exit 1
+        fi
+        grep -h "^Done" "$CARGO_TARGET_DIR/fuzz-$target.log" || true
+    done
+}
 
 step "build"
 cargo build --bins
@@ -51,21 +70,18 @@ case "$MODE" in
         step "dependency policy (cargo deny, with advisories)"
         cargo deny --log-level error check
         (cd fuzz && cargo deny --log-level error check)
-        # The parsers that read untrusted input, for a minute each, from the
-        # samples just built (fuzz/). A crash prints its input to rerun.
-        step "fuzzing"
-        fuzz/seed.sh
-        for target in desktop_proto lx_parse ne_parse msgfile os2rc lx_link; do
-            if ! FUZZ_TARGET_DIR="$CARGO_TARGET_DIR/fuzz" fuzz/run.sh "$target" "${FUZZ_SECONDS:-60}" >"$CARGO_TARGET_DIR/fuzz-$target.log" 2>&1; then
-                tail -40 "$CARGO_TARGET_DIR/fuzz-$target.log"
-                for crash in fuzz/artifacts/"$target"/*; do
-                    [ -f "$crash" ] && { echo "input $crash (base64):"; base64 -w 76 "$crash"; }
-                done
-                echo "ci/matrix.sh: fuzz target $target failed" >&2
-                exit 1
-            fi
-            grep -h "^Done" "$CARGO_TARGET_DIR/fuzz-$target.log" || true
-        done
+        # The parsers that read untrusted input, for a minute each.
+        fuzz_all "${FUZZ_SECONDS:-60}"
+        ;;
+    fuzz)
+        # The weekly long runs (.github/workflows/fuzz.yml): seeds from
+        # Open Watcom's and GCC's samples, then every target for
+        # FUZZ_SECONDS (default ten minutes).
+        step "seeds: Open Watcom's and GCC's samples"
+        ./vendor/setup_watcom.sh
+        make -C samples
+        OUT_TAG=ci-gcc samples/build_sdk.sh gcc
+        fuzz_all "${FUZZ_SECONDS:-600}"
         ;;
     gcc|clang)
         step "every C sample from $MODE ($("$MODE" --version | head -1))"
@@ -75,7 +91,7 @@ case "$MODE" in
         WARPINE_SAMPLES="ci-$MODE" cargo test --test integration -- --test-threads="$JOBS"
         ;;
     *)
-        echo "ci/matrix.sh: unknown entry $MODE (watcom, gcc or clang)" >&2
+        echo "ci/matrix.sh: unknown entry $MODE (watcom, gcc, clang or fuzz)" >&2
         exit 2
         ;;
 esac

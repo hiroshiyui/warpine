@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Long fuzz runs (ADR-0112): every target of fuzz/ for ten minutes, once a
+# week and on demand, in the pinned image of vendor/setup_ci_image.sh. The
+# push CI (ci.yml) runs each target for a minute only.
+#
+# Supply chain: no third-party actions, as in ci.yml.
+name: Fuzz
+
+on:
+  schedule:
+    # Mondays, 03:17 UTC.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per fuzz target
+        default: "600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: every fuzz target, long
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out the commit (plain git)
+        env:
+          REPO: ${{ github.server_url }}/${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git fetch -q --depth=1 "$REPO" "$SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Let the runner's user open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Fuzz in the pinned image
+        env:
+          CI_JOBS: "4"
+          # A number of seconds only: anything else falls back to ten minutes.
+          SECONDS_IN: ${{ github.event.inputs.seconds }}
+        run: |
+          case "$SECONDS_IN" in
+              ''|*[!0-9]*) FUZZ_SECONDS=600 ;;
+              *) FUZZ_SECONDS=$SECONDS_IN ;;
+          esac
+          export FUZZ_SECONDS
+          ci/run.sh fuzz
