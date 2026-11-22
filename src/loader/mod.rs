@@ -42,6 +42,7 @@ pub mod msgfile;
 pub mod vio_frame;
 pub mod pm_minmax;
 mod pm_sysmenu;
+pub(crate) mod pm_menubar;
 mod pm_rect;
 mod pm_drawtext;
 mod pm_paint;
@@ -825,6 +826,11 @@ impl Loader {
             let style = self.shared.window_mgr.lock_or_recover().get_window(hwnd).map_or(0, |w| w.style);
             return ApiResult::Normal(pm_dialog::dialog_code(&class_name, style));
         }
+        // The pointer over a control: its own, or the one its owner
+        // returns from WM_CONTROLPOINTER (pm_pointer.rs).
+        if msg == WM_MOUSEMOVE {
+            self.control_mouse_pointer(hwnd, &class_name);
+        }
         if msg == WM_MATCHMNEMONIC {
             let matched = char::from_u32(mp1 & 0xFF).is_some_and(|ch| {
                 pm_dialog::mnemonic(&text).is_some_and(|m| m.eq_ignore_ascii_case(&ch))
@@ -1028,7 +1034,19 @@ impl Loader {
                 self.button_message(hwnd, msg, mp1)
             }
 
+            MM_STARTMENUMODE if class_name == "#Menu" => {
+                ApiResult::Normal(self.start_menu_mode(hwnd, mp1 & 0xFFFF != 0) as u32)
+            }
+            MM_ENDMENUMODE if class_name == "#Menu" => {
+                self.end_menu_mode(hwnd);
+                ApiResult::Normal(0)
+            }
+
             WM_BUTTON1DOWN if class_name == "#Menu" => {
+                // A click ends keyboard menu mode (pm_menubar.rs).
+                if let Some(w) = self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd) {
+                    w.window_ulong.remove(&pm_menubar::MENU_MODE_KEY);
+                }
                 // Hit-test: is click in the menu bar or in an open dropdown?
                 // Coordinates in mp1 are frame-relative OS/2 bottom-left.
                 let click_x = (mp1 & 0xFFFF) as i32;
@@ -1157,6 +1175,7 @@ impl Loader {
                 self.scrollbar_mouse_move(hwnd, mp1)
             }
             WM_BUTTON1UP if class_name == pm_scrollbar::CLASS_SCROLLBAR => self.scrollbar_button_up(hwnd),
+            WM_CHAR if class_name == pm_scrollbar::CLASS_SCROLLBAR => self.scrollbar_char(hwnd, mp1, mp2),
             WM_TIMER if mp1 == TID_SCROLL && class_name == pm_scrollbar::CLASS_SCROLLBAR => {
                 self.scrollbar_repeat(hwnd)
             }

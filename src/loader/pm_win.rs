@@ -1875,17 +1875,22 @@ impl super::Loader {
     }
 
     /// WinQuerySysValue: the fixed values of [`sys_value`] plus the ones
-    /// `WinSetSysValue` can change (`SV_CURSORRATE`, milliseconds).
+    /// `WinSetSysValue` can change (`SV_CURSORRATE`, `SV_FIRSTSCROLLRATE`,
+    /// `SV_SCROLLRATE`, milliseconds).
     pub(crate) fn query_sys_value(&self, index: i32) -> i32 {
         match index {
             SV_CURSORRATE => self.shared.window_mgr.lock_or_recover().cursor_rate_ms as i32,
+            SV_FIRSTSCROLLRATE => self.shared.window_mgr.lock_or_recover().first_scroll_rate_ms as i32,
+            SV_SCROLLRATE => self.shared.window_mgr.lock_or_recover().scroll_rate_ms as i32,
             _ => sys_value(index),
         }
     }
 
     /// WinSetSysValue: set system value `index` for the desktop `hwnd`.
-    /// Warpine keeps only `SV_CURSORRATE` (the caret blink interval, a
-    /// positive number of milliseconds); any other index, or a rate below 1,
+    /// Warpine keeps `SV_CURSORRATE` (the caret blink interval),
+    /// `SV_FIRSTSCROLLRATE` and `SV_SCROLLRATE` (the delays of a held scroll
+    /// bar arrow), each a positive number of milliseconds; any other index,
+    /// or a rate below 1,
     /// fails with `PMERR_PARAMETER_OUT_OF_RANGE` (TODO(unverified): which
     /// rates PM accepts; Warpine's choice for the values it does not keep).
     /// A handle other than `HWND_DESKTOP` fails with `PMERR_INVALID_HWND`.
@@ -1894,8 +1899,13 @@ impl super::Loader {
             return self.pm_fail(tid, PMERR_INVALID_HWND);
         }
         match index {
-            SV_CURSORRATE if value > 0 => {
-                self.shared.window_mgr.lock_or_recover().cursor_rate_ms = value as u32;
+            SV_CURSORRATE | SV_FIRSTSCROLLRATE | SV_SCROLLRATE if value > 0 => {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                *match index {
+                    SV_CURSORRATE => &mut wm.cursor_rate_ms,
+                    SV_FIRSTSCROLLRATE => &mut wm.first_scroll_rate_ms,
+                    _ => &mut wm.scroll_rate_ms,
+                } = value as u32;
                 ApiResult::Normal(1)
             }
             _ => self.pm_fail(tid, PMERR_PARAMETER_OUT_OF_RANGE),
@@ -2318,15 +2328,19 @@ impl super::Loader {
         match msg {
             // The system menu and keyboard move / size (pm_sysmenu.rs).
             WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
+            // F10 / Alt: keyboard menu mode on the menu bar (pm_menubar.rs).
+            WM_SYSCOMMAND if mp1 & 0xFFFF == SC_APPMENU => self.app_menu(hwnd),
             // The window list and its items (pm_switch.rs).
             WM_SYSCOMMAND if mp1 & 0xFFFF == SC_TASKMANAGER => self.show_window_list(vcpu_id, hwnd),
             WM_SYSCOMMAND if self.window_list_pick(vcpu_id, mp1 & 0xFFFF) => {}
             WM_CLOSE => { self.post_wm_quit(hwnd); }
             // Help: the help hooks of a frame (pm_message.rs).
             WM_HELP => return self.help_hook(vcpu_id, hwnd, mp1, mp2),
+            // The pointer the control proposed.
+            WM_CONTROLPOINTER => return ApiResult::Normal(mp2),
             // "The default window procedure sets the pointer shape":
             // the arrow (pm_pointer.rs).
-            WM_MOUSEMOVE => { self.default_mouse_pointer(); }
+            WM_MOUSEMOVE => { self.default_mouse_pointer(hwnd, mp1); }
             // A disabled window takes no pointer input (pm_input.rs).
             super::pm_input::WM_HITTEST => {
                 let disabled = self.shared.window_mgr.lock_or_recover().get_window(hwnd)

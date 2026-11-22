@@ -14,7 +14,12 @@
  *   drags the slider 70 pels down (position 40 -> 90);
  *   the right arrow and the shaft right of the slider (horizontal);
  *
- * then closes the window with Alt+F4. Before that, main() exercises
+ * then closes the window with Alt+F4. Before the clicks, main() sends each
+ * bar keys as a focused bar gets them (WM_CHAR): Down / Up on the vertical
+ * one, Right / Left on the horizontal one, the release of the last key
+ * (SB_ENDSCROLL), and Home, which goes on to the owner; it also sets and
+ * queries the scroll repeat delays (SV_FIRSTSCROLLRATE, SV_SCROLLRATE).
+ * Before that, main() exercises
  * WinCreateCursor / WinShowCursor / WinQueryCursorInfo / CURSOR_SETPOS and
  * leaves a frame cursor showing over a blue box; WinDestroyCursor runs at
  * the end. Each check is written to stdout:
@@ -166,6 +171,12 @@ static void check_log( void )
 {
     int i = 0, tracks = 0;
 
+    i = expect( i, WM_VSCROLL, ID_VBAR, SB_LINEDOWN, "Down key: SB_LINEDOWN" );
+    i = expect( i, WM_VSCROLL, ID_VBAR, SB_LINEUP, "Up key: SB_LINEUP" );
+    i = expect( i, WM_VSCROLL, ID_VBAR, SB_ENDSCROLL, "key released: SB_ENDSCROLL" );
+    i = expect( i, WM_HSCROLL, ID_HBAR, SB_LINERIGHT, "Right key: SB_LINERIGHT" );
+    i = expect( i, WM_HSCROLL, ID_HBAR, SB_LINELEFT, "Left key: SB_LINELEFT" );
+    i = expect( i, WM_HSCROLL, ID_HBAR, SB_ENDSCROLL, "key released: SB_ENDSCROLL" );
     i = expect( i, WM_VSCROLL, ID_VBAR, SB_LINEUP, "up arrow: SB_LINEUP" );
     i = expect( i, WM_VSCROLL, ID_VBAR, SB_ENDSCROLL, "up arrow released: SB_ENDSCROLL" );
     i = expect( i, WM_VSCROLL, ID_VBAR, SB_LINEDOWN, "down arrow: SB_LINEDOWN" );
@@ -216,6 +227,37 @@ static void check_messages( void )
     check( "SBCDATA range first", SHORT1FROMMR( range ), 0 );
     check( "SBCDATA range last", SHORT2FROMMR( range ), 10 );
     check( "SBCDATA position", SHORT1FROMMR( WinSendMsg( hbar, SBM_QUERYPOS, 0, 0 ) ), 0 );
+}
+
+/* ---------- the keyboard and the repeat delays ---------- */
+
+static MRESULT send_key( HWND bar, USHORT vk, BOOL up )
+{
+    USHORT fs = KC_VIRTUALKEY | ( up ? KC_KEYUP : 0 );
+    return WinSendMsg( bar, WM_CHAR, MPFROMSH2CH( fs, 1, 0 ), MPFROM2SHORT( 0, vk ) );
+}
+
+static void check_keys( void )
+{
+    LONG first = WinQuerySysValue( HWND_DESKTOP, SV_FIRSTSCROLLRATE );
+    LONG rate = WinQuerySysValue( HWND_DESKTOP, SV_SCROLLRATE );
+
+    check( "Down on the vertical bar is taken", (LONG)send_key( vbar, VK_DOWN, FALSE ), TRUE );
+    send_key( vbar, VK_UP, FALSE );
+    send_key( vbar, VK_UP, TRUE );
+    send_key( hbar, VK_RIGHT, FALSE );
+    send_key( hbar, VK_LEFT, FALSE );
+    send_key( hbar, VK_LEFT, TRUE );
+    check( "Home goes on to the owner", (LONG)send_key( vbar, VK_HOME, FALSE ), FALSE );
+
+    check( "SV_FIRSTSCROLLRATE is positive", first > 0, TRUE );
+    check( "SV_SCROLLRATE is positive", rate > 0, TRUE );
+    check( "WinSetSysValue SV_FIRSTSCROLLRATE", WinSetSysValue( HWND_DESKTOP, SV_FIRSTSCROLLRATE, 300 ), TRUE );
+    check( "WinSetSysValue SV_SCROLLRATE", WinSetSysValue( HWND_DESKTOP, SV_SCROLLRATE, 40 ), TRUE );
+    check( "SV_FIRSTSCROLLRATE set", WinQuerySysValue( HWND_DESKTOP, SV_FIRSTSCROLLRATE ), 300 );
+    check( "SV_SCROLLRATE set", WinQuerySysValue( HWND_DESKTOP, SV_SCROLLRATE ), 40 );
+    WinSetSysValue( HWND_DESKTOP, SV_FIRSTSCROLLRATE, first );
+    WinSetSysValue( HWND_DESKTOP, SV_SCROLLRATE, rate );
 }
 
 /* ---------- the text cursor ---------- */
@@ -277,6 +319,7 @@ int main( void )
     check( "WinCreateWindow(WC_SCROLLBAR)", vbar != NULLHANDLE && hbar != NULLHANDLE, TRUE );
 
     check_messages();
+    check_keys();
     check_cursor();
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )

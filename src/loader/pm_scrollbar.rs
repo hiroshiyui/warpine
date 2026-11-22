@@ -15,7 +15,16 @@
 //! final `SB_SLIDERPOSITION` on release); line and page scrolling ends with
 //! `SB_ENDSCROLL` on release, slider dragging does not (EDM2 `WM_VSCROLL`).
 //! While an arrow or the shaft stays pressed under the pointer, the command
-//! repeats on the `WM_TIMER(TID_SCROLL)` drag-scroll timer.
+//! repeats on the `WM_TIMER(TID_SCROLL)` drag-scroll timer, first after
+//! `SV_FIRSTSCROLLRATE`, then every `SV_SCROLLRATE`. Without
+//! `SBS_AUTOTRACK` the slider stays where it is while it is dragged and an
+//! outline follows the pointer; with it the slider itself follows.
+//!
+//! A focused scroll bar takes the keyboard: the arrows along its axis send
+//! the line commands, Page Up / Page Down the page commands, and the key's
+//! release `SB_ENDSCROLL`; other keys go to its owner. TODO(unverified):
+//! the reference names no keys, nor whether Home / End scroll, nor whether a
+//! horizontal bar pages with Page Up / Page Down (Warpine's choice: yes).
 //!
 //! Geometry runs along the bar's axis from its "first" end (top of a
 //! vertical bar, left of a horizontal one): an arrow button at each end, as
@@ -375,6 +384,27 @@ impl Loader {
         ApiResult::Normal(1)
     }
 
+    /// WM_CHAR on a focused scroll bar: the arrows along its axis and Page
+    /// Up / Page Down send their command, their release `SB_ENDSCROLL`.
+    /// Other keys, and every key on a disabled bar, go to the owner.
+    pub(super) fn scrollbar_char(&self, hwnd: u32, mp1: u32, mp2: u32) -> ApiResult {
+        let Some((style, _, _, s)) = self.scrollbar_info(hwnd) else { return ApiResult::Normal(0) };
+        let fs = mp1 & 0xFFFF;
+        let vk = if fs & KC_VIRTUALKEY != 0 { mp2 >> WM_CHAR_VKEY_SHIFT } else { 0 };
+        let command = key_command(is_vertical(style), vk)
+            .filter(|_| fs & (KC_CTRL | KC_ALT) == 0 && s.enabled() && style & WS_DISABLED == 0);
+        let Some(command) = command else {
+            let owner = self.shared.window_mgr.lock_or_recover().notify_target(hwnd);
+            if owner != 0 && owner != hwnd {
+                self.post_control_message(owner, WM_CHAR, mp1, mp2);
+            }
+            return ApiResult::Normal(0);
+        };
+        let command = if fs & KC_KEYUP != 0 { SB_ENDSCROLL } else { command };
+        self.notify_scroll(hwnd, command, 0);
+        ApiResult::Normal(1)
+    }
+
     /// WM_TIMER(TID_SCROLL) on a held scroll bar: the held arrow or shaft
     /// repeats its command while the pointer is on it (a shaft stops when
     /// the slider has reached the pointer).
@@ -396,17 +426,20 @@ impl Loader {
     }
 
     /// WC_SCROLLBAR: the shaft, an arrow button at each end (drawn pressed
-    /// while held under the pointer) and the slider — where a drag has
-    /// taken it, else at the position. A disabled bar has grey arrows and
-    /// no slider.
+    /// while held under the pointer) and the slider at the position. While
+    /// the slider is dragged, an `SBS_AUTOTRACK` bar draws it where the drag
+    /// has taken it; another bar keeps it and draws an outline there. A
+    /// disabled bar has grey arrows and no slider.
     pub(super) fn paint_scrollbar(&self, p: &Painter, hwnd: u32, (x, y, cx, cy): (i32, i32, i32, i32)) {
         let Some((style, _, _, s)) = self.scrollbar_info(hwnd) else { return };
         let vertical = is_vertical(style);
         let (len, breadth) = axis_size(style, cx, cy);
-        let pos = match s.held {
-            Some(Held { part: Part::Thumb, track, .. }) => track,
-            _ => s.pos,
+        let track = match s.held {
+            Some(Held { part: Part::Thumb, track, .. }) => Some(track),
+            _ => None,
         };
+        let autotrack = style & SBS_AUTOTRACK != 0;
+        let pos = if autotrack { track.unwrap_or(s.pos) } else { s.pos };
         let g = Geometry::new(&s, len, breadth, pos);
         // The span `t0..t1` along the axis as a PM rectangle (x, y, w, h).
         let span = |t0: i32, t1: i32| if vertical {
@@ -433,6 +466,26 @@ impl Loader {
         if g.thumb > 0 {
             button(span(g.thumb_at, g.thumb_at + g.thumb), false);
         }
+        // The tracking outline of a slider dragged without SBS_AUTOTRACK.
+        if let Some(track) = track.filter(|_| !autotrack && g.thumb > 0) {
+            let at = Geometry::new(&s, len, breadth, track).thumb_at;
+            let (rx, ry, w, h) = span(at, at + g.thumb);
+            let (r, t) = (rx + w - 1, ry + h - 1);
+            for edge in [(rx, ry, r, ry), (rx, t, r, t), (rx, ry, rx, t), (r, ry, r, t)] {
+                p.fill(edge, CONTROL_TEXT_COLOR);
+            }
+        }
+    }
+}
+
+/// The `SB_*` command key `vk` sends on a vertical or horizontal bar.
+pub fn key_command(vertical: bool, vk: u32) -> Option<u32> {
+    match (vk, vertical) {
+        (VK_UP, true) | (VK_LEFT, false) => Some(SB_LINEUP),
+        (VK_DOWN, true) | (VK_RIGHT, false) => Some(SB_LINEDOWN),
+        (VK_PAGEUP, _) => Some(SB_PAGEUP),
+        (VK_PAGEDOWN, _) => Some(SB_PAGEDOWN),
+        _ => None,
     }
 }
 
@@ -731,6 +784,7 @@ mod tests {
             s.buffer[((s.height as i32 - 1 - y) * s.width as i32 + x) as usize]
         };
         f.loader.shared.window_mgr.lock_or_recover().resize_surface(frame, 400, 280);
+        if let Some(w) = f.loader.shared.window_mgr.lock_or_recover().get_window_mut(f.vbar) { w.style |= SBS_AUTOTRACK; }
         f.send(f.vbar, WM_PAINT, 0, 0);
         // Bar at (300, 50) 16 x 200: slider right below the top arrow.
         assert_eq!(pel(300 + 8, 50 + 200 - 24), CONTROL_FACE_COLOR, "slider face");
@@ -743,5 +797,61 @@ mod tests {
         f.send(f.vbar, WM_BUTTON1UP, Fixture::at(8, 100), 0);
         f.send(f.vbar, WM_BUTTON1DOWN, Fixture::at(8, 3), 0);
         assert_eq!(pel(300 + 2, 50 + 2), CONTROL_PRESSED_COLOR);
+    }
+
+    #[test]
+    fn without_autotrack_an_outline_follows_the_pointer() {
+        let f = fixture();
+        let frame = f.loader.shared.window_mgr.lock_or_recover().find_frame_for_hwnd(f.vbar);
+        let pel = |x: i32, y: i32| {
+            let wm = f.loader.shared.window_mgr.lock_or_recover();
+            let s = wm.surfaces.get(&frame).unwrap().clone();
+            drop(wm);
+            let s = s.lock_or_recover();
+            s.buffer[((s.height as i32 - 1 - y) * s.width as i32 + x) as usize]
+        };
+        f.loader.shared.window_mgr.lock_or_recover().resize_surface(frame, 400, 280);
+        f.send(f.vbar, WM_BUTTON1DOWN, Fixture::at(8, 176), 0);
+        f.send(f.vbar, WM_MOUSEMOVE, Fixture::at(8, 100), 0);
+        assert_eq!(f.scrolls().last().map(|s| s.3), Some(SB_SLIDERTRACK), "the owner still hears the track");
+        assert_eq!(pel(300 + 8, 50 + 200 - 24), CONTROL_FACE_COLOR, "the slider stays");
+        assert_eq!(pel(300, 50 + 100), CONTROL_TEXT_COLOR, "an outline at the pointer");
+        assert_eq!(pel(300 + 8, 50 + 100), CONTROL_SCROLLBAR_COLOR, "the outline is hollow");
+        f.send(f.vbar, WM_BUTTON1UP, Fixture::at(8, 100), 0);
+        assert_eq!(pel(300, 50 + 100), CONTROL_SCROLLBAR_COLOR, "the outline goes on release");
+    }
+
+    #[test]
+    fn a_focused_scroll_bar_scrolls_with_the_keyboard() {
+        let f = fixture();
+        let key = |bar: u32, vk: u32, up: bool| {
+            let fs = KC_VIRTUALKEY | if up { KC_KEYUP } else { 0 };
+            f.send(bar, WM_CHAR, fs, vk << WM_CHAR_VKEY_SHIFT)
+        };
+        assert_eq!(key(f.vbar, VK_DOWN, false), 1);
+        key(f.vbar, VK_UP, false);
+        key(f.vbar, VK_PAGEDOWN, false);
+        key(f.vbar, VK_PAGEDOWN, true);
+        assert_eq!(f.scrolls(), vec![(WM_VSCROLL, VBAR_ID, 0, SB_LINEDOWN), (WM_VSCROLL, VBAR_ID, 0, SB_LINEUP),
+                                     (WM_VSCROLL, VBAR_ID, 0, SB_PAGEDOWN), (WM_VSCROLL, VBAR_ID, 0, SB_ENDSCROLL)]);
+        key(f.hbar, VK_RIGHT, false);
+        key(f.hbar, VK_LEFT, false);
+        assert_eq!(f.scrolls(), vec![(WM_HSCROLL, HBAR_ID, 0, SB_LINERIGHT), (WM_HSCROLL, HBAR_ID, 0, SB_LINELEFT)]);
+        // Keys across the axis, and others, go to the owner.
+        assert_eq!(key(f.vbar, VK_LEFT, false), 0);
+        let fwd: Vec<_> = f.drain().into_iter().map(|m| (m.hwnd, m.msg)).collect();
+        assert_eq!(fwd, vec![(f.client, WM_CHAR)]);
+        // A disabled bar scrolls nothing.
+        f.send(f.vbar, SBM_SETTHUMBSIZE, (100 << 16) | 100, 0);
+        key(f.vbar, VK_DOWN, false);
+        assert_eq!(f.scrolls(), vec![]);
+    }
+
+    #[test]
+    fn key_commands_follow_the_axis() {
+        assert_eq!(key_command(true, VK_UP), Some(SB_LINEUP));
+        assert_eq!(key_command(false, VK_UP), None);
+        assert_eq!(key_command(false, VK_PAGEUP), Some(SB_PAGELEFT));
+        assert_eq!(key_command(true, VK_HOME), None);
     }
 }

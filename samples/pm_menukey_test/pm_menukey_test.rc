@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* pm_menukey_test.rc - the menu bar pm_menukey_test drives with the keyboard */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_menukey_test.h"
+
+MENU ID_MAIN
+BEGIN
+    SUBMENU "~File", IDM_FILE
+    BEGIN
+        MENUITEM "~New", IDM_NEW
+        MENUITEM SEPARATOR
+        MENUITEM "~Disabled", IDM_DISABLED, , MIA_DISABLED
+        MENUITEM "~Open", IDM_OPEN
+    END
+    SUBMENU "~Edit", IDM_EDIT
+    BEGIN
+        MENUITEM "~Copy", IDM_COPY
+        MENUITEM "~Paste", IDM_PASTE
+    END
+END

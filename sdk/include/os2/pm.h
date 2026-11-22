@@ -117,6 +117,7 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #define WM_MENUEND             0x0035
 #define WM_DRAWITEM            0x0036
 #define WM_MEASUREITEM         0x0037
+#define WM_CONTROLPOINTER      0x0038
 #define WM_QUERYDLGCODE        0x003A
 #define WM_INITDLG             0x003B
 #define WM_MATCHMNEMONIC       0x003D
@@ -313,6 +314,7 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #define SC_MINIMIZE     0x8002
 #define SC_MAXIMIZE     0x8003
 #define SC_CLOSE        0x8004
+#define SC_APPMENU      0x8006
 #define SC_SYSMENU      0x8007
 #define SC_RESTORE      0x8008
 #define SC_TASKMANAGER  0x8011
@@ -405,6 +407,8 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #define SV_CXSIZEBORDER  4
 #define SV_CYSIZEBORDER  5
 #define SV_CURSORRATE    9
+#define SV_FIRSTSCROLLRATE 10
+#define SV_SCROLLRATE    11
 #define SV_CXSCREEN      20
 #define SV_CYSCREEN      21
 #define SV_CXVSCROLL     22
@@ -611,6 +615,8 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #define LIT_SORTDESCENDING      (-3)
 
 /* Menus */
+#define MM_STARTMENUMODE     0x0185
+#define MM_ENDMENUMODE       0x0186
 #define MIS_TEXT             0x0001
 #define MIS_BITMAP           0x0002
 #define MIS_SEPARATOR        0x0004

@@ -201,6 +201,33 @@ pub fn decode_pointer_resource(res: &[u8]) -> Option<PointerImage> {
     best.map(|b| b.image)
 }
 
+/// The system pointer a built-in control shows over itself: the I-beam
+/// over text it edits (entry fields, MLEs), else the arrow; `None` for a
+/// window that is not a control (frames, menus, title bars, clients).
+pub fn control_sptr(class: &str) -> Option<u32> {
+    use super::{pm_combo, pm_container, pm_controls, pm_notebook, pm_scrollbar, pm_slider, pm_spin, pm_valueset};
+    match class {
+        pm_controls::CLASS_ENTRYFIELD | pm_controls::CLASS_MLE => Some(SPTR_TEXT),
+        pm_controls::CLASS_LISTBOX | pm_combo::CLASS_COMBOBOX | pm_scrollbar::CLASS_SCROLLBAR
+        | pm_slider::CLASS_SLIDER | pm_spin::CLASS_SPINBUTTON | pm_valueset::CLASS_VALUESET
+        | pm_notebook::CLASS_NOTEBOOK | pm_container::CLASS_CONTAINER | "WC_BUTTON" | "WC_STATIC" => Some(SPTR_ARROW),
+        _ => None,
+    }
+}
+
+/// The sizing pointer over point `(x, y)` of a frame `cx` × `cy` with
+/// frame flags `fcf`: the arrow along the edge or corner a drag there would
+/// size (the renderer's own hit test), `None` off a sizing border.
+pub fn sizing_sptr(fcf: u32, (cx, cy): (i32, i32), (x, y): (i32, i32)) -> Option<u32> {
+    use crate::gui::sdl_renderer::{resize_hit_test, ResizeEdge::*};
+    Some(match resize_hit_test(0, 0, cx, cy, fcf, x, y)? {
+        N | S => SPTR_SIZENS,
+        E | W => SPTR_SIZEWE,
+        NE | SW => SPTR_SIZENESW,
+        NW | SE => SPTR_SIZENWSE,
+    })
+}
+
 /// The host shape of system pointer `sptr`.
 pub fn system_shape(sptr: u32) -> PointerShape {
     let sys = match sptr {
@@ -438,10 +465,49 @@ impl super::Loader {
         ApiResult::Normal(1)
     }
 
-    /// WinDefWindowProc's WM_MOUSEMOVE: show the arrow.
-    pub(super) fn default_mouse_pointer(&self) {
+    /// WM_MOUSEMOVE on built-in control `hwnd` of class `class`: show the
+    /// control's pointer ([`control_sptr`]) and ask its owner with
+    /// `WM_CONTROLPOINTER` whether it wants another (pm_owner.rs). No-op for
+    /// windows that are not controls.
+    pub(super) fn control_mouse_pointer(&self, hwnd: u32, class: &str) {
+        let Some(sptr) = control_sptr(class) else { return };
+        let hptr = PointerManager::system_handle(sptr);
+        {
+            let mut mgr = self.shared.pointers.lock_or_recover();
+            if mgr.current() != hptr && mgr.set(hptr) {
+                self.update_host_pointer(&mut mgr);
+            }
+        }
+        self.shared.window_mgr.lock_or_recover().queue_owner_call(super::pm_owner::OwnerCall {
+            control: hwnd, kind: super::pm_owner::OwnerCallKind::ControlPointer { hptr },
+        });
+    }
+
+    /// The owner answered `WM_CONTROLPOINTER` for pointer `asked` with
+    /// `answer`: show it, unless it is no pointer Warpine knows.
+    pub(super) fn control_pointer_answered(&self, asked: u32, answer: u32) {
+        if answer == asked || answer == 0 {
+            return;
+        }
         let mut mgr = self.shared.pointers.lock_or_recover();
-        if mgr.set(PointerManager::system_handle(SPTR_ARROW)) {
+        if mgr.set(answer) {
+            self.update_host_pointer(&mut mgr);
+        }
+    }
+
+    /// WinDefWindowProc's WM_MOUSEMOVE at `mp1` (relative to `hwnd`): the
+    /// sizing arrow of the edge or corner over a frame's sizing border
+    /// ([`sizing_sptr`]), else the arrow.
+    pub(super) fn default_mouse_pointer(&self, hwnd: u32, mp1: u32) {
+        let sptr = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.get_window(hwnd).and_then(|w| {
+                let (x, y) = (mp1 as u16 as i16 as i32, (mp1 >> 16) as u16 as i16 as i32);
+                sizing_sptr(w.frame_flags, (w.cx, w.cy), (x, y))
+            })
+        }.unwrap_or(SPTR_ARROW);
+        let mut mgr = self.shared.pointers.lock_or_recover();
+        if mgr.set(PointerManager::system_handle(sptr)) {
             self.update_host_pointer(&mut mgr);
         }
     }
@@ -844,5 +910,75 @@ mod tests {
         assert_eq!(system_shape(SPTR_SIZEWE), PointerShape::System(SystemPointer::SizeWe));
         assert_eq!(system_shape(SPTR_ILLEGAL), PointerShape::System(SystemPointer::Illegal));
         assert_eq!(system_shape(SPTR_FILE), PointerShape::System(SystemPointer::Arrow));
+    }
+
+    #[test]
+    fn controls_show_their_pointer_and_ask_their_owner() {
+        use super::super::pm_owner::{OwnerCall, OwnerCallKind};
+        let l = Loader::new_mock();
+        let (entry, button, client) = {
+            let mut wm = l.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            let client = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+            let mut control = |class: &str| {
+                let h = wm.create_window(class.into(), client, hmq);
+                wm.get_window_mut(h).unwrap().owner = client;
+                h
+            };
+            (control("WC_ENTRYFIELD"), control("WC_BUTTON"), client)
+        };
+        let text = PointerManager::system_handle(SPTR_TEXT);
+        let arrow = PointerManager::system_handle(SPTR_ARROW);
+        l.dispatch_builtin_control(entry, WM_MOUSEMOVE, 0, 0);
+        assert_eq!(l.shared.pointers.lock_or_recover().current(), text, "the I-beam over an entry field");
+        assert_eq!(l.shared.window_mgr.lock_or_recover().owner_calls,
+                   vec![OwnerCall { control: entry, kind: OwnerCallKind::ControlPointer { hptr: text } }]);
+        // Moving on asks once; the owner keeps the proposal or picks another.
+        l.dispatch_builtin_control(entry, WM_MOUSEMOVE, 0, 0);
+        assert_eq!(l.shared.window_mgr.lock_or_recover().owner_calls.len(), 1);
+        l.control_pointer_answered(text, PointerManager::system_handle(SPTR_WAIT));
+        assert_eq!(l.shared.pointers.lock_or_recover().current(), PointerManager::system_handle(SPTR_WAIT));
+        l.control_pointer_answered(text, 0xDEAD);
+        assert_eq!(l.shared.pointers.lock_or_recover().current(), PointerManager::system_handle(SPTR_WAIT),
+                   "an unknown pointer changes nothing");
+        l.dispatch_builtin_control(button, WM_MOUSEMOVE, 0, 0);
+        assert_eq!(l.shared.pointers.lock_or_recover().current(), arrow, "the arrow over a button");
+        // Not a control: no question.
+        l.shared.window_mgr.lock_or_recover().owner_calls.clear();
+        assert_eq!(control_sptr("App"), None);
+        assert_eq!(control_sptr("WC_MLE"), Some(SPTR_TEXT));
+        // WinDefWindowProc keeps the proposal.
+        assert!(matches!(l.def_window_proc(1, client, WM_CONTROLPOINTER, 7, text), ApiResult::Normal(h) if h == text));
+    }
+
+    #[test]
+    fn frame_borders_show_sizing_arrows() {
+        let fcf = FCF_SIZEBORDER;
+        let size = (200, 100);
+        assert_eq!(sizing_sptr(fcf, size, (1, 50)), Some(SPTR_SIZEWE));
+        assert_eq!(sizing_sptr(fcf, size, (198, 50)), Some(SPTR_SIZEWE));
+        assert_eq!(sizing_sptr(fcf, size, (100, 1)), Some(SPTR_SIZENS));
+        assert_eq!(sizing_sptr(fcf, size, (100, 98)), Some(SPTR_SIZENS));
+        assert_eq!(sizing_sptr(fcf, size, (1, 1)), Some(SPTR_SIZENESW), "bottom left");
+        assert_eq!(sizing_sptr(fcf, size, (198, 98)), Some(SPTR_SIZENESW), "top right");
+        assert_eq!(sizing_sptr(fcf, size, (1, 98)), Some(SPTR_SIZENWSE), "top left");
+        assert_eq!(sizing_sptr(fcf, size, (198, 1)), Some(SPTR_SIZENWSE), "bottom right");
+        assert_eq!(sizing_sptr(fcf, size, (100, 50)), None, "inside");
+        assert_eq!(sizing_sptr(FCF_DLGBORDER, size, (1, 50)), None, "no sizing border");
+
+        // WinDefWindowProc's WM_MOUSEMOVE on a frame.
+        let l = Loader::new_mock();
+        let frame = {
+            let mut wm = l.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            let f = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+            let w = wm.get_window_mut(f).unwrap();
+            (w.cx, w.cy, w.frame_flags) = (200, 100, fcf);
+            f
+        };
+        l.def_window_proc(1, frame, WM_MOUSEMOVE, 1 | (50 << 16), 0);
+        assert_eq!(l.shared.pointers.lock_or_recover().current(), PointerManager::system_handle(SPTR_SIZEWE));
+        l.def_window_proc(1, frame, WM_MOUSEMOVE, 100 | (50 << 16), 0);
+        assert_eq!(l.shared.pointers.lock_or_recover().current(), PointerManager::system_handle(SPTR_ARROW));
     }
 }

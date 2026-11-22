@@ -636,6 +636,13 @@ pub struct WindowManager {
     /// The caret blink interval in milliseconds (`SV_CURSORRATE`; set with
     /// `WinSetSysValue`); the renderer rearms the blink timer with it.
     pub cursor_rate_ms: u32,
+    /// The drag scroll timer's first delay (`SV_FIRSTSCROLLRATE`) and its
+    /// repeat interval (`SV_SCROLLRATE`), in milliseconds.
+    pub first_scroll_rate_ms: u32,
+    pub scroll_rate_ms: u32,
+    /// Alt is down with no other key pressed since: its release starts
+    /// keyboard menu mode (`pm_menubar.rs`).
+    pub alt_alone: bool,
     /// PM text cursors (`WinCreateCursor`): one per message queue, by queue.
     pub cursors: HashMap<u32, super::pm_cursor::PmCursor>,
     /// Off phase of the `CURSOR_FLASH` blink (toggled every `cursor_rate_ms`).
@@ -836,6 +843,9 @@ impl WindowManager {
             pressed_control: 0,
             drag_pointer: (0, 0),
             cursor_rate_ms: super::constants::CARET_BLINK_MS as u32,
+            first_scroll_rate_ms: super::constants::DRAG_SCROLL_MS as u32,
+            scroll_rate_ms: super::constants::DRAG_SCROLL_MS as u32,
+            alt_alone: false,
             cursors: HashMap::new(),
             cursor_blink_off: false,
             text_caret: None,

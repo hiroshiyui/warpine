@@ -149,7 +149,7 @@ label = "PM window manager: PMWIN windows, messages, hooks (ADR-0026), input, pa
 modules = [
   "loader/pm_win.rs", "loader/pm_types.rs", "loader/pm_window.rs", "loader/pm_winutil.rs", "loader/pm_track.rs", "loader/track.rs", "loader/pm_input.rs",
   "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
-  "loader/pm_pointer.rs", "loader/pm_minmax.rs", "loader/pm_sysmenu.rs", "loader/pm_paint.rs",
+  "loader/pm_pointer.rs", "loader/pm_minmax.rs", "loader/pm_sysmenu.rs", "loader/pm_menubar.rs", "loader/pm_paint.rs",
   "loader/pm_query.rs", "loader/pm_keystate.rs", "loader/pm_syscolor.rs", "loader/pm_rect.rs",
   "loader/pm_cursor.rs", "loader/pm_message.rs", "loader/pm_hook.rs",
   "loader/pm_frame.rs", "loader/pm_accel.rs", "loader/pm_winmisc.rs", "loader/pm_remote.rs", "loader/pm_enum.rs",

@@ -3044,6 +3044,40 @@ fn gui_menu_about_dialog_matches_golden() {
         "1500 click 52 62\n2500 click 62 80\n4000 dump {dump}\n4100 quit\n");
 }
 
+/// pm_menukey_test: the menu bar from the keyboard. F10 starts menu mode
+/// (`SC_APPMENU`), the arrows move along the bar and its pull-downs (skipping
+/// separators and disabled items), Enter and a mnemonic choose (WM_COMMAND
+/// with CMDSRC_MENU), Esc leaves, F1 posts WM_HELP; keys typed in menu mode
+/// never reach the client.
+const MENUKEY_STEPS: &str = "\
+    1000 key f10\n\
+    1200 key right\n\
+    1400 key down\n\
+    1600 key down\n\
+    1800 key enter\n\
+    2000 key f1\n\
+    2200 key f10\n\
+    2300 text f\n\
+    2400 key down\n\
+    2500 key enter\n\
+    2700 key f10\n\
+    2800 key esc\n\
+    2900 text x\n";
+
+#[test]
+fn gui_pm_menukey_test_drives_the_menu_bar_with_keys() {
+    let steps = format!("{MENUKEY_STEPS}3100 key alt+f4\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 9, &steps);
+}
+
+/// Keyboard menu mode: Edit highlighted on the bar, its pull-down dropped
+/// with Paste highlighted.
+#[test]
+fn gui_pm_menukey_test_matches_golden() {
+    check_gui_golden("pm_menukey", "samples/pm_menukey_test/pm_menukey_test.exe",
+        "1000 key f10\n1200 key right\n1400 key down\n1600 key down\n2200 dump {dump}\n2300 quit\n");
+}
+
 /// pm_bench: the self-benchmark runs every measurement, reports each with a
 /// non-zero count and duration, and runs again when R is pressed. Only the
 /// shape of the report is checked; the numbers depend on the machine.
@@ -3761,12 +3795,14 @@ fn gui_pm_query_test_checks_lookups_input_state_and_system_colours() {
 /// WinQueryPointer (NULLHANDLE removes the pointer), the WinShowPointer
 /// display level, WinLoadPointer from RT_POINTER resources (a
 /// black-and-white pointer and a bitmap array written by make_ptr.py),
-/// WinDestroyPointer, and the arrow set by WinDefWindowProc on
-/// WM_MOUSEMOVE. The host cursor follows; the dummy video driver has none,
+/// WinDestroyPointer, the arrow (or a sizing arrow over a frame's sizing
+/// border) set by WinDefWindowProc on WM_MOUSEMOVE, and the pointers of
+/// controls: the I-beam over an entry field, the arrow over a button, and
+/// the owner's answer to WM_CONTROLPOINTER. The host cursor follows; the dummy video driver has none,
 /// which the program must not notice.
 #[test]
 fn gui_pm_pointer_test_sets_and_loads_pointers() {
-    assert_sample_checks_pass("samples/pm_pointer_test/pm_pointer_test.exe", "pm_pointer_test", 42);
+    assert_sample_checks_pass("samples/pm_pointer_test/pm_pointer_test.exe", "pm_pointer_test", 51);
 }
 
 /// pm_typeahead_test: keyboard input is routed when the program reads it.
@@ -3977,8 +4013,9 @@ fn gui_pm_sysmenu_test_matches_golden() {
 /// down (position 40 → 90) and clicks on the horizontal bar's right arrow
 /// and shaft arrive as WM_VSCROLL / WM_HSCROLL (SB_LINE*, SB_PAGE*,
 /// SB_SLIDERTRACK, SB_SLIDERPOSITION, SB_ENDSCROLL), which the client
-/// answers with SBM_SETPOS; SBM_* messages, SBCDATA and the PM text cursor
-/// calls are checked from the guest side.
+/// answers with SBM_SETPOS; SBM_* messages, SBCDATA, keys sent to the bars,
+/// SV_FIRSTSCROLLRATE / SV_SCROLLRATE and the PM text cursor calls are
+/// checked from the guest side.
 const SCROLL_TEST_STEPS: &str = "\
     1000 click 441 218\n\
     1300 click 441 404\n\
@@ -3990,7 +4027,7 @@ const SCROLL_TEST_STEPS: &str = "\
 #[test]
 fn gui_pm_scroll_test_scrolls_with_the_mouse() {
     let steps = format!("{SCROLL_TEST_STEPS}3200 key alt+f4\n6000 quit\n");
-    assert_scripted_checks_pass("samples/pm_scroll_test/pm_scroll_test.exe", "pm_scroll_test", 83, &steps);
+    assert_scripted_checks_pass("samples/pm_scroll_test/pm_scroll_test.exe", "pm_scroll_test", 115, &steps);
 }
 
 /// pm_scroll_test after the session: the vertical slider (thumb size 20 of

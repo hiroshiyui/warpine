@@ -228,6 +228,7 @@ pub const WM_TIMER: u32 = 0x0024;
 pub const WM_CLOSE: u32 = 0x0029;
 pub const WM_QUIT: u32 = 0x002A;
 pub const WM_MOUSEMOVE: u32 = 0x0070;
+pub const WM_NULL: u32 = 0x0000;
 pub const WM_BUTTON1DOWN: u32 = 0x0071;
 pub const WM_BUTTON1UP: u32 = 0x0072;
 /// The second press of a double click (instead of a second `WM_BUTTON1DOWN`).
@@ -1156,6 +1157,11 @@ pub const MAX_DLG_TEMPLATE: usize = 0x1_0000;
 
 // ── MIS_* menu item style flags (afStyle in MENUITEM) ───────────────────────
 // Values match OS/2 Warp 4 Toolkit <pmwin.h> exactly.
+/// Keyboard menu mode of a menu (`pm_menubar.rs`): mp1 = fShowSubmenu,
+/// mp2 = fResumeMenu.
+pub const MM_STARTMENUMODE: u32 = 0x0185;
+/// Leave menu mode: mp1 = fDismiss.
+pub const MM_ENDMENUMODE:   u32 = 0x0186;
 pub const MIS_TEXT:            u16 = 0x0001;
 pub const MIS_BITMAP:          u16 = 0x0002;
 pub const MIS_SEPARATOR:       u16 = 0x0004;
@@ -1193,6 +1199,7 @@ pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
 pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window
 pub const SC_RESTORE:  u32 = 0x8008; // restore from min/max
 pub const SC_HIDE:     u32 = 0x802A; // hide the frame window
+pub const SC_APPMENU:  u32 = 0x8006; // menu mode on the menu bar (MM_STARTMENUMODE to FID_MENU)
 pub const SC_SYSMENU:  u32 = 0x8007; // open the system menu (MM_STARTMENUMODE to FID_SYSMENU)
 pub const SC_TASKMANAGER: u32 = 0x8011; // activate the window list (task list)
 /// Identity of a frame's system menu (`<pmwin.h>`).
@@ -1337,9 +1344,11 @@ pub const TID_SCROLL: u32 = 0xFFFE;
 /// How long the caret of a text control stays on, then off (Warpine's own
 /// choice): the initial `SV_CURSORRATE`.
 pub const CARET_BLINK_MS: u64 = 500;
-/// Interval of the drag scroll timer (`TID_SCROLL`) — Warpine's own choice;
-/// TODO(unverified): the PM references give no rate for a text control
-/// scrolling under a held pointer (`SV_SCROLLRATE` is for scroll bars).
+/// Initial `SV_FIRSTSCROLLRATE` and `SV_SCROLLRATE`: the delay before a held
+/// control first repeats and the interval of its repeats (`TID_SCROLL`).
+/// TODO(unverified): Warpine's own choice; the PM references give no
+/// defaults, and Warpine uses the same timer for text controls scrolling
+/// under a held pointer, spin buttons and sliders, not only scroll bars.
 pub const DRAG_SCROLL_MS: u64 = 100;
 
 // ── Scroll bars (WC_SCROLLBAR, <pmwin.h> INCL_WINSCROLLBARS) ──────────────
@@ -1399,6 +1408,8 @@ pub const CURSORINFO_SIZE: u32 = 40;
 // WinQuerySysValue indices (SV_*, <pmwin.h>)
 pub const SV_CXSIZEBORDER: i32 = 4;
 pub const SV_CURSORRATE:   i32 = 9;
+pub const SV_FIRSTSCROLLRATE: i32 = 10;
+pub const SV_SCROLLRATE:   i32 = 11;
 pub const SV_CYSIZEBORDER: i32 = 5;
 pub const SV_CXSCREEN:     i32 = 20;
 pub const SV_CYSCREEN:     i32 = 21;
@@ -1548,6 +1559,9 @@ pub const WM_DRAWCLIPBOARD:    u32 = 0x0067;
 
 // WM_HELP: posted by BS_HELP buttons and AF_HELP accelerators.
 pub const WM_HELP: u32 = 0x0022;
+/// A control asks its owner which pointer to show over it: mp1 = control id,
+/// mp2 = the pointer the control would show; the result is the pointer.
+pub const WM_CONTROLPOINTER: u32 = 0x0038;
 
 // Accelerator flags (ACCEL.fs, <pmwin.h>)
 pub const AF_CHAR:       u16 = 0x0001;

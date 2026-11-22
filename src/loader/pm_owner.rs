@@ -122,6 +122,9 @@ pub enum OwnerCallKind {
     /// asks `WM_QUERYFRAMECTLCOUNT`, `Some(n)` sends `WM_FORMATFRAME` with
     /// room for `n` `SWP`s, which are applied when it returns.
     FrameFormat { count: Option<u16> },
+    /// `WM_CONTROLPOINTER` with the pointer `hptr` the control shows; the
+    /// pointer the owner returns is shown instead (`pm_pointer.rs`).
+    ControlPointer { hptr: u32 },
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -360,6 +363,9 @@ impl Loader {
                 mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2: 0,
                 block: block.to_vec(), hps: 0,
             },
+            OwnerCallKind::ControlPointer { hptr } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROLPOINTER, mp1: id & 0xFFFF, mp2: hptr, block: Vec::new(), hps: 0,
+            },
             OwnerCallKind::ContainerValue { code, mp2 } => OwnerSetup::Call {
                 wnd_proc, owner, msg: WM_CONTROL,
                 mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2, block: Vec::new(), hps: 0,
@@ -483,6 +489,7 @@ impl Loader {
                 return self.erase_background_finish(call.control, hps, result, block);
             }
             OwnerCallKind::SyncPaint => return,
+            OwnerCallKind::ControlPointer { hptr } => return self.control_pointer_answered(hptr, result),
             OwnerCallKind::FrameFormat { count } => return self.frame_format_finish(call.control, count, result, block),
             // The owner's answer decides whether the page turns.
             OwnerCallKind::NotebookPending { cur, new } => {
@@ -564,7 +571,7 @@ impl Loader {
             | OwnerCallKind::NotebookPending { .. }
             | OwnerCallKind::ContainerNotify { .. } | OwnerCallKind::ContainerValue { .. }
             | OwnerCallKind::ContainerInitDrag { .. } | OwnerCallKind::ContainerEdit { .. }
-            | OwnerCallKind::FrameFormat { .. } => {}
+            | OwnerCallKind::FrameFormat { .. } | OwnerCallKind::ControlPointer { .. } => {}
         }
     }
 }

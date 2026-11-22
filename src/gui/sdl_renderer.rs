@@ -31,6 +31,7 @@ use super::popup_menu::{PopupAction, PopupKey, PopupMenu};
 use super::vio_window::system_menu_items;
 use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width, owner_menu_item_w};
 use crate::loader::pm_input::InputEvent;
+use crate::loader::pm_menubar as menubar;
 use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
 use super::cursor::CursorMark;
@@ -60,17 +61,16 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const IDLE_WAIT: Duration = Duration::from_millis(100);
 /// Half period of the caret blink until the guest sets `SV_CURSORRATE`.
 const CARET_BLINK: Duration = Duration::from_millis(crate::loader::constants::CARET_BLINK_MS);
-/// Interval of the drag scroll timer (`WM_TIMER(TID_SCROLL)`).
-const DRAG_SCROLL: Duration = Duration::from_millis(crate::loader::constants::DRAG_SCROLL_MS);
-
-/// When the drag scroll timer fires next: off while no control is held,
-/// armed one interval after a control is first seen held, rearmed after
-/// each tick. Returns the new deadline and whether a tick is due now.
-fn drag_scroll_step(held: bool, next: Option<Instant>, now: Instant) -> (Option<Instant>, bool) {
+/// When the drag scroll timer (`WM_TIMER(TID_SCROLL)`) fires next: off
+/// while no control is held, armed `first` after a control is first seen
+/// held (`SV_FIRSTSCROLLRATE`), rearmed `rate` after each tick
+/// (`SV_SCROLLRATE`). Returns the new deadline and whether a tick is due.
+fn drag_scroll_step(held: bool, next: Option<Instant>, now: Instant,
+                    (first, rate): (Duration, Duration)) -> (Option<Instant>, bool) {
     match (held, next) {
         (false, _) => (None, false),
-        (true, None) => (Some(now + DRAG_SCROLL), false),
-        (true, Some(t)) if now >= t => (Some(now + DRAG_SCROLL), true),
+        (true, None) => (Some(now + first), false),
+        (true, Some(t)) if now >= t => (Some(now + rate), true),
         (true, Some(t)) => (Some(t), false),
     }
 }
@@ -388,13 +388,15 @@ use super::popup_menu::{MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_TEXT_COLOR, MENU_HI
 fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
                     items: &[MenuItem], open_item: u32) {
     let open_x = draw_menu_bar(buf, buf_w, x0, bar_top, bar_w, items, open_item, CjkRegion::Auto);
-    if let (Some(drop_x), Some(parent)) = (open_x, items.get(open_item.wrapping_sub(1) as usize)) {
-        draw_menu_pulldown(buf, buf_w, drop_x, bar_top + MENU_BAR_HEIGHT as i32, parent, CjkRegion::Auto);
+    if let (Some(drop_x), Some(parent)) = (open_x, menubar::drawn_pulldown(open_item).and_then(|i| items.get(i))) {
+        draw_menu_pulldown(buf, buf_w, drop_x, bar_top + MENU_BAR_HEIGHT as i32, parent,
+                           menubar::drawn_row(open_item), CjkRegion::Auto);
     }
 }
 
-/// Draw a menu bar, highlighting the open item (1-based; 0 = none).
-/// Returns the x of the open item, where its pull-down belongs.
+/// Draw a menu bar, highlighting the open or keyboard-selected item of
+/// `open_item` (a `pm_menubar::draw_state`). Returns the x of the item
+/// whose pull-down shows, where the pull-down belongs.
 #[allow(clippy::too_many_arguments)]
 fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
                  items: &[MenuItem], open_item: u32, cjk: CjkRegion) -> Option<i32> {
@@ -410,10 +412,12 @@ fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i3
     for (i, item) in items.iter().enumerate() {
         if item.style & MIS_SEPARATOR != 0 { continue; }
         let label_w = menu_bar_item_width(&item.text);
-        let is_open = open_item > 0 && i == (open_item - 1) as usize;
+        let is_open = menubar::drawn_item(open_item) == Some(i);
         if is_open {
             draw_filled_rect(buf, buf_w, item_x, bar_top, item_x + label_w, bar_bot, MENU_HILITE_COLOR);
-            open_x = Some(item_x);
+            if menubar::drawn_pulldown(open_item).is_some() {
+                open_x = Some(item_x);
+            }
         }
         draw_text_screen(buf, buf_w, buf_h, item_x + MENU_BAR_ITEM_PAD / 2, text_y,
                          &menu_label(&item.text),
@@ -430,9 +434,10 @@ fn pulldown_h(parent: &MenuItem) -> i32 {
 }
 
 /// Draw the pull-down of `parent` with its top-left corner at
-/// `(drop_x, bar_bot)`; it is `MENU_DROPDOWN_W` × `pulldown_h(parent)`.
+/// `(drop_x, bar_bot)`, row `hilite` highlighted (keyboard menu mode); it
+/// is `MENU_DROPDOWN_W` × `pulldown_h(parent)`.
 fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, parent: &MenuItem,
-                      cjk: CjkRegion) {
+                      hilite: Option<usize>, cjk: CjkRegion) {
     let buf_h = buf.len() / buf_w.max(1);
     let drop_h = pulldown_h(parent);
     let (dx1, dy1) = (drop_x + MENU_DROPDOWN_W, bar_bot + drop_h);
@@ -457,8 +462,12 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
                 }
             }
         } else {
-            draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top,
-                             &menu_label(&child.text), MENU_TEXT_COLOR, FontSpec { cjk, ..FontSpec::SYSTEM });
+            let lit = hilite == Some(ci);
+            if lit {
+                draw_filled_rect(buf, buf_w, drop_x + 1, row_top, dx1 - 1, row_top + MENU_DROPDOWN_ITEM_H, MENU_HILITE_COLOR);
+            }
+            draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top, &menu_label(&child.text),
+                             if lit { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR }, FontSpec { cjk, ..FontSpec::SYSTEM });
         }
     }
 }
@@ -485,7 +494,8 @@ struct Pulldown {
 /// A frame's menu bar as last rendered.
 struct MenuChrome {
     items: Vec<MenuItem>,
-    /// 1-based open item; 0 = none.
+    /// What shows: the open or highlighted item and row
+    /// (`pm_menubar::draw_state`).
     open_item: u32,
     bar_w: i32,
     /// `bar_w` × `MENU_BAR_HEIGHT`.
@@ -590,11 +600,12 @@ impl ChromeCache {
         let open_x = if bw > 0 {
             draw_menu_bar(&mut m.bar_px, bw, 0, 0, m.bar_w, &m.items, m.open_item, self.cjk)
         } else { None };
-        m.pulldown = match (open_x, m.items.get(m.open_item.wrapping_sub(1) as usize)) {
+        m.pulldown = match (open_x, menubar::drawn_pulldown(m.open_item).and_then(|i| m.items.get(i))) {
             (Some(dx), Some(parent)) if pulldown_h(parent) > 0 => {
                 let h = pulldown_h(parent);
                 let mut pixels = vec![0; MENU_DROPDOWN_W as usize * h as usize];
-                draw_menu_pulldown(&mut pixels, MENU_DROPDOWN_W as usize, 0, 0, parent, self.cjk);
+                draw_menu_pulldown(&mut pixels, MENU_DROPDOWN_W as usize, 0, 0, parent,
+                                   menubar::drawn_row(m.open_item), self.cjk);
                 Some(Pulldown { dx, h, pixels })
             }
             _ => None,
@@ -705,8 +716,8 @@ struct DragState {
 }
 
 /// Which edge or corner is being resized (VDR-C5).
-#[derive(Clone, Copy, PartialEq)]
-enum ResizeEdge {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum ResizeEdge {
     N, S, E, W, NE, NW, SE, SW,
 }
 
@@ -1541,7 +1552,8 @@ impl SdlRenderer {
                 let state = w.style & (WS_MINIMIZED | WS_MAXIMIZED);
                 let frame_flags = display_flags(w.frame_flags, state);
                 let menu = wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0 && state & WS_MINIMIZED == 0).map(|m| {
-                    (m.menu_items.as_slice(), m.window_ulong.get(&-1).copied().unwrap_or(0))
+                    let ul = |k| m.window_ulong.get(&k).copied().unwrap_or(0);
+                    (m.menu_items.as_slice(), menubar::draw_state(ul(menubar::OPEN_ITEM_KEY), ul(menubar::MENU_MODE_KEY)))
                 });
                 let bar_w = w.cx - 2 * frame_border_px(frame_flags);
                 // Title and menu text follow the frame's queue codepage.
@@ -2220,8 +2232,12 @@ impl PmRenderer for SdlRenderer {
         // resting outside it keeps scrolling. Not in scripted sessions,
         // which must not depend on timing.
         if !self.scripted {
-            let held = shared.window_mgr.lock_or_recover().pressed_control != 0;
-            let (next, due) = drag_scroll_step(held, self.drag_scroll_next, Instant::now());
+            let (held, rates) = {
+                let wm = shared.window_mgr.lock_or_recover();
+                let ms = |v: u32| Duration::from_millis(v as u64);
+                (wm.pressed_control != 0, (ms(wm.first_scroll_rate_ms), ms(wm.scroll_rate_ms)))
+            };
+            let (next, due) = drag_scroll_step(held, self.drag_scroll_next, Instant::now(), rates);
             self.drag_scroll_next = next;
             if due {
                 shared.window_mgr.lock_or_recover().post_drag_scroll();
@@ -2528,7 +2544,7 @@ fn frame_chrome_hit(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32, frame_flag
 /// Returns `Some(edge)` when `FCF_SIZEBORDER` is set and the click is within
 /// `RESIZE_HIT_W` pixels of an edge.  Does NOT include the title-bar area for
 /// N/NE/NW edges — those are handled by the chrome hit-test first.
-fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
+pub(crate) fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
                    win_fcf: u32, x: i32, os2_y: i32) -> Option<ResizeEdge> {
     if win_fcf & FCF_SIZEBORDER == 0 { return None; }
     let near_left   = x   >= win_x            && x   < win_x            + RESIZE_HIT_W;
@@ -3139,18 +3155,20 @@ mod tests {
 
     #[test]
     fn drag_scroll_timer_runs_only_while_a_control_is_held() {
-        use super::{drag_scroll_step, DRAG_SCROLL};
+        use super::drag_scroll_step;
+        let (first, rate) = (Duration::from_millis(300), Duration::from_millis(50));
+        let rates = (first, rate);
         let now = Instant::now();
-        assert_eq!(drag_scroll_step(false, None, now), (None, false));
-        // Armed when the hold is first seen, no tick yet.
-        let (next, due) = drag_scroll_step(true, None, now);
-        assert_eq!((next, due), (Some(now + DRAG_SCROLL), false));
-        // Not yet due: unchanged; due: a tick and rearmed from now.
-        assert_eq!(drag_scroll_step(true, next, now + DRAG_SCROLL / 2), (next, false));
-        let later = now + DRAG_SCROLL * 3;
-        assert_eq!(drag_scroll_step(true, next, later), (Some(later + DRAG_SCROLL), true));
+        assert_eq!(drag_scroll_step(false, None, now, rates), (None, false));
+        // Armed when the hold is first seen, after SV_FIRSTSCROLLRATE.
+        let (next, due) = drag_scroll_step(true, None, now, rates);
+        assert_eq!((next, due), (Some(now + first), false));
+        // Not yet due: unchanged; due: a tick, rearmed after SV_SCROLLRATE.
+        assert_eq!(drag_scroll_step(true, next, now + first / 2, rates), (next, false));
+        let later = now + first * 3;
+        assert_eq!(drag_scroll_step(true, next, later, rates), (Some(later + rate), true));
         // Released: off.
-        assert_eq!(drag_scroll_step(false, next, later), (None, false));
+        assert_eq!(drag_scroll_step(false, next, later, rates), (None, false));
     }
 
     /// Input events are never mistaken for wake-ups. (A real `WakeEvent`

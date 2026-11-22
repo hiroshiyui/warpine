@@ -554,5 +554,13 @@ mod tests {
         }
         assert_eq!(query(SV_CURSORRATE), 250, "failed calls change nothing");
         assert_eq!(query(SV_CXSCREEN), desktop_size().0);
+
+        // The scroll repeat delays, which the renderer's timer reads.
+        assert_eq!((query(SV_FIRSTSCROLLRATE), query(SV_SCROLLRATE)), (DRAG_SCROLL_MS as u32, DRAG_SCROLL_MS as u32));
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_SYS_VALUE, &[HWND_DESKTOP, SV_FIRSTSCROLLRATE as u32, 300]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_SYS_VALUE, &[HWND_DESKTOP, SV_SCROLLRATE as u32, 40]), 1);
+        assert_eq!((query(SV_FIRSTSCROLLRATE), query(SV_SCROLLRATE)), (300, 40));
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert_eq!((wm.first_scroll_rate_ms, wm.scroll_rate_ms), (300, 40));
     }
 }

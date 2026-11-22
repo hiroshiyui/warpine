@@ -12,7 +12,11 @@
  *     RT_POINTER resources (written by make_ptr.py), a new handle on every
  *     call, PMERR_RESOURCE_NOT_FOUND
  *   - WinDestroyPointer: not for system pointers, not twice
- *   - WinDefWindowProc sets the arrow on WM_MOUSEMOVE
+ *   - WinDefWindowProc sets the arrow on WM_MOUSEMOVE, a sizing arrow over
+ *     a frame's sizing border
+ *   - controls: the I-beam over an entry field, the arrow over a button,
+ *     and WM_CONTROLPOINTER, which asks the owner (the client) and shows
+ *     the pointer it returns; WinDefWindowProc returns the proposal
  *
  * Each check is written to stdout:
  *
@@ -28,6 +32,12 @@
 #include "pm_pointer_test.h"
 
 #define BAD_HPTR  ( (HPOINTER)0x1234 )
+#define ID_ENTRY  10
+#define ID_BUTTON 11
+
+static HPOINTER answer = NULLHANDLE;   /* what WM_CONTROLPOINTER returns */
+static ULONG    asked_id = 0;
+static HPOINTER asked_ptr = NULLHANDLE;
 
 static int n_checks = 0;
 static int n_passed = 0;
@@ -85,6 +95,12 @@ static USHORT last_error( HAB hab )
 
 static MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 {
+    if( msg == WM_CONTROLPOINTER ) {
+        asked_id = SHORT1FROMMP( mp1 );
+        asked_ptr = (HPOINTER)mp2;
+        if( answer != NULLHANDLE )
+            return (MRESULT)answer;
+    }
     return WinDefWindowProc( hwnd, msg, mp1, mp2 );
 }
 
@@ -93,7 +109,8 @@ int main( void )
     HAB      hab;
     HMQ      hmq;
     HWND     frame, client;
-    ULONG    flags = FCF_TITLEBAR | FCF_SYSMENU;
+    ULONG    flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER;
+    HWND     entry, button;
     HPOINTER arrow, text, wait, copy, cross, cross2, array;
     char     line[64], *p;
 
@@ -174,6 +191,33 @@ int main( void )
     WinDefWindowProc( client, WM_MOUSEMOVE, MPFROM2SHORT( 10, 10 ), 0 );
     check( "WinDefWindowProc(WM_MOUSEMOVE) sets the arrow",
            WinQueryPointer( HWND_DESKTOP ) == arrow, TRUE );
+
+    /* A frame's sizing border shows the sizing arrows. */
+    WinDefWindowProc( frame, WM_MOUSEMOVE, MPFROM2SHORT( 1, 200 ), 0 );
+    check( "left sizing border: SPTR_SIZEWE",
+           WinQueryPointer( HWND_DESKTOP ) == WinQuerySysPointer( HWND_DESKTOP, SPTR_SIZEWE, FALSE ), TRUE );
+    WinDefWindowProc( frame, WM_MOUSEMOVE, MPFROM2SHORT( 1, 1 ), 0 );
+    check( "bottom-left corner: SPTR_SIZENESW",
+           WinQueryPointer( HWND_DESKTOP ) == WinQuerySysPointer( HWND_DESKTOP, SPTR_SIZENESW, FALSE ), TRUE );
+
+    /* Controls show their own pointer, which their owner may change. */
+    entry = WinCreateWindow( client, WC_ENTRYFIELD, "text", WS_VISIBLE, 10, 10, 100, 20,
+                             client, HWND_TOP, ID_ENTRY, NULL, NULL );
+    button = WinCreateWindow( client, WC_BUTTON, "OK", WS_VISIBLE | BS_PUSHBUTTON, 10, 40, 60, 24,
+                              client, HWND_TOP, ID_BUTTON, NULL, NULL );
+    WinSendMsg( entry, WM_MOUSEMOVE, MPFROM2SHORT( 5, 5 ), 0 );
+    check( "the I-beam over an entry field", WinQueryPointer( HWND_DESKTOP ) == text, TRUE );
+    check( "WM_CONTROLPOINTER mp1 = the control's id", asked_id, ID_ENTRY );
+    check( "WM_CONTROLPOINTER mp2 = the I-beam", asked_ptr == text, TRUE );
+    check( "WinDefWindowProc(WM_CONTROLPOINTER) returns mp2",
+           (HPOINTER)WinDefWindowProc( client, WM_CONTROLPOINTER, MPFROMSHORT( ID_ENTRY ), (MPARAM)wait ) == wait, TRUE );
+    answer = wait;
+    WinSendMsg( entry, WM_MOUSEMOVE, MPFROM2SHORT( 6, 5 ), 0 );
+    check( "the owner's pointer is shown", WinQueryPointer( HWND_DESKTOP ) == wait, TRUE );
+    answer = NULLHANDLE;
+    WinSendMsg( button, WM_MOUSEMOVE, MPFROM2SHORT( 5, 5 ), 0 );
+    check( "the arrow over a button", WinQueryPointer( HWND_DESKTOP ) == arrow, TRUE );
+    check( "WM_CONTROLPOINTER from the button", asked_id, ID_BUTTON );
 
     check( "WinDestroyPointer cross", WinDestroyPointer( cross ), TRUE );
     check( "WinDestroyPointer second cross", WinDestroyPointer( cross2 ), TRUE );
