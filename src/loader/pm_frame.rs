@@ -24,7 +24,11 @@
 //! client, which reaches the frame's left, right and bottom edges (the
 //! border is drawn over the client's edge). Frame scroll bars
 //! (`FID_VERTSCROLL` / `FID_HORZSCROLL`) lie inside the border, along the
-//! right and the bottom, and the client is what is left. The title bar,
+//! right and the bottom, and the client is what is left. Across, the
+//! frame's children are placed in the frame's surface, which the
+//! compositor draws from inside the left border: x = 0 is the first column
+//! inside it (the client's and the bars' left edge); up, the surface
+//! reaches the frame's bottom edge. The title bar,
 //! system menu and minimize / maximize buttons are chrome drawn by the
 //! compositor from `frame_flags`, not windows.
 //!
@@ -132,23 +136,28 @@ pub fn format_frame(s: &FrameShape) -> FrameLayout {
     let menu = (s.menu_h > 0).then_some(WinRect { x: 0, y: below, cx: s.cx, cy: s.menu_h });
     let bar = FRAME_SCROLLBAR_W;
     let hbar_top = if s.hscroll { s.border + bar } else { 0 };
+    // Across, the frame's children are placed in its surface, which starts
+    // inside the left border (the compositor's `place_frame`): x = 0 is
+    // the first column inside it, as for the client. Up, the surface
+    // reaches the frame's bottom edge, so the bars sit above the border.
+    let inner = (s.cx - 2 * s.border).max(0);
     let vscroll = s.vscroll.then(|| WinRect {
-        x: (s.cx - s.border - bar).max(0),
+        x: (inner - bar).max(0),
         y: hbar_top.min(below),
         cx: bar.min(s.cx),
         cy: (below - hbar_top).max(0),
     });
     let hscroll = s.hscroll.then(|| WinRect {
-        x: s.border.min(s.cx),
+        x: 0,
         y: s.border.min(below),
-        cx: (s.cx - 2 * s.border - if s.vscroll { bar } else { 0 }).max(0),
+        cx: (inner - if s.vscroll { bar } else { 0 }).max(0),
         cy: bar.min(below),
     });
     let client_y = hbar_top.min(below);
     let client = WinRect {
         x: 0,
         y: client_y,
-        cx: (s.cx - if s.vscroll { s.border + bar } else { 0 }).max(0),
+        cx: if s.vscroll { (inner - bar).max(0) } else { s.cx.max(0) },
         cy: below - client_y,
     };
     FrameLayout { menu, vscroll, hscroll, client, surface: (s.cx.max(0), below) }
@@ -158,7 +167,9 @@ pub fn format_frame(s: &FrameShape) -> FrameLayout {
 /// `(left, bottom, right, top)`.
 fn frame_insets(s: &FrameShape) -> (i32, i32, i32, i32) {
     let bar = FRAME_SCROLLBAR_W;
-    let right = if s.vscroll { s.border + bar } else { 0 };
+    // The client ends where the vertical bar starts, in the surface that
+    // starts inside the left border (see `format_frame`).
+    let right = if s.vscroll { 2 * s.border + bar } else { 0 };
     let bottom = if s.hscroll { s.border + bar } else { 0 };
     (0, bottom, right, s.title_h + s.menu_h)
 }
@@ -745,9 +756,12 @@ mod tests {
     fn scroll_bars_lie_inside_the_border_and_shrink_the_client() {
         let l = format_frame(&shape(true, true));
         let bar = FRAME_SCROLLBAR_W;
-        assert_eq!(l.vscroll, Some(WinRect { x: 300 - 2 - bar, y: 2 + bar, cx: bar, cy: 160 - 2 - bar }));
-        assert_eq!(l.hscroll, Some(WinRect { x: 2, y: 2, cx: 300 - 4 - bar, cy: bar }));
-        assert_eq!(l.client, WinRect { x: 0, y: 2 + bar, cx: 300 - 2 - bar, cy: 160 - 2 - bar });
+        // Across, in the surface that starts inside the 2-pel left border:
+        // the bars fill its 296 columns, the client ends at the vertical
+        // bar (it was drawn 2 pels right of its place, under the border).
+        assert_eq!(l.vscroll, Some(WinRect { x: 300 - 4 - bar, y: 2 + bar, cx: bar, cy: 160 - 2 - bar }));
+        assert_eq!(l.hscroll, Some(WinRect { x: 0, y: 2, cx: 300 - 4 - bar, cy: bar }));
+        assert_eq!(l.client, WinRect { x: 0, y: 2 + bar, cx: 300 - 4 - bar, cy: 160 - 2 - bar });
         // A tiny frame does not produce negative sizes.
         let tiny = format_frame(&FrameShape { cx: 5, cy: 10, ..shape(true, true) });
         for r in [tiny.client, tiny.vscroll.unwrap(), tiny.hscroll.unwrap()] {
@@ -760,7 +774,7 @@ mod tests {
         let s = shape(true, false);
         let frame = Rectl::new(10, 20, 310, 220);
         let client = client_rect_from_frame(frame, &s);
-        assert_eq!(client, Rectl::new(10, 20, 310 - 2 - FRAME_SCROLLBAR_W, 220 - 40));
+        assert_eq!(client, Rectl::new(10, 20, 310 - 4 - FRAME_SCROLLBAR_W, 220 - 40));
         assert_eq!(frame_rect_from_client(client, &s), frame);
         // The client rectangle matches the layout's client.
         let l = format_frame(&s);
