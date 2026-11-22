@@ -7,6 +7,8 @@
 pub mod font;
 pub mod glyph_transform;
 pub mod damage;
+pub mod frame_shape;
+pub mod theme;
 pub mod region;
 pub mod frame_stats;
 pub mod gui_script;

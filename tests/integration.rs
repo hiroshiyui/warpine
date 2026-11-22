@@ -2505,6 +2505,18 @@ fn check_gui_golden(name: &str, sample: &str, steps: &str) {
 /// [`check_gui_golden`] with extra environment variables for warpine. The
 /// golden files are written by runs without them.
 fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &str)]) {
+    check_gui_golden_with(name, sample, steps, env, env.is_empty());
+}
+
+/// [`check_gui_golden`] in the modern theme (`WARPINE_THEME=modern`,
+/// ADR-0118), against a golden of its own.
+fn check_gui_golden_modern(name: &str, sample: &str, steps: &str) {
+    check_gui_golden_with(name, sample, steps, &[("WARPINE_THEME", "modern")], true);
+}
+
+/// The golden-picture check; `writes`: a `WARPINE_UPDATE_GOLDEN` run writes
+/// this run's picture as the golden.
+fn check_gui_golden_with(name: &str, sample: &str, steps: &str, env: &[(&str, &str)], writes: bool) {
     if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping {name}: KVM or {sample} not available");
         return;
@@ -2513,7 +2525,7 @@ fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &st
     let sig = tile_signature(w, h, &rgb);
     let golden_path = Path::new("tests/golden").join(format!("{name}.sig"));
 
-    if std::env::var_os("WARPINE_UPDATE_GOLDEN").is_some() && env.is_empty() {
+    if std::env::var_os("WARPINE_UPDATE_GOLDEN").is_some() && writes {
         std::fs::create_dir_all("tests/golden").unwrap();
         std::fs::write(&golden_path, signature_to_text(w, h, &sig)).unwrap();
         eprintln!("updated {}", golden_path.display());
@@ -3076,6 +3088,28 @@ fn gui_pm_menukey_test_drives_the_menu_bar_with_keys() {
 fn gui_pm_menukey_test_matches_golden() {
     check_gui_golden("pm_menukey", "samples/pm_menukey_test/pm_menukey_test.exe",
         "1000 key f10\n1200 key right\n1400 key down\n1600 key down\n2200 dump {dump}\n2300 quit\n");
+}
+
+/// The modern theme (ADR-0118): the dialog of pm_dialog_test over its
+/// window, both with rounded corners and a shadow, flat title-bar
+/// pictograms and a thin edge line instead of bevels. The desktop server
+/// shapes the pictures (the default desktop); the in-process compositors
+/// draw the same pels (checked by hand when the theme was made).
+#[test]
+fn gui_modern_theme_matches_golden() {
+    check_gui_golden_modern("pm_dialog_modern", "samples/pm_dialog_test/pm_dialog_test.exe",
+        "1500 key ctrl+d\n2500 dump {dump}\n2600 quit\n");
+}
+
+/// The modern theme in-process, software and layered: the same picture as
+/// the desktop server's.
+#[test]
+fn gui_modern_theme_is_the_same_in_every_compositor() {
+    for comp in ["software", "layered"] {
+        check_gui_golden_with("pm_dialog_modern", "samples/pm_dialog_test/pm_dialog_test.exe",
+            "1500 key ctrl+d\n2500 dump {dump}\n2600 quit\n",
+            &[("WARPINE_THEME", "modern"), ("WARPINE_DESKTOP", "local"), ("WARPINE_COMPOSITOR", comp)], false);
+    }
 }
 
 /// pm_bench: the self-benchmark runs every measurement, reports each with a

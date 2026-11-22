@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -88,6 +88,9 @@ pub struct Item {
     pub x: i32,
     pub y: i32,
     pub parts: Vec<Area>,
+    /// Drawn with rounded corners and a shadow (the modern theme, ADR-0118):
+    /// the server shapes the picture's painted extent as a frame.
+    pub rounded: bool,
 }
 
 /// A client's report of its active frame (ADR-0108): the frame (0 if
@@ -435,6 +438,7 @@ impl Writer {
         let parts = &it.parts[..it.parts.len().min(MAX_PARTS)];
         self.u16(parts.len() as u16);
         for p in parts { self.area(p); }
+        self.u8(it.rounded as u8);
     }
     fn activation(&mut self, a: &Activation) {
         self.u32(a.frame);
@@ -589,7 +593,8 @@ impl<'a> Reader<'a> {
         let (frame, pixmap, x, y) = (self.u32()?, self.u32()?, self.coord()?, self.coord()?);
         let n = self.count(MAX_PARTS)?;
         let parts = (0..n).map(|_| self.area()).collect::<Result<_, _>>()?;
-        Ok(Item { frame, pixmap, x, y, parts })
+        let rounded = match self.u8()? { 0 => false, 1 => true, _ => return Err(DecodeError::BadValue) };
+        Ok(Item { frame, pixmap, x, y, parts, rounded })
     }
     fn activation(&mut self) -> Result<Activation, DecodeError> {
         Ok(Activation { frame: self.u32()?, seq: self.u32()? })
@@ -978,7 +983,7 @@ mod tests {
     }
 
     fn client_msgs() -> Vec<ClientMsg> {
-        let item = Item { frame: 0x10_1000, pixmap: 3, x: -5, y: 40, parts: vec![Area::new(0, 0, 10, 20)] };
+        let item = Item { frame: 0x10_1000, pixmap: 3, x: -5, y: 40, parts: vec![Area::new(0, 0, 10, 20)], rounded: true };
         vec![
             ClientMsg::Hello { version: PROTOCOL_VERSION },
             ClientMsg::NewPixmap { id: 7, width: 640, height: 480 },
@@ -1122,7 +1127,7 @@ mod tests {
         // Coordinates out of range.
         let far = ClientMsg::WarpPointer { x: MAX_COORD + 1, y: 0 };
         assert_eq!(ClientMsg::decode(&far.encode()), Err(DecodeError::BadValue));
-        let item = Item { frame: 1, pixmap: 1, x: i32::MIN, y: 0, parts: vec![] };
+        let item = Item { frame: 1, pixmap: 1, x: i32::MIN, y: 0, parts: vec![], rounded: false };
         let u = ClientMsg::Update(Update { items: vec![item], ..Update::default() });
         assert_eq!(ClientMsg::decode(&u.encode()), Err(DecodeError::BadValue));
         // A window word of an odd size, an unknown call, an overlong class name.
@@ -1162,7 +1167,7 @@ mod tests {
 
     #[test]
     fn the_largest_update_fits_in_a_packet() {
-        let item = Item { frame: 1, pixmap: 1, x: 0, y: 0, parts: vec![Area::default(); MAX_PARTS] };
+        let item = Item { frame: 1, pixmap: 1, x: 0, y: 0, parts: vec![Area::default(); MAX_PARTS], rounded: false };
         let u = Update { active: Activation { frame: 1, seq: 1 }, raised: vec![1; MAX_RAISED], lowered: vec![1; MAX_RAISED],
                          items: vec![item.clone(); MAX_ITEMS],
                          damage: vec![(1, Area::default()); MAX_DAMAGE], overlay: Some(item) };

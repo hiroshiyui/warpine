@@ -31,6 +31,7 @@ use sdl3::render::{BlendMode, Canvas, FRect, Texture, TextureCreator};
 use sdl3::video::{Window, WindowContext};
 use crate::gui::cursor::CursorMark;
 use crate::gui::damage::{Damage, Rect, blit_clipped, fill_clipped};
+use crate::gui::frame_shape;
 use crate::gui::surface::{MAX_SURFACE_DIM, SharedSurface};
 use crate::loader::MutexExt;
 use super::{ChromeCache, FramePlacement, DESKTOP_BG, MENU_DROPDOWN_W, draw_placed_frame};
@@ -171,6 +172,15 @@ fn xrgb_texture(creator: &'static TextureCreator<WindowContext>, w: u32, h: u32)
     Ok(t)
 }
 
+/// A streaming texture of `w` × `h` ARGB pixels drawn with blending: a
+/// rounded frame (its corners' coverage as alpha) or the shadow picture.
+fn argb_texture(creator: &'static TextureCreator<WindowContext>, w: u32, h: u32)
+                -> Result<Texture<'static>, String> {
+    let mut t = xrgb_texture(creator, w, h)?;
+    t.set_blend_mode(BlendMode::Blend);
+    Ok(t)
+}
+
 /// Upload the `src` rectangle of `buf` (rows `buf_w` pixels apart) to the
 /// same-sized rectangle at `dst` of `texture`.
 ///
@@ -293,14 +303,22 @@ impl Compositor for SoftwareCompositor {
                 let p = f.placement;
                 let visible = p.extent().intersect(&r);
                 if visible.is_empty()
-                    || scene.frames[i + 1..].iter()
-                        .any(|q| q.placement.opaque && q.placement.frame.contains(&visible)) {
+                    || scene.frames[i + 1..].iter().any(|q| q.placement.hides(&visible)) {
                     continue;
                 }
                 // The surface may have been resized since `p` was computed;
                 // the blit clips to its current size.
                 let fb = f.surface.lock_or_recover();
+                // A rounded frame: its shadow first, then the frame with its
+                // corners mixed back over what was below (frame_shape.rs).
+                let under = p.rounded.then(|| {
+                    frame_shape::draw_shadow(&mut self.buffer, dw, p.frame, r);
+                    frame_shape::corners_under(&self.buffer, dw, p.frame, r, p.pulldown)
+                });
                 draw_placed_frame(&mut self.buffer, dw, p, &fb, f.chrome, r);
+                if let Some(under) = under {
+                    frame_shape::blend_corners(&mut self.buffer, &under);
+                }
                 if let Some(c) = &f.cursor {
                     c.apply(&mut self.buffer, dw, (p.client.x0, p.client.y0), fb.height,
                             cursor_clip(p).intersect(&r));
@@ -329,6 +347,9 @@ pub(crate) struct Placed<'a> {
     pub x: i32,
     pub y: i32,
     pub parts: &'a [crate::desktop::proto::Area],
+    /// The rectangle to shape as a rounded frame with a shadow, if any
+    /// (`desktop::model::item_frame`).
+    pub rounded: Option<Rect>,
 }
 
 /// The desktop server's compositor: the software compositor's buffer,
@@ -357,6 +378,12 @@ impl PixmapCompositor {
         for &r in damage.rects() {
             fill_clipped(&mut sw.buffer, dw, r, r, DESKTOP_BG);
             for it in items {
+                // A rounded picture: its shadow, then its corners mixed back
+                // over what was below (frame_shape.rs).
+                let under = it.rounded.map(|f| {
+                    frame_shape::draw_shadow(&mut sw.buffer, dw, f, r);
+                    frame_shape::corners_under(&sw.buffer, dw, f, r, Rect::EMPTY)
+                });
                 let bounds = Rect::at(0, 0, it.pixmap.width() as i32, it.pixmap.height() as i32);
                 for part in it.parts {
                     // The part, inside the pixmap, on the desktop, inside `r`.
@@ -372,6 +399,9 @@ impl PixmapCompositor {
                             sw.buffer[at..at + n].copy_from_slice(&row);
                         }
                     }
+                }
+                if let Some(under) = under {
+                    frame_shape::blend_corners(&mut sw.buffer, &under);
                 }
             }
         }
@@ -410,6 +440,8 @@ struct Layer {
     pulldown: Option<(Texture<'static>, i32)>,
     /// The cursor laid over the texture's client pels.
     cursor: Option<CursorMark>,
+    /// Drawn with rounded corners (alpha) and a shadow.
+    rounded: bool,
 }
 
 /// One frame to draw: its texture's top-left on the desktop and where its
@@ -431,6 +463,9 @@ pub(super) struct LayeredCompositor {
     scratch: Vec<u32>,
     /// The overlay's texture, where it goes and the generation it holds.
     overlay: Option<(Texture<'static>, Rect, u64)>,
+    /// The shadow picture of rounded frames (`frame_shape::shadow_slices`),
+    /// made when first needed.
+    shadow: Option<Texture<'static>>,
     width:   u32,
     height:  u32,
 }
@@ -468,6 +503,12 @@ fn partial_upload(p: &FramePlacement, changed: Rect, size: (i32, i32)) -> (Rect,
 }
 
 impl FramePlacement {
+    /// Whether this frame, drawn above, hides all of `area`: it is opaque
+    /// and covers it (away from its corners when rounded).
+    fn hides(&self, area: &Rect) -> bool {
+        self.opaque && if self.rounded { frame_shape::covers(self.frame, *area) } else { self.frame.contains(area) }
+    }
+
     /// The same placement moved by `(dx, dy)`, without its pull-down.
     fn moved_without_pulldown(&self, dx: i32, dy: i32) -> FramePlacement {
         FramePlacement {
@@ -479,6 +520,7 @@ impl FramePlacement {
             pulldown: Rect::EMPTY,
             client: self.client.offset(dx, dy),
             opaque: self.opaque,
+            rounded: self.rounded,
         }
     }
 }
@@ -489,7 +531,7 @@ impl LayeredCompositor {
         let creator: &'static TextureCreator<WindowContext> =
             Box::leak(Box::new(canvas.texture_creator()));
         LayeredCompositor { canvas, creator, layers: HashMap::new(), draw_list: Vec::new(),
-                            scratch: Vec::new(), overlay: None, width: w, height: h }
+                            scratch: Vec::new(), overlay: None, shadow: None, width: w, height: h }
     }
 
     /// Bring `f`'s textures up to date; returns whether the frame can be
@@ -504,7 +546,7 @@ impl LayeredCompositor {
         let mut fb = f.surface.lock_or_recover();
         // Same size and chrome: only the client's changed pels need copying.
         let reusable = !full && !chrome_changed && self.layers.get(&p.hwnd)
-            .is_some_and(|l| l.size == (w, h) && l.fb_size == (fb.width, fb.height));
+            .is_some_and(|l| l.size == (w, h) && l.fb_size == (fb.width, fb.height) && l.rounded == p.rounded);
         if reusable {
             let layer = self.layers.get_mut(&p.hwnd).expect("checked above");
             let mut changed = Vec::new();
@@ -520,16 +562,22 @@ impl LayeredCompositor {
             for rect in changed {
                 let (dst, src) = partial_upload(p, rect, (w, h));
                 log::trace!("[GUI] frame {:#x}: partial upload {src:?}", p.hwnd);
-                let result = match &f.cursor {
-                    // The pels under the cursor go up with it laid over them.
-                    Some(c) if !c.surface_rect(fb.height).intersect(&src).is_empty() => {
-                        copy_rect(&fb.buffer, fb.width as usize, src, &mut self.scratch);
+                let under_cursor = f.cursor.as_ref().filter(|c| !c.surface_rect(fb.height).intersect(&src).is_empty());
+                let result = if under_cursor.is_some() || layer.rounded {
+                    // The pels under the cursor go up with it laid over
+                    // them; a rounded frame's pels with their alpha.
+                    copy_rect(&fb.buffer, fb.width as usize, src, &mut self.scratch);
+                    if let Some(c) = under_cursor {
                         c.apply(&mut self.scratch, src.width() as usize, (-src.x0, -src.y0), fb.height,
                                 Rect::at(0, 0, src.width(), src.height()));
-                        upload(&mut layer.texture, (dst.x0, dst.y0), &self.scratch, src.width() as usize,
-                               Rect::at(0, 0, src.width(), src.height()))
                     }
-                    _ => upload(&mut layer.texture, (dst.x0, dst.y0), &fb.buffer, fb.width as usize, src),
+                    if layer.rounded {
+                        frame_shape::shape_alpha(&mut self.scratch, src.width() as usize, dst, (w, h));
+                    }
+                    upload(&mut layer.texture, (dst.x0, dst.y0), &self.scratch, src.width() as usize,
+                           Rect::at(0, 0, src.width(), src.height()))
+                } else {
+                    upload(&mut layer.texture, (dst.x0, dst.y0), &fb.buffer, fb.width as usize, src)
                 };
                 if let Err(e) = result {
                     warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
@@ -547,6 +595,9 @@ impl LayeredCompositor {
                 c.apply(&mut self.scratch, w as usize, (local.client.x0, local.client.y0), fb.height,
                         cursor_clip(&local));
             }
+            if p.rounded {
+                frame_shape::shape_alpha(&mut self.scratch, w as usize, Rect::at(0, 0, w, h), (w, h));
+            }
             let parts: Vec<Rect> = painted_parts(&local, fb.width, fb.height).iter()
                 .map(|r| r.intersect(&Rect::at(0, 0, w, h)))
                 .filter(|r| !r.is_empty())
@@ -554,9 +605,10 @@ impl LayeredCompositor {
             fb.take_changes();
             let (generation, fb_size) = (fb.generation(), (fb.width, fb.height));
             drop(fb);
-            let reuse = self.layers.remove(&p.hwnd).filter(|l| l.size == (w, h));
+            let reuse = self.layers.remove(&p.hwnd).filter(|l| l.size == (w, h) && l.rounded == p.rounded);
+            let make = if p.rounded { argb_texture } else { xrgb_texture };
             let mut texture = match reuse.map(|l| Ok(l.texture))
-                .unwrap_or_else(|| xrgb_texture(self.creator, w as u32, h as u32)) {
+                .unwrap_or_else(|| make(self.creator, w as u32, h as u32)) {
                 Ok(t) => t,
                 Err(e) => {
                     warn!("[GUI] no {w}x{h} texture for frame {:#x}: {e}", p.hwnd);
@@ -567,7 +619,14 @@ impl LayeredCompositor {
                 warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
             }
             self.layers.insert(p.hwnd, Layer { texture, size: (w, h), generation, fb_size,
-                                               parts, pulldown: None, cursor: f.cursor });
+                                               parts, pulldown: None, cursor: f.cursor, rounded: p.rounded });
+            if p.rounded && self.shadow.is_none() {
+                let (side, px) = frame_shape::shadow_slices();
+                self.shadow = argb_texture(self.creator, side as u32, side as u32)
+                    .and_then(|mut t| upload(&mut t, (0, 0), &px, side as usize, Rect::at(0, 0, side, side)).map(|_| t))
+                    .map_err(|e| warn!("[GUI] no shadow texture: {e}"))
+                    .ok();
+            }
         }
         let stale = !reusable;
 
@@ -599,6 +658,15 @@ impl LayeredCompositor {
         self.canvas.clear();
         for item in &self.draw_list {
             let Some(layer) = self.layers.get(&item.hwnd) else { continue };
+            // A rounded frame's shadow, in nine slices, before the frame.
+            if layer.rounded && let Some(shadow) = &self.shadow {
+                let f = Rect::at(item.origin.0, item.origin.1, layer.size.0, layer.size.1);
+                for (src, dst) in frame_shape::slice_places(f) {
+                    if let Err(e) = self.canvas.copy(shadow, frect(src), frect(dst)) {
+                        warn!("[GUI] drawing a shadow failed: {e}");
+                    }
+                }
+            }
             for &part in &layer.parts {
                 let dst = part.offset(item.origin.0, item.origin.1);
                 if let Err(e) = self.canvas.copy(&layer.texture, frect(part), frect(dst)) {

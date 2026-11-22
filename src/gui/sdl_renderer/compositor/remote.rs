@@ -195,7 +195,7 @@ impl RemoteDesktop {
         }
         let layer = self.frames.get(&p.hwnd).expect("present");
         items.push(Item { frame: p.hwnd, pixmap: layer.pixmap.id, x: p.frame.x0, y: p.frame.y0,
-                          parts: layer.parts.iter().map(|r| area(*r)).collect() });
+                          parts: layer.parts.iter().map(|r| area(*r)).collect(), rounded: p.rounded });
 
         // The open pull-down follows the chrome.
         let pd = f.chrome.menu.as_ref().and_then(|m| m.pulldown.as_ref());
@@ -216,7 +216,7 @@ impl RemoteDesktop {
                 }
                 if let Some((s, h)) = &layer.pulldown && !p.pulldown.is_empty() {
                     items.push(Item { frame: p.hwnd, pixmap: s.id, x: p.pulldown.x0, y: p.pulldown.y0,
-                                      parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)] });
+                                      parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)], rounded: false });
                 }
             }
         }
@@ -244,7 +244,7 @@ impl RemoteDesktop {
             self.overlay = Some((s, o.generation));
         }
         let (s, _) = self.overlay.as_ref()?;
-        Some(Item { frame: 0, pixmap: s.id, x: o.rect.x0, y: o.rect.y0, parts: vec![Area::new(0, 0, w, h)] })
+        Some(Item { frame: 0, pixmap: s.id, x: o.rect.x0, y: o.rect.y0, parts: vec![Area::new(0, 0, w, h)], rounded: false })
     }
 }
 

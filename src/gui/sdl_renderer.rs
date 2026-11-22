@@ -28,6 +28,7 @@ use super::frame_track::{KeyTrack, TrackKey, TrackOutcome};
 use super::system_menu::{can_track, frame_system_menu_items, menu_popup_items};
 use crate::loader::pm_minmax::WinRect;
 use super::popup_menu::{PopupAction, PopupKey, PopupMenu};
+use super::theme;
 use super::vio_window::system_menu_items;
 use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width, owner_menu_item_w};
 use crate::loader::pm_input::InputEvent;
@@ -203,15 +204,30 @@ fn draw_raised_box(buf: &mut [u32], buf_w: usize, x0: i32, y0: i32, x1: i32, y1:
     draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, shadow);
 }
 
-/// Draw one raised title-bar button with its pictogram. `(x, y)` is the
-/// button's top-left corner; it is `CHROME_BTN_W` wide and `h` tall.
-fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, glyph: ButtonGlyph) {
+/// How a title-bar button looks: a raised face with dark pictograms
+/// (classic), or a flat pictogram in the title's text colour on the title
+/// bar (modern; `face` is then the title colour).
+#[derive(Clone, Copy)]
+struct ButtonStyle {
+    raised: bool,
+    face: u32,
+    ink: u32,
+}
+
+impl ButtonStyle {
+    const CLASSIC: ButtonStyle = ButtonStyle { raised: true, face: CHROME_FACE_COLOR, ink: CHROME_DARK_COLOR };
+}
+
+/// Draw one title-bar button with its pictogram. `(x, y)` is the button's
+/// top-left corner; it is `CHROME_BTN_W` wide and `h` tall.
+fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, glyph: ButtonGlyph, st: ButtonStyle) {
     let w = CHROME_BTN_W;
-    draw_raised_box(buf, buf_w, x, y, x + w, y + h,
-                    CHROME_FACE_COLOR, CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR);
+    if st.raised {
+        draw_raised_box(buf, buf_w, x, y, x + w, y + h, st.face, CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR);
+    }
     // Pictogram box: the button interior minus a 4-px margin.
     let (gx0, gy0, gx1, gy1) = (x + 4, y + 4, x + w - 4, y + h - 4);
-    let ink = CHROME_DARK_COLOR;
+    let ink = st.ink;
     match glyph {
         ButtonGlyph::Close => {
             // Two 2-px-wide diagonals.
@@ -238,7 +254,7 @@ fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, gly
                 draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, ink);
             }
             // The front window hides the back one's lines.
-            draw_filled_rect(buf, buf_w, gx0 + 1, gy0 + dy + 2, gx1 - dx - 1, gy1 - 1, CHROME_FACE_COLOR);
+            draw_filled_rect(buf, buf_w, gx0 + 1, gy0 + dy + 2, gx1 - dx - 1, gy1 - 1, st.face);
         }
         ButtonGlyph::Minimize => {
             // Bar along the bottom.
@@ -255,10 +271,14 @@ fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, gly
             draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, ink);
         }
         ButtonGlyph::SysMenu => {
-            // Small raised plate with a horizontal slot.
+            // Small raised plate with a horizontal slot (modern: a flat bar).
             let my = (gy0 + gy1) / 2;
-            draw_raised_box(buf, buf_w, gx0 - 1, my - 2, gx1 + 1, my + 2,
-                            CHROME_LIGHT_COLOR, CHROME_DARK_COLOR, CHROME_DARK_COLOR);
+            if st.raised {
+                draw_raised_box(buf, buf_w, gx0 - 1, my - 2, gx1 + 1, my + 2,
+                                CHROME_LIGHT_COLOR, CHROME_DARK_COLOR, CHROME_DARK_COLOR);
+            } else {
+                draw_filled_rect(buf, buf_w, gx0 - 1, my - 1, gx1 + 1, my + 1, ink);
+            }
         }
     }
 }
@@ -309,6 +329,8 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
         // Hairline separating the title bar from the menu bar / client below.
         draw_filled_rect(buf, buf_w, c.x, c.top + title_h - 1, c.x + c.cx, c.top + title_h,
                          CHROME_SHADOW_COLOR);
+        let st = if theme::current().bevelled() { ButtonStyle::CLASSIC }
+            else { ButtonStyle { raised: false, face: title_color, ink: text_color } };
 
         let btn_y = c.top + CHROME_BTN_INSET_Y;
         let btn_h = title_h - 2 * CHROME_BTN_INSET_Y - 1;
@@ -322,21 +344,21 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
             return;
         }
         if c.frame_flags & FCF_SYSMENU != 0 {
-            draw_chrome_button(buf, buf_w, c.x + SYSMENU_ICON_X, btn_y, btn_h, ButtonGlyph::SysMenu);
+            draw_chrome_button(buf, buf_w, c.x + SYSMENU_ICON_X, btn_y, btn_h, ButtonGlyph::SysMenu, st);
             text_left = c.x + SYSMENU_ICON_X + CHROME_BTN_W + 4;
         }
 
         // Right-side buttons: close, then maximise and minimise when present.
         let mut btn_x = c.x + c.cx - CHROME_BTN_MARGIN - CHROME_BTN_W;
-        draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Close);
+        draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Close, st);
         if c.frame_flags & FCF_MAXBUTTON != 0 {
             btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
             let glyph = if c.state & WS_MAXIMIZED != 0 { ButtonGlyph::Restore } else { ButtonGlyph::Maximize };
-            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph);
+            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph, st);
         }
         if let Some(glyph) = min_slot_glyph(c.frame_flags) {
             btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
-            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph);
+            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph, st);
         }
 
         // Title text, clipped so it never runs under the buttons.
@@ -357,7 +379,10 @@ use crate::loader::pm_input as loader_input;
 /// inner ring. Draws nothing for a frame without a border.
 fn draw_frame_border(buf: &mut [u32], buf_w: usize, c: &FrameChrome, clip: Rect) {
     if frame_border_px(c.frame_flags) == 0 { return; }
-    let (outer_lt, outer_rb) = if c.frame_flags & FCF_SIZEBORDER != 0 {
+    // Modern: a thin edge line, the rest of the border in the face colour.
+    let (outer_lt, outer_rb) = if !theme::current().bevelled() {
+        (theme::MODERN_EDGE_COLOR, theme::MODERN_EDGE_COLOR)
+    } else if c.frame_flags & FCF_SIZEBORDER != 0 {
         (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR)
     } else {
         (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR)
@@ -641,12 +666,16 @@ struct FramePlacement {
     /// The frame buffer fills `client`, so every pixel of `frame` is painted
     /// and frames below are hidden.
     opaque: bool,
+    /// Drawn with rounded corners and a shadow (`frame_shape.rs`).
+    rounded: bool,
 }
 
 impl FramePlacement {
-    /// Everything the frame paints: the frame plus an open pull-down.
+    /// Everything the frame paints: the frame plus an open pull-down, and
+    /// its shadow when rounded.
     fn extent(&self) -> Rect {
-        self.frame.union(&self.pulldown)
+        let e = self.frame.union(&self.pulldown);
+        if self.rounded { e.union(&super::frame_shape::shadow_extent(self.frame)) } else { e }
     }
 }
 
@@ -673,6 +702,7 @@ fn place_frame(hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, ha
             .unwrap_or(Rect::EMPTY),
         client,
         opaque: fb.0 as i32 >= client.width() && fb.1 as i32 >= client.height(),
+        rounded: false,
     }
 }
 
@@ -1533,7 +1563,7 @@ impl SdlRenderer {
         // Snapshot geometry and bring the chrome cache up to date under the
         // lock; rendering happens after it is released.
         struct Snap { hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, has_menu: bool,
-                      surface: SharedSurface }
+                      surface: SharedSurface, rounded: bool }
         let mut dirty_frames: HashSet<u32> = HashSet::new();
         let mut chrome_changed: HashSet<u32> = HashSet::new();
         let mut cursor_marks: HashMap<u32, CursorMark> = HashMap::new();
@@ -1583,8 +1613,10 @@ impl SdlRenderer {
                     dirty_frames.insert(hwnd);
                     chrome_changed.insert(hwnd);
                 }
+                // Modern frames are rounded, but not maximized ones.
+                let rounded = theme::current().rounded_frames() && state & WS_MAXIMIZED == 0;
                 Some(Snap { hwnd, x: w.x, y: w.y, cx: w.cx, cy: w.cy,
-                            frame_flags, has_menu: menu.is_some(), surface })
+                            frame_flags, has_menu: menu.is_some(), surface, rounded })
             }).collect()
         };
         self.chrome.retain(|h, _| snaps.iter().any(|s| s.hwnd == *h));
@@ -1599,8 +1631,10 @@ impl SdlRenderer {
             };
             let pulldown = self.chrome[&s.hwnd].menu.as_ref()
                 .and_then(|m| m.pulldown.as_ref().map(|p| (p.dx, p.h)));
-            place_frame(s.hwnd, s.x, s.y, s.cx, s.cy, s.frame_flags, s.has_menu, pulldown,
-                        fb, dh)
+            let mut p = place_frame(s.hwnd, s.x, s.y, s.cx, s.cy, s.frame_flags, s.has_menu, pulldown,
+                                    fb, dh);
+            p.rounded = s.rounded;
+            p
         }).collect();
 
         // Damage: whatever dirty or changed frames cover now or covered

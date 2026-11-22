@@ -75,11 +75,28 @@ pub struct DesktopModel {
     capture: Option<ClientId>,
 }
 
-/// Desktop extent of an item: its painted parts, moved to its place.
+/// Desktop extent of an item: its painted parts, moved to its place, and
+/// the shadow of a rounded one ([`item_frame`]).
 pub fn item_extent(it: &Item) -> Vec<Area> {
-    it.parts.iter().filter(|p| !p.is_empty())
+    let mut e: Vec<Area> = it.parts.iter().filter(|p| !p.is_empty())
         .map(|p| Area::new(it.x.saturating_add(p.x), it.y.saturating_add(p.y), p.w, p.h))
-        .collect()
+        .collect();
+    if let Some(f) = item_frame(it) {
+        let s = crate::gui::frame_shape::shadow_extent(f);
+        e.push(Area::new(s.x0, s.y0, s.width(), s.height()));
+    }
+    e
+}
+
+/// The desktop rectangle a rounded item is shaped as: the bounds of its
+/// painted parts. `None` for an item that is not rounded or paints nothing.
+pub fn item_frame(it: &Item) -> Option<crate::gui::damage::Rect> {
+    use crate::gui::damage::Rect;
+    if !it.rounded { return None; }
+    let r = it.parts.iter().filter(|p| !p.is_empty())
+        .map(|p| Rect::at(it.x.saturating_add(p.x), it.y.saturating_add(p.y), p.w, p.h))
+        .fold(Rect::EMPTY, |u, r| u.union(&r));
+    (!r.is_empty()).then_some(r)
 }
 
 impl DesktopModel {
@@ -336,7 +353,7 @@ mod tests {
     use super::*;
 
     fn item(frame: u32, x: i32) -> Item {
-        Item { frame, pixmap: frame, x, y: 0, parts: vec![Area::new(0, 0, 100, 100)] }
+        Item { frame, pixmap: frame, x, y: 0, parts: vec![Area::new(0, 0, 100, 100)], rounded: false }
     }
 
     /// An update whose report of the active frame is the client's first.
@@ -503,7 +520,7 @@ mod tests {
         let mut m = DesktopModel::new();
         m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1));
         let mut u = upd(B1, &[], vec![item(B1, 50)]);
-        u.overlay = Some(Item { frame: 0, pixmap: 9, x: 300, y: 300, parts: vec![Area::new(0, 0, 10, 10)] });
+        u.overlay = Some(Item { frame: 0, pixmap: 9, x: 300, y: 300, parts: vec![Area::new(0, 0, 10, 10)], rounded: false });
         m.update(2, &u, owner(2));
         assert_eq!(m.route_pointer(10, 10, None, None), Some(2));
         m.acknowledged(1, act(0, 2), owner(1));
@@ -511,6 +528,18 @@ mod tests {
         assert_eq!(order(&m).last(), Some(&0), "drawn last");
         m.update(2, &upd(B1, &[], vec![item(B1, 50)]), owner(2));
         assert_eq!(m.route_pointer(10, 10, None, None), Some(1));
+    }
+
+    #[test]
+    fn a_rounded_items_extent_takes_in_its_shadow() {
+        let mut it = item(1, 50);
+        assert_eq!(item_extent(&it), vec![Area::new(50, 0, 100, 100)]);
+        assert_eq!(item_frame(&it), None);
+        it.rounded = true;
+        let f = item_frame(&it).expect("rounded");
+        assert_eq!(f, crate::gui::damage::Rect::at(50, 0, 100, 100));
+        let s = crate::gui::frame_shape::shadow_extent(f);
+        assert!(item_extent(&it).contains(&Area::new(s.x0, s.y0, s.width(), s.height())));
     }
 
     #[test]
