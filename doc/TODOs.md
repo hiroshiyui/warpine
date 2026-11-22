@@ -48,7 +48,6 @@ disassembly.
   - value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
   - a `wrc` dialog with `CTLDATA` in a sample.
 - [ ] **Scroll bars**:
-  - frame scroll bars are painted 2 pels off (under the left border);
   - keyboard input on a focused bar, `SBS_AUTOTRACK`;
   - the slider's tracking rectangle;
   - repeat rates from `SV_FIRSTSCROLLRATE` / `SV_SCROLLRATE`.
@@ -113,7 +112,7 @@ disassembly.
   - `WM_SETFOCUS` sent, not posted;
   - key state per queue, and CapsLock / NumLock from the host at start;
   - dialogs under a client positioned frame-relative by `WinSetWindowPos`;
-  - disabled buttons drawn greyed.
+  - other disabled controls drawn greyed (static text, entry fields, list boxes), and `PP_DISABLEDFOREGROUNDCOLOR`.
 - [ ] **Presentation parameters and painting**:
   - `SS_TEXT` with `DT_WORDBREAK`, and `WM_PRESPARAMCHANGED` sent rather than posted;
   - `PP_HILITE*` / `PP_DISABLED*` colours, and presentation parameters for title bars, menus, sliders and value sets;

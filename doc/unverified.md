@@ -182,6 +182,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - image fonts ignoring angle and shear under `CM_MODE1`;
   - whether `WinDrawText` / `WinFillRect` follow the transforms.
 - **Desktop server**: the handling of a stalled client (later fix packs are said to time out). Stacking changes of API calls sent in the `Report` after the call, and a frame announced there placed before it is drawn (ADR-0108, item 7). Activation reports (ADR-0108): which activations are claims (`WinSetActiveWindow`, a switch, a click, `SWP_ACTIVATE`, the VIO window again), a click on the active frame counted as one, a round trip to the server after an API call that changed the active frame.
+- **Disabled buttons** (`pm_controls.rs`, `pm_win.rs`): the label in the grey of disabled menu items (`0x808080`), the box or face as when enabled; `WinEnableWindow` repaints built-in controls whose state changes.
 
 ## Kernel and processes
 

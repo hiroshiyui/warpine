@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A process can have 738 threads** (was 482; ADR-0115). The free 4 MB between the API thunks and the system area hold 256 more paging blocks, mapped supervisor-only like the rest of the arena.
 - **The SDK builds C code with unwind tables** (`-fasynchronous-unwind-tables` in `OS2_BASEFLAGS`, ADR-0110), as GCC and clang do for Linux: a C++ exception from a trap in C code, or passing through C frames, unwinds instead of ending in `std::terminate`. Only C++ and the C library had them before.
 
+### Fixed
+- **Frame scroll bars were drawn 2 pels right of their place**: the horizontal one left a gap after the left border, and the right border covered the vertical one's edge. A frame's surface starts inside its left border, and its client and controls are placed in it; the scroll bars alone were placed as if it started at the frame's edge. A client beside a vertical scroll bar is 2 pels narrower now, ending where the bar starts (`WinCalcFrameRect` agrees).
+- **Disabled buttons are drawn greyed**: a push button, check box or radio button with `WS_DISABLED` shows its label grey, and `WinEnableWindow` repaints a built-in control whose state changes. `pm_button_test` shows a disabled check box (55 checks).
+
 ## [0.0.12] - 2026-11-22
 
 ### Added
