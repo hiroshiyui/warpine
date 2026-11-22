@@ -446,9 +446,9 @@
 <text xml:space="preserve" text-anchor="start" x="851.88" y="-359.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/mod.rs, gui/renderer.rs, gui/sdl_renderer.rs, gui/sdl_renderer/compositor.rs</text>
 <text xml:space="preserve" text-anchor="start" x="895" y="-351.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/surface.rs, gui/region.rs, gui/damage.rs, gui/font.rs</text>
 <text xml:space="preserve" text-anchor="start" x="872.88" y="-343.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/glyph_transform.rs, gui/message.rs, gui/pointer.rs, gui/cursor.rs</text>
-<text xml:space="preserve" text-anchor="start" x="857.5" y="-335.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/popup_menu.rs, gui/theme.rs, gui/frame_shape.rs, gui/system_menu.rs</text>
-<text xml:space="preserve" text-anchor="start" x="865.75" y="-327.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/frame_track.rs, gui/frame_stats.rs, gui/gui_script.rs, gui/headless.rs</text>
-<text xml:space="preserve" text-anchor="start" x="899.88" y="-319.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/audio.rs, gui/sdl_renderer/compositor/remote.rs</text>
+<text xml:space="preserve" text-anchor="start" x="874.75" y="-335.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/popup_menu.rs, gui/theme.rs, gui/frame_shape.rs, gui/face.rs</text>
+<text xml:space="preserve" text-anchor="start" x="856.75" y="-327.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/system_menu.rs, gui/frame_track.rs, gui/frame_stats.rs, gui/gui_script.rs</text>
+<text xml:space="preserve" text-anchor="start" x="871" y="-319.2" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/headless.rs, gui/audio.rs, gui/sdl_renderer/compositor/remote.rs</text>
 </g>
 <!-- gpi&#45;&gt;desktop -->
 <g id="edge30" class="edge">

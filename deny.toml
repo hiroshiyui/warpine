@@ -11,13 +11,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # ttf-parser is unmaintained (no fix to take). It is reached only through
-    # ab_glyph, which parses the IBM Plex fonts embedded in the binary
-    # (vendor/ibm-plex, pinned to an upstream commit), never a font a guest
-    # supplies. Revisit when ab_glyph moves to another parser.
-    { id = "RUSTSEC-2026-0192", reason = "unmaintained; parses only our own embedded fonts" },
-]
+ignore = []
 
 [licenses]
 version = 2

@@ -22,7 +22,6 @@ gdbstub = "0.7"
 gdbstub_arch = "0.3"
 encoding_rs = "0.8"
 object = { version = "0.36", default-features = false, features = ["read_core", "elf", "archive", "std"] }
-ab_glyph = "0.2.32"
 ab_glyph_rasterizer = "0.1.10"
 skrifa = "0.50.0"
 

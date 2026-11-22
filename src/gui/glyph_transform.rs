@@ -3,7 +3,7 @@
 //! Glyphs drawn under a linear transform: GPI character angle and shear.
 //!
 //! An outline glyph is transformed in font units before it is rasterised
-//! (ab_glyph's own rasteriser, through [`ab_glyph::OutlinedGlyph`]), so a
+//! (`ab_glyph_rasterizer`, through [`super::face::Outlined`]), so a
 //! rotated or sheared character is as smooth as an upright one. The GNU
 //! Unifont bitmap fallbacks are mapped pel by pel (nearest pel through the
 //! inverse transform). Upright text never comes here: it keeps the cached
@@ -16,7 +16,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use ab_glyph::{point, OutlineCurve, OutlinedGlyph, Point, PxScale, Rect};
+use super::face::{point, OutlineCurve, Outlined, Point, Rect};
 
 use super::font::{
     glyph_shape, FontSpec, GlyphShape, UNIFONT_CELL_H, UNIFONT_DESCENT, UNIFONT_NARROW_W, UNIFONT_WIDE_W,
@@ -121,7 +121,7 @@ fn rasterize(ch: char, spec: FontSpec, m: Matrix) -> Option<Coverage> {
 
 /// Transform the outline's curves in font units (y up) and rasterise them
 /// at the glyph origin (0, 0).
-fn rasterize_outline(mut outline: ab_glyph::Outline, scale: ab_glyph::PxScaleFactor, m: Matrix)
+fn rasterize_outline(mut outline: super::face::Outline, scale: super::face::PxScaleFactor, m: Matrix)
                      -> Option<Coverage> {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let mut map = |p: &mut Point| {
@@ -137,10 +137,9 @@ fn rasterize_outline(mut outline: ab_glyph::Outline, scale: ab_glyph::PxScaleFac
         }
     }
     if x0 > x1 || y0 > y1 { return None; }
-    // ab_glyph keeps the top (largest y) in `min.y`: its pixel rows grow down.
+    // Bounds keep the top (largest y) in `min.y`: pixel rows grow down.
     outline.bounds = Rect { min: point(x0, y1), max: point(x1, y0) };
-    let glyph = ab_glyph::GlyphId(0).with_scale_and_position(PxScale::from(1.0), point(0.0, 0.0));
-    let outlined = OutlinedGlyph::new(glyph, outline, scale);
+    let outlined = Outlined::new(outline, scale, point(0.0, 0.0));
     let b = outlined.px_bounds();
     let (width, height) = (b.width() as usize, b.height() as usize);
     if width == 0 || height == 0 || width.saturating_mul(height) > MAX_RASTER_PELS { return None; }

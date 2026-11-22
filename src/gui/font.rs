@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use ab_glyph::{point, Font, FontRef, GlyphId, PxScale, ScaleFont};
+use super::face::{point, Face, GlyphId};
 
 use super::text_renderer::{get_glyph_dbcs, get_glyph_for_char};
 
@@ -200,12 +200,12 @@ const FACE_SC: usize = 15;
 
 /// Parsed faces. Parsing is lazy and zero-copy, so the multi-megabyte CJK
 /// fonts cost nothing until a character actually needs them.
-static FACES: [OnceLock<Option<FontRef<'static>>>; FACE_COUNT] =
+static FACES: [OnceLock<Option<Face>>; FACE_COUNT] =
     [const { OnceLock::new() }; FACE_COUNT];
 
-fn face(id: usize) -> Option<&'static FontRef<'static>> {
+fn face(id: usize) -> Option<&'static Face> {
     FACES[id]
-        .get_or_init(|| FontRef::try_from_slice(FONT_DATA[id]).ok())
+        .get_or_init(|| Face::new(FONT_DATA[id]))
         .as_ref()
 }
 
@@ -457,13 +457,12 @@ fn rasterize_hinted(face_id: usize, gid: GlyphId, scale: f32, phase: u8, advance
 
 fn rasterize(face_id: usize, gid: GlyphId, scale: f32, phase: u8) -> Option<Raster> {
     let f = face(face_id)?;
-    if let Some(r) = rasterize_hinted(face_id, gid, scale, phase, f.as_scaled(PxScale::from(scale)).h_advance(gid)) {
+    if let Some(r) = rasterize_hinted(face_id, gid, scale, phase, f.h_advance(gid, scale)) {
         return Some(r);
     }
-    let px_scale = PxScale::from(scale);
-    let advance = f.as_scaled(px_scale).h_advance(gid);
+    let advance = f.h_advance(gid, scale);
     let offset = f32::from(phase) / f32::from(SUBPIXEL_STEPS);
-    Some(match f.outline_glyph(gid.with_scale_and_position(px_scale, point(offset, 0.0))) {
+    Some(match f.outlined(gid, scale, point(offset, 0.0)) {
         Some(outline) => {
             let b = outline.px_bounds();
             let (width, height) = (b.width() as usize, b.height() as usize);
@@ -539,7 +538,7 @@ fn with_glyph_at<R>(ch: char, spec: FontSpec, phase: u8, f: impl FnOnce(&Glyph) 
 fn advance_of(src: GlyphSource, spec: FontSpec) -> f32 {
     match src {
         GlyphSource::Outline { face: id, id: gid } => face(id)
-            .map(|f| f.as_scaled(PxScale::from(scale_for(id, spec))).h_advance(gid))
+            .map(|f| f.h_advance(gid, scale_for(id, spec)))
             .unwrap_or(0.0),
         GlyphSource::BitmapNarrow(_) | GlyphSource::Blank => UNIFONT_NARROW_W as f32,
         GlyphSource::BitmapWide(_) => UNIFONT_WIDE_W as f32,
@@ -577,15 +576,15 @@ pub fn metrics(spec: FontSpec) -> FontMetricsPx {
     let px = spec.px as i32;
     let m = match face(spec.latin_face()) {
         Some(f) => {
-            let scaled = f.as_scaled(PxScale::from(spec.px as f32));
-            let ascent = scaled.ascent().round() as i32;
+            let px_f = spec.px as f32;
+            let ascent = f.ascent(px_f).round() as i32;
             // Keep ascent + descent equal to the requested line height.
             let descent = (px - ascent).max(0);
-            let adv = |ch: char| scaled.h_advance(f.glyph_id(ch));
+            let adv = |ch: char| f.h_advance(f.glyph_id(ch), px_f);
             let avg = ('a'..='z').map(adv).sum::<f32>() / 26.0;
             let max = (' '..='~').map(adv).fold(0.0f32, f32::max);
             let x_height = f
-                .outline_glyph(f.glyph_id('x').with_scale(PxScale::from(spec.px as f32)))
+                .outlined(f.glyph_id('x'), px_f, point(0.0, 0.0))
                 .map(|o| o.px_bounds().height().round() as i32)
                 .unwrap_or(ascent / 2);
             FontMetricsPx {
@@ -625,7 +624,7 @@ pub fn char_advance(ch: char, spec: FontSpec) -> f32 {
 pub(crate) enum GlyphShape {
     /// Outline in font units (y up), with the factor from font units to
     /// pixels.
-    Outline { outline: ab_glyph::Outline, scale: ab_glyph::PxScaleFactor },
+    Outline { outline: super::face::Outline, scale: super::face::PxScaleFactor },
     /// 8×16 GNU Unifont bitmap (rows top first, MSB = left pel).
     Narrow([u8; 16]),
     /// 16×16 GNU Unifont bitmap (two bytes per row, big-endian).
@@ -640,7 +639,7 @@ pub(crate) fn glyph_shape(ch: char, spec: FontSpec) -> GlyphShape {
     match resolve(ch, spec) {
         GlyphSource::Outline { face: id, id: gid } => face(id)
             .and_then(|f| {
-                let scale = f.as_scaled(PxScale::from(scale_for(id, spec))).scale_factor();
+                let scale = f.scale_factor(scale_for(id, spec));
                 Some(GlyphShape::Outline { outline: f.outline(gid)?, scale })
             })
             .unwrap_or(GlyphShape::Blank),

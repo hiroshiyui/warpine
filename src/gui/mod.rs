@@ -4,6 +4,7 @@
 // migration): no `unsafe` anywhere in the GUI.
 #![forbid(unsafe_code)]
 
+pub mod face;
 pub mod font;
 pub mod glyph_transform;
 pub mod damage;

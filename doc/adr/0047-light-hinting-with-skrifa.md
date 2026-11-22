@@ -6,7 +6,7 @@
 
 ## Context
 
-PM text is IBM Plex, rasterised by `ab_glyph`, which does not hint. At the sizes PM uses (the 16-px system font has an em of about 12.3 px), the baseline, x-height and horizontal strokes land between pixel rows. They smear over two rows of grey, and the text looks blurry. Plain linear coverage also makes thin stems light grey.
+PM text is IBM Plex, rasterised by `ab_glyph`, which does not hint. (ADR-0119 later replaced `ab_glyph` by `gui/face.rs` on `skrifa`, with the same arithmetic.) At the sizes PM uses (the 16-px system font has an em of about 12.3 px), the baseline, x-height and horizontal strokes land between pixel rows. They smear over two rows of grey, and the text looks blurry. Plain linear coverage also makes thin stems light grey.
 
 Glyphs are placed at quarter-pixel pen positions so that the spacing follows the font's advances. Full (Windows-like) hinting would also move glyphs horizontally and change their advances, and with them every measured text width (`GpiQueryTextBox`, control layouts, `fit_text`).
 

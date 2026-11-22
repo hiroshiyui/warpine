@@ -74,7 +74,7 @@ And it found supply-chain weaknesses:
 - **The `deny.toml` policy.**
   - Dependencies come from crates.io only; no other registry, no git dependencies.
   - Licences are a fixed list compatible with GPL-3.0-only.
-  - Yanked crates and advisories are denied. Any ignored advisory needs a written reason; today only `ttf-parser`'s "unmaintained" is ignored, since it parses only our own embedded fonts.
+  - Yanked crates and advisories are denied. Any ignored advisory needs a written reason; none is ignored today (`ttf-parser`'s "unmaintained" was, until ADR-0119 removed it).
 - **When the checks run.**
   - The pre-commit hook runs the offline checks (sources, bans, licences).
   - Releases run `cargo audit` and the full `cargo deny check`.
