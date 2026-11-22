@@ -10,8 +10,9 @@
 //!   pages, except the 4 MB holding `TLM_PAGE` (in the system area,
 //!   ADR-0094), which go through the TLM table, and the program area and
 //!   the allocator's region, which go through the process tables every
-//!   thread shares (ADR-0114); the 4 MB after the TLM table's are paging
-//!   arena, a supervisor-only large page (ADR-0115);
+//!   thread shares (ADR-0114); the 4 MB after the TLM table's, and the
+//!   4 MB before it, are paging arena, each a supervisor-only large page
+//!   (ADR-0115);
 //! - the TLM table maps its 4 MB one-to-one too, except `TLM_PAGE`, which
 //!   leads to the thread's own page, and the FS and ring-0 windows, which
 //!   lead to its TIB's page and its ring-0 page;
@@ -74,7 +75,8 @@ pub const LOW_GUARD: u32 = EXE_AREA_START;
 /// maps, then the next 4 MB ([`ARENA_CHUNK`]), a supervisor-only large
 /// page. Its pages are supervisor-only in every thread's tables, so a
 /// guest at ring 3 reaches nothing in it. It starts with the process's
-/// page tables (ADR-0114), then holds every thread's paging block.
+/// page tables (ADR-0114), then holds the first 482 threads' paging
+/// blocks; the rest lie in [`PAGING_EXTRA_BASE`].
 pub const PAGING_ARENA_BASE: u32 = RING0_WINDOW + PAGE_SIZE;
 pub const PAGING_ARENA_END: u32 = (ARENA_CHUNK + 1) << LARGE_PAGE_SHIFT;
 /// The 4 MB after the TLM table's, all of them paging arena (ADR-0115).
@@ -126,7 +128,7 @@ const _: () = assert!(STUB_CHUNK != TLM_CHUNK && STUB_CHUNK != 0
 
 /// Whether the page at linear `page` is supervisor-only (ADR-0113): the
 /// GDT, the IDT and its stubs (the system area below the TIB), the
-/// ring-0 window and the paging arena. A guest at ring 3 cannot read or
+/// ring-0 window and the paging arena, both parts. A guest at ring 3 cannot read or
 /// write them; the processor's own accesses (descriptor tables, the TSS,
 /// the stubs at ring 0) are supervisor accesses.
 pub fn supervisor_only(page: u32) -> bool {
