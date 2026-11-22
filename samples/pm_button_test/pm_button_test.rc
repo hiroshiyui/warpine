@@ -21,5 +21,6 @@ BEGIN
         DEFPUSHBUTTON   "OK",         DID_OK,    104,  4, 50, 14, WS_GROUP | WS_TABSTOP
         AUTOCHECKBOX    "Shado~w",    ID_SHADOW, 104, 40, 80, 12, WS_GROUP
         PUSHBUTTON      "Apply",      ID_APPLY,  104, 22, 50, 14, WS_GROUP
+        AUTOCHECKBOX    "Strike",     ID_STRIKE,   8,  6, 80, 12, WS_GROUP | WS_DISABLED
     END
 END

@@ -919,6 +919,8 @@ impl Loader {
                     "WC_BUTTON" => {
                         let style = self.shared.window_mgr.lock_or_recover()
                             .get_window(hwnd).map_or(0, |w| w.style);
+                        // A disabled button's label is greyed.
+                        let p = if style & WS_DISABLED != 0 { p.greyed() } else { p };
                         if pm_button::has_check_state(style) {
                             self.paint_check_button(&p, hwnd, (x, y, cx, cy), &text);
                         } else if style & BS_PRIMARYSTYLES == BS_USERBUTTON {
@@ -1341,6 +1343,8 @@ const CONTROL_EMPHASIS_COLOR: u32 = 0x0000_0000;
 const CONTROL_FIELD_COLOR: u32 = 0x00FF_FFFF;
 const CONTROL_BORDER_COLOR: u32 = 0x0080_8080;
 const CONTROL_TEXT_COLOR: u32 = 0x0000_0000;
+/// The text of a disabled control: the grey of disabled menu items.
+const CONTROL_DISABLED_TEXT_COLOR: u32 = 0x0080_8080;
 /// Horizontal gap between a control's border and its text.
 const CONTROL_TEXT_INSET: i32 = 4;
 /// Height of one text row in a control (the system font's line height).
@@ -1406,6 +1410,12 @@ impl<'a> Painter<'a> {
         };
         Painter { loader: self.loader, frame: self.frame, cjk: self.cjk, fg: self.fg, bg: self.bg,
                   own_bg: self.own_bg, face: self.face, clip }
+    }
+
+    /// This painter writing text in the disabled grey.
+    pub fn greyed(mut self) -> Self {
+        self.fg = CONTROL_DISABLED_TEXT_COLOR;
+        self
     }
 
     pub fn op(&self, op: DrawOp) {

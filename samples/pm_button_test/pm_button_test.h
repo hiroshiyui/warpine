@@ -11,3 +11,4 @@
 #define ID_LARGE    108
 #define ID_SHADOW   109    /* auto check box driven by BM_CLICK */
 #define ID_APPLY    110    /* push button for BM_CLICK / BM_SETHILITE / BM_SETDEFAULT */
+#define ID_STRIKE   111    /* a disabled check box: its label greyed */

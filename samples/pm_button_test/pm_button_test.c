@@ -25,7 +25,8 @@
  * Shadow auto check box and on the Apply push button (a down-click, which
  * sends nothing, then an up-click, which sends WM_COMMAND), BM_SETHILITE /
  * BM_QUERYHILITE on Apply and Shadow, BM_SETDEFAULT on Apply and Shadow.
- * Apply is left highlighted, so the picture shows it pressed.
+ * Apply is left highlighted, so the picture shows it pressed. Strike, a
+ * check box disabled in the template, shows its label greyed.
  *
  * Each check is written to stdout:
  *
@@ -179,6 +180,8 @@ MRESULT EXPENTRY ButtonDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 {
     switch( msg ) {
     case WM_INITDLG:
+        check( "Strike is disabled (WS_DISABLED in the template)",
+               WinIsWindowEnabled( WinWindowFromID( hwnd, ID_STRIKE ) ), FALSE );
         check( "the first tab stop has the focus",
                (LONG)WinQueryFocus( HWND_DESKTOP ), (LONG)WinWindowFromID( hwnd, ID_BOLD ) );
         check( "no radio button is checked yet", check_index( hwnd, ID_LEFT ), -1 );

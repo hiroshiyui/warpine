@@ -1421,12 +1421,21 @@ impl super::Loader {
 
                 {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let mut repaint = false;
                     if let Some(win) = wm.get_window_mut(hwnd) {
+                        let before = win.style;
                         if enable {
                             win.style &= !WS_DISABLED;
                         } else {
                             win.style |= WS_DISABLED;
                         }
+                        // A built-in control redraws itself on WM_ENABLE (a
+                        // disabled button's label is greyed): Warpine paints
+                        // them, so it repaints one whose state changed.
+                        repaint = win.style != before && win.class_name.starts_with("WC_");
+                    }
+                    if repaint {
+                        wm.invalidate_window_only(hwnd);
                     }
                 }
 

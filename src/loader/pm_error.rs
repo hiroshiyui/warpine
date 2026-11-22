@@ -341,6 +341,33 @@ mod tests {
                    "no window was created");
     }
 
+    /// WinEnableWindow repaints a built-in control whose state changes (a
+    /// disabled button's label is greyed), and nothing else: not an
+    /// application's window, not a control whose state stays.
+    #[test]
+    fn win_enable_window_repaints_a_control_whose_state_changes() {
+        let loader = Loader::new_mock();
+        let hmq = call(&loader, 0, ORD_WIN_CREATE_MSG_QUEUE, &[MOCK_HAB, 0]);
+        let (button, app) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let app = wm.create_window("App".into(), 0, hmq);
+            let button = wm.create_window("WC_BUTTON".into(), app, hmq);
+            for h in [app, button] {
+                let w = wm.get_window_mut(h).unwrap();
+                (w.cx, w.cy) = (40, 20);
+            }
+            (button, app)
+        };
+        let invalid = |h: u32| !loader.shared.window_mgr.lock_or_recover().get_window(h).unwrap().update.is_empty();
+        assert_eq!(call(&loader, 0, ORD_WIN_ENABLE_WINDOW, &[button, 1]), 1);
+        assert!(!invalid(button), "already enabled: no repaint");
+        assert_eq!(call(&loader, 0, ORD_WIN_ENABLE_WINDOW, &[button, 0]), 1);
+        assert!(invalid(button), "disabled: repainted greyed");
+        assert_eq!(call(&loader, 0, ORD_WIN_IS_WINDOW_ENABLED, &[button]), 0);
+        assert_eq!(call(&loader, 0, ORD_WIN_ENABLE_WINDOW, &[app, 0]), 1);
+        assert!(!invalid(app), "the application paints its own window on WM_ENABLE");
+    }
+
     #[test]
     fn calls_with_good_or_null_handles_record_nothing() {
         let loader = Loader::new_mock();

@@ -3380,7 +3380,7 @@ const BUTTON_TEST_STEPS: &str = "1600 key space\n1700 key tab\n1800 key space\n1
 #[test]
 fn gui_pm_button_test_checks_boxes_and_radio_buttons() {
     let steps = format!("{BUTTON_TEST_STEPS}3500 key enter\n7000 quit\n");
-    assert_scripted_checks_pass("samples/pm_button_test/pm_button_test.exe", "pm_button_test", 54, &steps);
+    assert_scripted_checks_pass("samples/pm_button_test/pm_button_test.exe", "pm_button_test", 55, &steps);
 }
 
 /// The pm_button_test dialog after [`BUTTON_TEST_STEPS`]: unchecked, ticked
