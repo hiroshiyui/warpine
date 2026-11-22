@@ -78,18 +78,13 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - dragging the arm with button 2, `WC_CIRCULARSLIDER`;
   - value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
   - a `wrc` dialog with `CTLDATA` in a sample.
-- [ ] **Scroll bars**:
-  - keyboard input on a focused bar, `SBS_AUTOTRACK`;
-  - the slider's tracking rectangle;
-  - repeat rates from `SV_FIRSTSCROLLRATE` / `SV_SCROLLRATE`.
 - [ ] **Text controls**:
-  - `WinSetSysValue` for indices other than `SV_CURSORRATE`;
+  - `WinSetSysValue` for indices other than `SV_CURSORRATE`, `SV_FIRSTSCROLLRATE` and `SV_SCROLLRATE`;
   - hide the text cursor while a frame is tracked.
 
 ### Dialogs, menus and message boxes
 
 - [ ] **Dialogs and buttons**:
-  - `BS_USERBUTTON` / `BN_PAINT` (a user button only stores its highlight now);
   - `WM_ACTIVATE` when the active window is destroyed;
   - check that `WinProcessDlg` really leaves its dialog to the caller.
 - [ ] **Menus in dialogs**:
@@ -103,13 +98,13 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - `WinRegisterCircularSlider` (PMCTLS 24), and a PMCTLS section in `doc/os2_ordinals.md`.
 - [ ] **Help viewer**:
   - an INF / HLP reader (IPF is unpublished: check the osFree / NewView descriptions first);
-  - `RT_HELPTABLE` / `RT_HELPSUBTABLE`, and F1 → `WM_HELP` → the help-table panel;
+  - `RT_HELPTABLE` / `RT_HELPSUBTABLE`, and the help-table panel for the `WM_HELP` F1 posts;
   - `HM_*` notifications, the `Ddf*` calls.
 
 ### Frames, input and messages
 
 - [ ] **Frames and system keys**:
-  - F10 / Alt for the menu bar (`SC_APPMENU`, `MM_STARTMENUMODE`), F1 → `WM_HELP`;
+  - `WM_INITMENU` / `WM_MENUSELECT` while the menu bar is used from the keyboard (ADR-0117), and cascading submenus in its pull-downs;
   - icons for minimized frames (`FCF_ICON`, `WinSetIcon`), min/max for dialogs;
   - `WinSetActiveWindow` on minimized or disabled frames;
   - `SWP_ZORDER` / `hwndInsertBehind` in a subclassed frame's `WM_FORMATFRAME`;
@@ -124,8 +119,6 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - the horizontal wheel;
   - `WM_HITTEST` for clicks on frame chrome, which still act on the GUI thread when they arrive.
 - [ ] **Pointers**:
-  - the I-beam over entry fields and MLEs, sizing arrows over frame borders;
-  - `WM_CONTROLPOINTER`;
   - `WinCreatePointer` / `WinCreatePointerIndirect`, `WinQueryPointerInfo`, `WinDrawPointer`.
 - [ ] **PM errors**:
   - `PMERR_INVALID_FLAG` from `WinQueryWindowPos`, which has no flag parameter (the reference lists it); `PMERR_CANNOT_SET_FOCUS` once Warpine has system-modal windows or a focus change in progress;

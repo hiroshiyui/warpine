@@ -38,7 +38,8 @@ Warpine runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) programs na
 ### Work in progress
 
 - **Containers and drag and drop** — drags work within a program, between programs and from the host's file manager; lazy drag, drag images, container target emphasis and owner-painted container backgrounds are missing.
-- **Text controls and pointers** — editing, selection, the clipboard and multi-select lists work; the pointer does not yet turn into an I-beam over text fields or a sizing arrow over frame borders.
+- **Text controls and pointers** — editing, selection, the clipboard and multi-select lists work; the pointer turns into an I-beam over text fields and a sizing arrow over frame borders, and owners can change it with `WM_CONTROLPOINTER`.
+- **Keyboard menus** — F10 or Alt puts the menu bar into menu mode, driven by the arrows, Enter, mnemonics and Esc; F1 posts `WM_HELP`; focused scroll bars take the arrow and page keys.
 - **Dialogs and menus** — programs cannot yet change system-menu items, and F10 for the menu bar and menus inside dialogs are missing.
 - **More GPI** — rounded box corners, line ends and joins, scaled line widths, rotated glyphs and images under transforms, palettes, and drawing through a child window's presentation space are not implemented.
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
@@ -411,7 +412,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2293 unit tests (no KVM required)
+cargo test                        # 2305 unit tests (no KVM required)
 cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

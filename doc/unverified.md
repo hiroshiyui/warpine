@@ -6,11 +6,14 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 ## Presentation Manager
 
+- **Scroll bars**: the keys a focused bar takes (the arrows along its axis, Page Up / Page Down on both kinds, no Home / End), `SB_ENDSCROLL` on the key's release; the tracking outline's look without `SBS_AUTOTRACK`.
+- **Pointers**: which controls send `WM_CONTROLPOINTER` (every built-in control class but frames, menus and title bars), the I-beam only for entry fields and MLEs; the sizing border's hit width (the renderer's 6 pels) for the sizing arrows.
+- **Keyboard menus** (ADR-0117): F10 highlighting without dropping, Alt's release as the toggle, the keys and the items they skip, F1's `WM_HELP` mp1 = 0 and that F1 is a system accelerator.
 - **Text controls**:
-  - `DRAG_SCROLL_MS` 100 ms;
+  - `DRAG_SCROLL_MS` 100 ms, also the default `SV_FIRSTSCROLLRATE` / `SV_SCROLLRATE`, and that timer serving text controls, spin buttons and sliders as well as scroll bars;
   - `SV_CURSORRATE` as the time between toggles;
   - the IME area spanning the caret's line;
-  - `WinSetSysValue` keeping only `SV_CURSORRATE`;
+  - `WinSetSysValue` keeping only `SV_CURSORRATE`, `SV_FIRSTSCROLLRATE` and `SV_SCROLLRATE`;
   - Enter passed on after `LN_ENTER`;
   - `MLM_SETWRAP` returning TRUE;
   - Space toggling the cursor item in `LS_EXTENDEDSEL`;

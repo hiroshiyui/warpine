@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 - **A fuzz target for bitmaps** (ADR-0112): a program's `RT_BITMAP` resources are split and decoded, uncompressed or RLE. The codec moved out of `pm_bitmap.rs` into `bitmap_codec.rs` for it.
 - **Weekly long fuzz runs**: `.github/workflows/fuzz.yml` runs every fuzz target for ten minutes each Monday, and on demand (`ci/matrix.sh fuzz`).
+- **The menu bar from the keyboard** (ADR-0117): F10, or Alt pressed and released alone, puts a frame's menu bar into menu mode (`WM_SYSCOMMAND(SC_APPMENU)`, also `MM_STARTMENUMODE` / `MM_ENDMENUMODE`); the arrows, Enter, mnemonics and Esc drive it, and the chosen item arrives as `WM_COMMAND` with `CMDSRC_MENU`. F1 posts `WM_HELP`.
+- **Scroll bars take the keyboard**: a focused bar sends the line commands for the arrow keys along its axis and the page commands for Page Up / Page Down, and `SB_ENDSCROLL` on release. Without `SBS_AUTOTRACK` a dragged slider stays and an outline follows the pointer. The repeat of a held arrow follows `SV_FIRSTSCROLLRATE` / `SV_SCROLLRATE`, which `WinSetSysValue` sets.
+- **Pointers over controls and borders**: the I-beam over entry fields and MLEs, sizing arrows over a frame's sizing border, and `WM_CONTROLPOINTER`, with which a control's owner picks another pointer.
 
 ### Changed
 - **A process can have 738 threads** (was 482; ADR-0115). The free 4 MB between the API thunks and the system area hold 256 more paging blocks, mapped supervisor-only like the rest of the arena.
