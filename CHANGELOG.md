@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-11-22
+
 ### Added
 - **The main thread's stack is sparse too** (ADR-0114). Thread 1's stack, the `STACKSIZE` bytes below the entry ESP that the LX header gives, is committed as it grows and raises `XCPT_UNABLE_TO_GROW_STACK` near its bottom, like every other thread's stack. Thread 1's TIB now has its stack bounds (`tib_pstack`, `tib_pstacklimit`), which were 0. `stack_grow_test` checks it (18 checks).
 - **`DosQueryMem` reports `PAG_EXECUTE`** for the code objects of a program and its DLLs (ADR-0114), and not for their data. `mem_protect_test` checks both (42 checks).
