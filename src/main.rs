@@ -6,6 +6,7 @@ pub mod api;
 pub mod gui;
 pub mod desktop;
 pub mod sandbox;
+pub mod cgroup;
 
 use std::env;
 use std::sync::Arc;
@@ -201,6 +202,10 @@ fn main() {
     }
 
     let file_path = remaining_args[0];
+
+    // A session's first process puts the session into a cgroup of its own
+    // (ADR-0116), before it starts anything the session will hold.
+    cgroup::enter_session_scope();
 
     // Intercept CMD.EXE / OS2SHELL.EXE directly from the command line.
     // When stdout is a real terminal and WARPINE_HEADLESS is not set, open an
