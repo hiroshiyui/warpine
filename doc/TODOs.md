@@ -105,12 +105,12 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 
 - [ ] **Frames and system keys**:
   - cascading submenus in the menu bar's pull-downs;
+  - `MM_SETITEM`, `MM_SETITEMHANDLE`, `MM_SELECTITEM`, `MM_QUERYITEMRECT`, `MM_QUERYSELITEMID` and the default-item messages;
   - icons for minimized frames (`FCF_ICON`, `WinSetIcon`), min/max for dialogs;
   - `WinSetActiveWindow` on minimized or disabled frames;
   - `SWP_ZORDER` / `hwndInsertBehind` in a subclassed frame's `WM_FORMATFRAME`;
   - `QWS_FLAGS`, the alarm of `WinFlashWindow`, `WM_MINMAXFRAME` from `WinSetMultWindowPos`.
 - [ ] **System and pop-up menus**:
-  - a real `FID_SYSMENU` window (`MM_SETITEMATTR` / `MM_QUERYITEMATTR`; `SC_CLOSE` ignored when Close is disabled);
   - the system menu's Window list item, which is greyed although Ctrl+Esc works;
   - Alt+F11 for Hide, and a minimized frame's system menu on a click;
   - `WM_TRACKFRAME` / `WM_QUERYTRACKINFO` for subclassed frames (ADR-0089 phase 2), the pointer taking over a keyboard tracking, and a `WinTrackRect` outline on the desktop (no PS);
@@ -118,8 +118,6 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 - [ ] **Input**:
   - the horizontal wheel;
   - `WM_HITTEST` for clicks on frame chrome, which still act on the GUI thread when they arrive.
-- [ ] **Pointers**:
-  - `WinCreatePointer` / `WinCreatePointerIndirect`, `WinQueryPointerInfo`, `WinDrawPointer`.
 - [ ] **PM errors**:
   - `PMERR_INVALID_FLAG` from `WinQueryWindowPos`, which has no flag parameter (the reference lists it); `PMERR_CANNOT_SET_FOCUS` once Warpine has system-modal windows or a focus change in progress;
   - `PMERR_INVALID_FLAG` / `PMERR_INVALID_PARM` / `PMERR_INVALID_PARAMETERS` from `WinCreateWindow` (which values the reference means is not said);
