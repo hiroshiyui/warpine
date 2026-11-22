@@ -302,6 +302,15 @@ fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, face: FontSpec
     buf.pos_in_line(line, col)
 }
 
+/// The box drawn over a control `cx` × `cy` pels at `(x, y)`: a box's
+/// corners are inclusive, so the modern theme's rounded box ends on the
+/// control's last row and column (`cx - 1`, `cy - 1`); past them its far
+/// corners would be clipped away and look square. The classic box keeps its
+/// extent, whose far edge the window clips (the golden pictures hold it).
+fn box_extent((x, y, cx, cy): (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    if crate::gui::theme::current().bevelled() { (x, y, cx, cy) } else { (x, y, cx - 1, cy - 1) }
+}
+
 impl Loader {
     /// The face the text of control `hwnd` is drawn in (the CJK face of its
     /// queue's codepage, else the process codepage's), for callers that
@@ -407,7 +416,7 @@ impl Loader {
         if modern {
             // The default button's edge is the emphasis colour.
             let edge = if push(default) { CONTROL_EMPHASIS_COLOR } else { super::CONTROL_BORDER_COLOR };
-            super::control_box_edged(p, (x, y, cx, cy), face, edge);
+            super::control_box_edged(p, box_extent((x, y, cx, cy)), face, edge);
         } else {
             control_box(p, (x, y, cx, cy), face);
             if push(default) {
@@ -422,7 +431,7 @@ impl Loader {
         super::control_label(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, text, max_w);
         if push(focused) && modern {
             // A focus ring in the accent colour, just inside the edge.
-            super::rounded_box(p, (x + 1, y + 1, cx - 2, cy - 2), None, crate::gui::theme::MODERN_ACCENT_COLOR);
+            super::rounded_box(p, (x + 1, y + 1, cx - 3, cy - 3), None, crate::gui::theme::MODERN_ACCENT_COLOR);
         } else if push(focused) {
             let i = BUTTON_FOCUS_INSET;
             p.op(DrawOp::Box { x1: x + i, y1: y + i, x2: x + cx - i, y2: y + cy - i,
@@ -458,7 +467,7 @@ impl Loader {
         let edge = if focused && !crate::gui::theme::current().bevelled() {
             crate::gui::theme::MODERN_ACCENT_COLOR
         } else { super::CONTROL_BORDER_COLOR };
-        super::control_box_edged(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR), edge);
+        super::control_box_edged(p, box_extent((x, y, cx, cy)), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR), edge);
         let line_y = y + (cy - CONTROL_LINE_H) / 2;
         let caret_x = draw_edit_line(p, (x + CONTROL_TEXT_INSET + shift, line_y),
                                      view_w, &buf.chars()[first..], selected,
@@ -508,7 +517,7 @@ impl Loader {
             win.top_row = top;
             (buf, top, first, focused, focused && !win.caret_off)
         };
-        control_box(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
+        control_box(p, box_extent((x, y, cx, cy)), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
         let (caret_line, col) = buf.caret_line();
         let sel = if focused { buf.selection() } else { 0..0 };
         let mut caret_at = None;
@@ -546,7 +555,7 @@ impl Loader {
         };
         let rows = rows_of(cy, row_h);
         let top = listbox_top(top_row, count, rows);
-        control_box(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
+        control_box(p, box_extent((x, y, cx, cy)), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
         let visible = top..(top + rows).min(count);
         if owner_draw {
             self.queue_list_item_draws(hwnd, visible);
@@ -574,7 +583,9 @@ impl Loader {
         };
         let Some(row) = index.checked_sub(top).filter(|&r| r < rows_of(cy, row_h)) else { return };
         let row_y = y + row_y_of(cy, row, row_h);
-        let rect = (x + 1, row_y, x + cx - 1, row_y + row_h - 1);
+        // Inside the box's edge (the modern box ends on the last column).
+        let right = x + box_extent((x, y, cx, cy)).2 - 1;
+        let rect = (x + 1, row_y, right, row_y + row_h - 1);
         p.fill(rect, if selected { CONTROL_SELECT_COLOR } else { p.own_bg.unwrap_or(CONTROL_FIELD_COLOR) });
         // The focused list marks its cursor item, in white on a selected row.
         if focused && cursor {

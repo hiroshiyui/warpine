@@ -35,7 +35,7 @@ pub enum Theme {
 /// The modern edge line around a frame (inside its border).
 pub const MODERN_EDGE_COLOR: u32 = 0x0080_8080;
 /// Corner radius of a modern control's box (buttons, fields, lists).
-pub const CONTROL_RADIUS: i32 = 3;
+pub const CONTROL_RADIUS: i32 = 4;
 /// The modern accent: the focus ring and a focused field's border.
 pub const MODERN_ACCENT_COLOR: u32 = 0x0030_6FD0;
 /// The face of a modern push button under the pointer.

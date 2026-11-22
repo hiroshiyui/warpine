@@ -725,6 +725,10 @@ fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
         x: p.frame.x0, top: p.frame.y0, cx: p.frame.width(), cy: p.frame.height(),
         frame_flags: p.frame_flags, title: "", focused: false, state: 0, cjk: CjkRegion::Auto,
     }, clip);
+    if p.rounded && title_bar_h(p.frame_flags) > 0 && frame_border_px(p.frame_flags) > 0 {
+        super::frame_shape::round_top_chrome(buf, buf_w, p.frame, CHROME_BORDER_W, theme::MODERN_EDGE_COLOR,
+                                      CHROME_FACE_COLOR, clip);
+    }
     if let Some(m) = &chrome.menu {
         blit(buf, &m.bar_px, m.bar_w, p.menu_bar);
         if let Some(pd) = &m.pulldown {

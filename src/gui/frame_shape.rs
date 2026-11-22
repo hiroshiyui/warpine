@@ -101,6 +101,31 @@ fn mix(under: u32, over: u32, cov: u8) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
+/// Curve the chrome inside frame `f`'s two top corners, inside `clip`: the
+/// edge line (`edge`, the outermost pel ring) and the next `rings` − 1 rings
+/// (`face`) follow the rounded outline, so the title bar's corners are
+/// rounded with it instead of standing square inside the curve. The
+/// compositor's corner coverage then shapes the outside; the client, which
+/// never reaches the top corners, keeps its pels.
+pub fn round_top_chrome(buf: &mut [u32], buf_w: usize, f: Rect, rings: i32, edge: u32, face: u32, clip: Rect) {
+    let (w, h) = (f.width(), f.height());
+    let r = radius(w, h);
+    let [tl, tr, ..] = corner_squares(f);
+    for sq in [tl, tr] {
+        let area = in_buffer(sq.intersect(&clip), buf_w, buf.len());
+        for y in area.y0..area.y1 {
+            for x in area.x0..area.x1 {
+                let d = rounded_rect_distance((x - f.x0) as f32 + 0.5, (y - f.y0) as f32 + 0.5,
+                                              w as f32, h as f32, r as f32);
+                let cov = |t: f32| (t.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let i = y as usize * buf_w + x as usize;
+                let pel = mix(buf[i], face, cov(d + rings as f32 + 0.5));
+                buf[i] = mix(pel, edge, cov(d + 1.5));
+            }
+        }
+    }
+}
+
 /// The part of `r` inside a `buf_w`-wide buffer of `len` pels.
 fn in_buffer(r: Rect, buf_w: usize, len: usize) -> Rect {
     let h = len.checked_div(buf_w).unwrap_or(0);
@@ -217,6 +242,22 @@ pub fn slice_places(f: Rect) -> Vec<(Rect, Rect)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_top_chrome_follows_the_rounded_corner() {
+        const TITLE: u32 = 0x0000_0080;
+        let (w, h) = (40, 30);
+        let mut buf = vec![TITLE; (w * h) as usize];
+        let f = Rect::at(0, 0, w, h);
+        round_top_chrome(&mut buf, w as usize, f, 2, 0x0080_8080, 0x00D4_D0C8, f);
+        let at = |x: i32, y: i32| buf[(y * w + x) as usize];
+        assert_eq!(at(0, 0), 0x0080_8080, "outside the curve: edge colour, shaped away by the compositor");
+        assert_eq!(at(20, 0), TITLE, "past the corner squares nothing changes");
+        assert_eq!(at(2, 2), 0x0080_8080, "the edge line follows the curve");
+        assert_eq!(at(7, 7), TITLE, "well inside the curve the title bar stays");
+        assert_eq!(at(0, 20), TITLE, "the bottom corners are left alone");
+        assert_ne!(at(1, 6), TITLE, "the title's square corner is covered");
+    }
 
     #[test]
     fn corners_are_rounded_and_the_rest_is_covered() {
