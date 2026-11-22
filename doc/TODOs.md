@@ -97,9 +97,8 @@ disassembly.
   - `WM_CONTROLPOINTER`;
   - `WinCreatePointer` / `WinCreatePointerIndirect`, `WinQueryPointerInfo`, `WinDrawPointer`.
 - [ ] **PM errors**:
-  - `PMERR_INVALID_FLAG` (`WinInvalidateRect`, `WinQueryWindowPos`), `PMERR_CANNOT_SET_FOCUS`, `PMERR_INV_HPS` (`WinBeginPaint`);
-  - `PMERR_NO_MSG_QUEUE` / `PMERR_INVALID_PARAMETERS` from `WinCreateWindow`;
-  - errors from `WinStartTimer` and from the dialog-item text calls;
+  - `PMERR_INVALID_FLAG` from `WinQueryWindowPos`, which has no flag parameter (the reference lists it); `PMERR_CANNOT_SET_FOCUS` once Warpine has system-modal windows or a focus change in progress;
+  - `PMERR_INVALID_FLAG` / `PMERR_INVALID_PARM` / `PMERR_INVALID_PARAMETERS` from `WinCreateWindow` (which values the reference means is not said);
   - `WinGetErrorInfo` / `WinFreeErrorInfo` (the `ERRINFO` layout is unknown).
 - [ ] **Hooks and messaging**:
   - `MSGF_TRACK` and `HK_INPUT` in the modal loops, and the help hook of a message box;

@@ -114,6 +114,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - pen / object pointers shown as the arrow.
 - **PM errors**:
   - every code with `SEVERITY_ERROR`;
+  - the conditions of the codes the reference lists without one (EDM2's copies of its pages): `PMERR_INVALID_FLAG` from `WinInvalidateRect` for a `fIncludeChildren` other than 0 or 1; `PMERR_INV_HPS` from `WinBeginPaint` for an HPS that is none; `PMERR_NO_MSG_QUEUE` from `WinCreateWindow` on a thread without a queue; `PMERR_INVALID_HWND` from `WinSetDlgItemText` / `WinQueryDlgItemText` for an item the dialog does not have (the query writes an empty string); `WinStartTimer` lists no codes, so it records none;
   - success leaving the error alone;
   - `WinGetMsg` returning FALSE for a bad filter, and `WinQueryWindow` returning 0 for a bad code;
   - `WinSendDlgItemMsg` / `WinSetWindowUShort` codes (inferred);

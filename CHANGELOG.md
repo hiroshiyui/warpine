@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 - **Frame scroll bars were drawn 2 pels right of their place**: the horizontal one left a gap after the left border, and the right border covered the vertical one's edge. A frame's surface starts inside its left border, and its client and controls are placed in it; the scroll bars alone were placed as if it started at the frame's edge. A client beside a vertical scroll bar is 2 pels narrower now, ending where the bar starts (`WinCalcFrameRect` agrees).
+- **More PM calls report their documented errors** (`WinGetLastError`): `WinInvalidateRect` with a flag that is no BOOL (`PMERR_INVALID_FLAG`), `WinBeginPaint` with an HPS that is none (`PMERR_INV_HPS`, where it used to make a new one), `WinCreateWindow` on a thread without a message queue (`PMERR_NO_MSG_QUEUE`, where it made a window of no queue), and `WinSetDlgItemText` / `WinQueryDlgItemText` for a dialog item that does not exist (`PMERR_INVALID_HWND`, where they reported success). `pm_error_test` checks them (124 checks).
 - **Disabled buttons are drawn greyed**: a push button, check box or radio button with `WS_DISABLED` shows its label grey, and `WinEnableWindow` repaints a built-in control whose state changes. `pm_button_test` shows a disabled check box (55 checks).
 
 ## [0.0.12] - 2026-11-22
