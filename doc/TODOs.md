@@ -9,45 +9,124 @@ All work follows the near-clean-room policy: public documentation, toolkit
 headers and osFree / ReactOS references only; no IBM binaries, ROM dumps or
 disassembly.
 
-**Contents:**
-- [Project Blockers](#project-blockers)
-- [Presentation Manager](#presentation-manager)
+**Contents** (highest priority first):
+- [Security Facilities](#security-facilities)
+- [SOM / Workplace Shell](#som--workplace-shell)
 - [Kernel and processes](#kernel-and-processes)
+- [Presentation Manager](#presentation-manager)
 - [Console and multimedia](#console-and-multimedia)
 - [Application compatibility](#application-compatibility)
-- [Security Facilities](#security-facilities)
 - [Development toolchain](#development-toolchain)
+- [Project Blockers](#project-blockers) (waiting on sources)
 - [Long-term](#long-term)
 
 ---
 
-## Project Blockers
+## Security Facilities
 
-Items below wait on data, information or binaries Warpine does not have, and that the clean-room policy only lets it take from a permissive public source. Each is also listed in its own section. Unblocking one starts with finding that source.
+Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-Where no such source turns up and the original cannot be rebuilt (SOM, the WPS, IPF help …), a practical design of Warpine's own may close the item instead, even at the cost of compatibility (its own ordinals, formats or protocols): Warpine is an OS/2-API-compatible platform, not a clone. Each such choice is agreed first and recorded in an ADR that names what compatibility it gives up.
+- [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
+  - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
+  - seccomp filters per process role (guest processes, the desktop server);
+  - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs and bitmaps, a minute per target on each push and ten minutes weekly): the other resources Warpine reads from a running program (dialog and menu templates, string tables), which first need their parsers taken out of `pm_dialog.rs` / `pm_win.rs` as `bitmap_codec.rs` was.
+- [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
-**Unpublished formats or layouts**
-- **INF / HLP help files** ([Help viewer](#dialogs-menus-and-message-boxes)): the IPF format is unpublished; check the osFree / NewView descriptions first.
-- **Binary OS/2 INI files** ([Profiles](#kernel-and-processes)): the format is unpublished; profiles use Warpine's own format.
-- **`WinGetErrorInfo` / `WinFreeErrorInfo`** ([PM errors](#frames-input-and-messages)): the `ERRINFO` layout is unknown.
-- **`select`, `bsdselect`, `os2_select`** ([Sockets](#application-compatibility)): their real ordinals and layouts.
+---
 
-**Missing export lists or ordinals**
-- **DIVE** and **OpenGL / PGL** ([Graphics](#graphics)): their export lists.
-- **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the export lists of UCONV, MMPM/2, TCP/IP, PMCTLS and MSG; dates for the 22 `unknown` exports.
-- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them. None of the IBM manuals now at hand does either (2026-11-23); the routes left are Free Pascal's LGPL `som.pas` as a factual source (not used so far: needs a decision and an ADR) or asking the rights holders.
-- **SOM Stage B2/B3**, classes built from IBM's static class data ([SOM](#som--workplace-shell)): waits for those ordinals, or a source for the initializer / destructor control-block protocol. It holds back IBM-built SOM programs, and with them the Workplace Shell's compatibility.
+## SOM / Workplace Shell
 
-**Behaviour the public documentation does not settle**
-- **`DB_RAISED` / `DB_DEPRESSED`** ([Presentation parameters and painting](#frames-input-and-messages)): no source documents them.
-- **The `THREADS=` range and parsing** ([CONFIG.SYS](#kernel-and-processes)): only IBM's Command Reference (`CMDREF.INF`) settles them; secondary sources disagree, and reading it needs an INF reader (see above).
-- **PM errors** ([PM errors](#frames-input-and-messages)): when `WinQueryWindowPos` reports `PMERR_INVALID_FLAG` (it has no flag parameter), and which values make `WinCreateWindow` report its parameter errors.
 
-**Third-party binaries**
-- **bitwiseworks GCC / LIBCn / LIBCx** as regression inputs ([Ported-software tier](#development-toolchain)): their licences must be checked first.
+The WPS is a PM application on the session desktop, built on SOM. The SOM kernel's stages 1–4 are done (ADR-0059–0063).
 
-Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace Shell), then the IPF format (the help viewer, and `CMDREF.INF`), then the DIVE and PGL export lists.
+**Sources at hand** (found 2026-11-23; kept locally under `doc/references/`, never committed; public URLs in the README's sources):
+- the OS/2 Warp 4 Toolkit's *System Object Model Programming Guide* and *Reference* and *Workplace Shell Programming Guide* and *Reference* (Internet Archive, reprinted with IBM's permission) — the OS/2 description of SOM and the WPS classes;
+- IBM's OS/390 *SOMobjects Programmer's Reference, Volume 1* (SC28-1997) and *Messages, Codes and Diagnosis* (SC28-1996) — the kernel as documented for OS/390, and the error codes;
+- IBM's *SOMobjects Developer's Toolkit* Version 3.0 books (1996, Internet Archive): *Programmer's Guide* Vol. I–II and *Programmer's Reference* Vol. I–IV — SOM 3.0's concepts, initializers and kernel.
+
+**Object model options** (for Warpine's own objects, and for the WPS should SOM compatibility stay blocked; to be decided in an ADR):
+1. SOM, compatible with IBM's as far as the sources allow (the current course, ADR-0059–0073);
+2. the Cross Platform Component Object Model (XPCOM), Mozilla's portable COM-style component model (interfaces described in XPIDL, reference counting, `QueryInterface`, a component manager; MPL-2.0; also used by VirtualBox on its non-Windows hosts) — not binary-compatible with SOM, so IBM-built SOM and WPS binaries would not run on it.
+
+IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30`) is gone and was never archived; the 3.0 books above are a separate copy. Not used: somFree (LGPLv3, no OS/2 target; excluded by decision) and Netlabs' NOM (binary-incompatible with SOM by design).
+
+- [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
+- [ ] **Bugs: Warpine contradicts the Reference**:
+  - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: no major / minor version check (the rule of `somCheckVersion`); the init function is always "SOMInitModule" rather than the `SOMClassInitFuncName` variable (through `somGetInitFunction`); internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
+  - the default `SOMLoadModule` succeeds when a DLL has neither `SOMInitModule` nor `<Class>NewClass`; it must fail;
+  - `somDataResolve` with an unknown token returns 0; it must raise an error (`somDataResolveChk` is the quiet variant);
+  - `somBuildClass` calls `somClassReady`, `somNew` and `somRegisterClass` internally, so a metaclass's or class manager's overrides never run;
+  - `somPrintSelf` and `somDumpSelf` write to standard output, not through `SOMOutCharRoutine`; `somDumpSelf`'s layout is an opening line, the `somDumpSelfInt` lines and a closing `}`, each indented 2 blanks per level;
+  - `somUnregisterClass` and `somUnloadClassFile` do not free the class object; `somUnloadClassFile` on an unregistered class must raise an error, and `somUnregisterClass` of a loaded class unloads its group;
+  - `somSetOutChar` changes the process-wide variable; it is per application (thread);
+  - `somAssert` / `somTest` ignore `SOM_WarnLevel` / `SOM_AssertLevel` (warnings only above 0; a passed `SOM_Test` prints a message above 0);
+  - `SOMMalloc` / `SOMCalloc` / `SOMRealloc` / `SOMFree` do not call `SOMError` on failure; the default `SOMOutCharRoutine` ignores a failed write;
+  - `somAllocate` / `somDeallocate` bypass a replaced `SOMMalloc` / `SOMFree`;
+  - `SOMObject`'s `somGetInstancePartSize` is 4, not 0; `somGetClassName` does not call the class's `somGetName`;
+  - `somInitMIClass` does not record the class's version.
+- [ ] **Missing, documented by the Reference**:
+  - environments and exceptions: `somSetException`, `somExceptionId` / `somExceptionValue` / `somExceptionFree`, `somEnvironmentEnd`, `somMainProgram`;
+  - `somDataResolveChk`;
+  - the `somRenew` family (`somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero`): objects in the caller's memory;
+  - introspection: `somGetParents`, `_get_somInstanceDataOffsets`, `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetNthMethodData`, `somGetMethodData`, `somGetMethodDescriptor`;
+  - the class manager: `somGetInitFunction`, `somGetRelatedClasses`, `somSubstituteClass`, `somMergeInto`;
+  - copy and assignment: `somDefaultCopyInit`, `somDefaultConstCopyInit`, `somDefaultAssign`, `somDefaultConstAssign` (shallow copies; a null `ctrl` until Stage B2/B3);
+  - `somCastObj` / `somResetObj` (a derived "Class->Ancestor" class; `somResetObj` always returns TRUE);
+  - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods;
+  - the SDK has no SOM headers: the `SOM_*` macros (`SOM_MainProgram`, `SOM_InitEnvironment`, `SOM_UninitEnvironment`, `SOM_Expect`, `SOM_WarnMsg`, …) for GCC / clang programs.
+- [ ] **Settled by the Reference — update the ADRs and `doc/unverified.md`**:
+  - confirmed: 2 blanks per `somPrefixLevel` level; the `<Class>NewClass` fallback after `SOMInitModule`; `SOMInitModule(major, minor, className)`; a class descends from itself; `somNew` = `somNewNoInit` + `somDefaultInit`; a requested version 0.0 matches any; the default `SOMError` ends the process on severity 9 (only its message text and exit code stay Warpine's); `somPrintSelf`'s text; `somGetSize`; `somLocateClassFile` returning the class name without `dllname`;
+  - to correct: `SOMERROR_NotImplementedYet` (20171) ends in 1, the *Ignore* severity, not a warning; ADR-0060's "unknown data token gives 0" and ADR-0070's "SOMInitModule even after a replaced `SOMClassInitFuncName`" are contradicted.
+- [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
+  - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; Free Pascal's LGPL `som.pas` (not used so far) or the rights holders are the routes left;
+  - Stage B2/B3 is on hold (decided 2026-11-20) until IBM-built binaries can load (ordinals 48+) or a source describes the control-block protocol; neither the OS/2 Reference nor the SOMobjects 3.0 *Programmer's Guide* Vol. I does (checked 2026-11-23: semantics and the generated stubs' use only, no fields or macro expansions), so it may need a design of Warpine's own (an ADR): the SOM Programming Guide ("Initializing and Uninitializing Objects") gives the semantics — each class's initializer exactly once, in a left-to-right visit of `directinitclasses` (default: the parents); `somDefaultInit` calls a legacy `somInit`; `somDestruct` runs the class's own clean-up, then its ancestors' — and the Toolkit headers give `somInitCtrl` / `somInitInfo` / `somDestructInfo` / `somAssignInfo`, but neither shows how generated `BeginInitializer` / `Init_<Ancestor>_…` / `EndDestructor` code indexes the mask and info arrays or turns a null `ctrl` into a block;
+  - class building from IBM's static class data, Stage B2/B3 (`somBuildClass` itself is done, ADR-0073): initializers and direct-init classes, the initializer / destructor / assignment control blocks of `somParentMtabStruct`, DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`; `somBuildClass` and the other SOM 2.x entries reach IBM-built binaries only once IBM's ordinals above 47 are known;
+  - the root methods that resolve to the not-implemented procedure: see "Missing, documented by the Reference" above; the class manager's `somInterfaceRepository` / `somRegisteredClasses` attributes are not in the Reference.
+- [ ] **A SOM IDL compiler** (`somidl`, ADR-0122, proposed): SOM headers and IDL in the SDK, C and C++ bindings, a Warpine-own initializer protocol, so SOM source can be rebuilt and run; stages S1–S4.
+- [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
+- [ ] **Class files**: `dllname` for `somLocateClassFile`.
+- [ ] **Utilities and metadata**: `SOMU` classes, the interface repository (`SOMIR`), IDL metadata.
+- [ ] **WPS classes** (after the *Workplace Shell Programming Guide* and *Reference*):
+  - `WPObject`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`;
+  - persistence in OS2.INI;
+  - settings notebooks;
+  - `wpDragOver` / `wpDrop`.
+
+---
+
+## Kernel and processes
+
+- [ ] **Shared memory** (ADR-0049):
+  - enforce access flags (every process can reach the whole arena now);
+  - `DosAllocShrSeg` / `DosGetShrSeg`;
+  - free a killed process's blocks at once (now at the next table use).
+- [ ] **Semaphores** (ADR-0050):
+  - named and shared muxwait semaphores across processes;
+  - limits of 512 per session and 28 processes per semaphore;
+  - free a semaphore only a killed process held at once.
+- [ ] **Signals** (ADR-0035, 0093):
+  - interrupting writes to anonymous pipes, and host file I/O on FIFOs and devices;
+  - signal focus across the session, `ERROR_INVALID_PROCID` for PM programs;
+  - a GDB stop request kicking the vCPUs.
+- [ ] **Pipes**:
+  - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
+  - sweeping stale `warpine-threads-*` directories;
+  - echo of piped standard input.
+- [ ] **Suballocation**: shared pools between processes.
+- [ ] **Threads per process**: the paging arena caps a process at 738 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
+- [ ] **Profiles**:
+  - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
+  - binary OS/2 INI files (format unpublished).
+- [ ] **CONFIG.SYS** (ADR-0032, 0092):
+  - check the `THREADS=` range (32 or 64? 4095 or 4096?) and the parsing rules against IBM's Command Reference itself (`CMDREF.INF`): a web search found only secondary sources, which disagree (`config_sys.rs`);
+  - BEGINLIBPATH / ENDLIBPATH passed to child processes, `%BEGINLIBPATH%` / `%ENDLIBPATH%` expanded by `DosSetExtLIBPATH`;
+  - `MAXWAIT`, `DPATH` use, ….
+- [ ] **Compatibility chart** (ADR-0033):
+  - date the 22 `unknown` exports;
+  - check the Warp 3 data;
+  - get export lists for UCONV, MMPM/2, TCP/IP, PMCTLS and MSG.
+- [ ] **SOM.DLL ordinals 48 and above**: see [SOM](#som--workplace-shell).
 
 ---
 
@@ -186,40 +265,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ---
 
-## Kernel and processes
-
-- [ ] **Shared memory** (ADR-0049):
-  - enforce access flags (every process can reach the whole arena now);
-  - `DosAllocShrSeg` / `DosGetShrSeg`;
-  - free a killed process's blocks at once (now at the next table use).
-- [ ] **Semaphores** (ADR-0050):
-  - named and shared muxwait semaphores across processes;
-  - limits of 512 per session and 28 processes per semaphore;
-  - free a semaphore only a killed process held at once.
-- [ ] **Signals** (ADR-0035, 0093):
-  - interrupting writes to anonymous pipes, and host file I/O on FIFOs and devices;
-  - signal focus across the session, `ERROR_INVALID_PROCID` for PM programs;
-  - a GDB stop request kicking the vCPUs.
-- [ ] **Pipes**:
-  - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
-  - sweeping stale `warpine-threads-*` directories;
-  - echo of piped standard input.
-- [ ] **Suballocation**: shared pools between processes.
-- [ ] **Profiles**:
-  - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
-  - binary OS/2 INI files (format unpublished).
-- [ ] **CONFIG.SYS** (ADR-0032, 0092):
-  - check the `THREADS=` range (32 or 64? 4095 or 4096?) and the parsing rules against IBM's Command Reference itself (`CMDREF.INF`): a web search found only secondary sources, which disagree (`config_sys.rs`);
-  - BEGINLIBPATH / ENDLIBPATH passed to child processes, `%BEGINLIBPATH%` / `%ENDLIBPATH%` expanded by `DosSetExtLIBPATH`;
-  - `MAXWAIT`, `DPATH` use, ….
-- [ ] **Compatibility chart** (ADR-0033):
-  - date the 22 `unknown` exports;
-  - check the Warp 3 data;
-  - get export lists for UCONV, MMPM/2, TCP/IP, PMCTLS and MSG.
-- [ ] **SOM.DLL ordinals 48 and above**: see [SOM](#som--workplace-shell).
-
----
-
 ## Console and multimedia
 
 - [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 is done (ADR-0077–0080, 0082). Still open:
@@ -248,27 +293,11 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 - [ ] **Far16 thunks**:
   - dispatch 16-bit calls made through thunks (`vcpu.rs` bypasses them and returns 0; for example `DosGetInfoSeg`);
   - OS/2's tiling formula `(sel >> 3) << 16` (Warpine's tiles start at GDT index 6).
-- [ ] **REXX** (ADR-0081): our own interpreter in Rust, in the built-in CMD.EXE; a `.CMD` file starting with `/*` runs as REXX and its commands go to `ADDRESS CMD`. No Regina, no IBM code. Phases:
-  - R1, the language core, is done (ADR-0083); R2, conditions, streams, TRACE and a REXXUTIL subset, is done (ADR-0084);
-  - R3, the REXX API for programs (REXX.DLL / REXXAPI.DLL: RexxStart, handlers, exits, the variable pool, queues), is done (ADR-0085);
-  - still open from R3's area: the macro space (`RexxAddMacro` … are stubs), tokenized images (`instore[1]`), the `RXFNC`, `RXCMD`, `RXMSQ` and `RXTRC` exits, the 16-bit entry points (`REXXSAA`, `RXVAR` …), system-wide queues and registrations (they are per process), `RxFuncAdd` of DLL function packages from a script;
-  - still open from R2's area: REXXUTIL's screen and keyboard functions (`SysCurPos`, `SysGetKey`, `SysTextScreenRead` …), EAs, INI files and Workplace Shell objects, case by case; interactive tracing's pause (`TRACE ?`); an error output (STDERR, trace) separate from the shell's output;
+- [ ] **REXX** (ADR-0081): our own interpreter in Rust, in the built-in CMD.EXE; a `.CMD` file starting with `/*` runs as REXX and its commands go to `ADDRESS CMD`. No Regina, no IBM code. Phases R1–R3 are done (ADR-0083–0085). Still open:
+  - from R3's area: the macro space (`RexxAddMacro` … are stubs), tokenized images (`instore[1]`), the `RXFNC`, `RXCMD`, `RXMSQ` and `RXTRC` exits, the 16-bit entry points (`REXXSAA`, `RXVAR` …), system-wide queues and registrations (they are per process), `RxFuncAdd` of DLL function packages from a script;
+  - from R2's area: REXXUTIL's screen and keyboard functions (`SysCurPos`, `SysGetKey`, `SysTextScreenRead` …), EAs, INI files and Workplace Shell objects, case by case; interactive tracing's pause (`TRACE ?`); an error output (STDERR, trace) separate from the shell's output;
 - [ ] **Session clock**: `DosSetDateTime` reaching processes that are already running (ADR-0039).
 - [ ] **Sockets** (ADR-0041): the real ordinals and layouts of `select`, `bsdselect` and `os2_select`.
-
----
-
-## Security Facilities
-
-Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
-
-- [ ] **Threads per process**: the paging arena caps a process at 738 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
-- [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
-  - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
-  - seccomp filters per process role (guest processes, the desktop server);
-  - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs and bitmaps, a minute per target on each push and ten minutes weekly): the other resources Warpine reads from a running program (dialog and menu templates, string tables), which first need their parsers taken out of `pm_dialog.rs` / `pm_win.rs` as `bitmap_codec.rs` was.
-- [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---
 
@@ -280,7 +309,7 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
   - `os2rc`: HELPTABLE / HELPSUBTABLE, ASSOCTABLE, FONTDIR, resource names given as strings;
   - the entries left undeclared (`cargo run --bin gen_api -- check-headers` counts them), the float and long double math functions.
 - [ ] **After M3 and M4** (every C sample from GCC and clang, pinned compilers, GDB with DWARF, C++: ADR-0101–0103):
-  - CI (ADR-0106): watch the first runs on GitHub (time and memory of the three entries), and consider caching the image and the crates;
+  - CI (ADR-0106): consider caching the image and the crates;
   - C++ exceptions through Warpine's callbacks (a window procedure that `WinDispatchMsg` called; across DLLs is done, ADR-0107);
   - clang does not honour `-fnon-call-exceptions`: a trapping instruction's own frame gets no cleanups, and a caller clang proves cannot throw ends in `std::terminate` (ADR-0110);
   - a C++ standard library (strings, containers, streams);
@@ -291,64 +320,37 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
 
 ---
 
+## Project Blockers
+
+Items below wait on data, information or binaries Warpine does not have, and that the clean-room policy only lets it take from a permissive public source. Each is also listed in its own section. Unblocking one starts with finding that source.
+
+Where no such source turns up and the original cannot be rebuilt (SOM, the WPS, IPF help …), a practical design of Warpine's own may close the item instead, even at the cost of compatibility (its own ordinals, formats or protocols): Warpine is an OS/2-API-compatible platform, not a clone. Each such choice is agreed first and recorded in an ADR that names what compatibility it gives up.
+
+**Unpublished formats or layouts**
+- **INF / HLP help files** ([Help viewer](#dialogs-menus-and-message-boxes)): the IPF format is unpublished; check the osFree / NewView descriptions first.
+- **Binary OS/2 INI files** ([Profiles](#kernel-and-processes)): the format is unpublished; profiles use Warpine's own format.
+- **`WinGetErrorInfo` / `WinFreeErrorInfo`** ([PM errors](#frames-input-and-messages)): the `ERRINFO` layout is unknown.
+- **`select`, `bsdselect`, `os2_select`** ([Sockets](#application-compatibility)): their real ordinals and layouts.
+
+**Missing export lists or ordinals**
+- **DIVE** and **OpenGL / PGL** ([Graphics](#graphics)): their export lists.
+- **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the export lists of UCONV, MMPM/2, TCP/IP, PMCTLS and MSG; dates for the 22 `unknown` exports.
+- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them. None of the IBM manuals now at hand does either (2026-11-23); the routes left are Free Pascal's LGPL `som.pas` as a factual source (not used so far: needs a decision and an ADR) or asking the rights holders.
+- **SOM Stage B2/B3**, classes built from IBM's static class data ([SOM](#som--workplace-shell)): waits for those ordinals, or a source for the initializer / destructor control-block protocol. It holds back IBM-built SOM programs, and with them the Workplace Shell's compatibility.
+
+**Behaviour the public documentation does not settle**
+- **`DB_RAISED` / `DB_DEPRESSED`** ([Presentation parameters and painting](#frames-input-and-messages)): no source documents them.
+- **The `THREADS=` range and parsing** ([CONFIG.SYS](#kernel-and-processes)): only IBM's Command Reference (`CMDREF.INF`) settles them; secondary sources disagree, and reading it needs an INF reader (see above).
+- **PM errors** ([PM errors](#frames-input-and-messages)): when `WinQueryWindowPos` reports `PMERR_INVALID_FLAG` (it has no flag parameter), and which values make `WinCreateWindow` report its parameter errors.
+
+**Third-party binaries**
+- **bitwiseworks GCC / LIBCn / LIBCx** as regression inputs ([Ported-software tier](#development-toolchain)): their licences must be checked first.
+
+Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace Shell), then the IPF format (the help viewer, and `CMDREF.INF`), then the DIVE and PGL export lists.
+
+---
+
 ## Long-term
-
-### SOM / Workplace Shell
-
-The WPS is a PM application on the session desktop, built on SOM. The SOM kernel's stages 1–4 are done (ADR-0059–0063).
-
-**Sources at hand** (found 2026-11-23; kept locally under `doc/references/`, never committed; public URLs in the README's sources):
-- the OS/2 Warp 4 Toolkit's *System Object Model Programming Guide* and *Reference* and *Workplace Shell Programming Guide* and *Reference* (Internet Archive, reprinted with IBM's permission) — the OS/2 description of SOM and the WPS classes;
-- IBM's OS/390 *SOMobjects Programmer's Reference, Volume 1* (SC28-1997) and *Messages, Codes and Diagnosis* (SC28-1996) — the kernel as documented for OS/390, and the error codes;
-- IBM's *SOMobjects Developer's Toolkit* Version 3.0 books (1996, Internet Archive): *Programmer's Guide* Vol. I–II and *Programmer's Reference* Vol. I–IV — SOM 3.0's concepts, initializers and kernel.
-
-**Object model options** (for Warpine's own objects, and for the WPS should SOM compatibility stay blocked; to be decided in an ADR):
-1. SOM, compatible with IBM's as far as the sources allow (the current course, ADR-0059–0073);
-2. the Cross Platform Component Object Model (XPCOM), Mozilla's portable COM-style component model (interfaces described in XPIDL, reference counting, `QueryInterface`, a component manager; MPL-2.0; also used by VirtualBox on its non-Windows hosts) — not binary-compatible with SOM, so IBM-built SOM and WPS binaries would not run on it.
-
-IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30`) is gone and was never archived; the 3.0 books above are a separate copy. Not used: somFree (LGPLv3, no OS/2 target; excluded by decision) and Netlabs' NOM (binary-incompatible with SOM by design).
-
-- [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
-- [ ] **Bugs: Warpine contradicts the Reference**:
-  - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: no major / minor version check (the rule of `somCheckVersion`); the init function is always "SOMInitModule" rather than the `SOMClassInitFuncName` variable (through `somGetInitFunction`); internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
-  - the default `SOMLoadModule` succeeds when a DLL has neither `SOMInitModule` nor `<Class>NewClass`; it must fail;
-  - `somDataResolve` with an unknown token returns 0; it must raise an error (`somDataResolveChk` is the quiet variant);
-  - `somBuildClass` calls `somClassReady`, `somNew` and `somRegisterClass` internally, so a metaclass's or class manager's overrides never run;
-  - `somPrintSelf` and `somDumpSelf` write to standard output, not through `SOMOutCharRoutine`; `somDumpSelf`'s layout is an opening line, the `somDumpSelfInt` lines and a closing `}`, each indented 2 blanks per level;
-  - `somUnregisterClass` and `somUnloadClassFile` do not free the class object; `somUnloadClassFile` on an unregistered class must raise an error, and `somUnregisterClass` of a loaded class unloads its group;
-  - `somSetOutChar` changes the process-wide variable; it is per application (thread);
-  - `somAssert` / `somTest` ignore `SOM_WarnLevel` / `SOM_AssertLevel` (warnings only above 0; a passed `SOM_Test` prints a message above 0);
-  - `SOMMalloc` / `SOMCalloc` / `SOMRealloc` / `SOMFree` do not call `SOMError` on failure; the default `SOMOutCharRoutine` ignores a failed write;
-  - `somAllocate` / `somDeallocate` bypass a replaced `SOMMalloc` / `SOMFree`;
-  - `SOMObject`'s `somGetInstancePartSize` is 4, not 0; `somGetClassName` does not call the class's `somGetName`;
-  - `somInitMIClass` does not record the class's version.
-- [ ] **Missing, documented by the Reference**:
-  - environments and exceptions: `somSetException`, `somExceptionId` / `somExceptionValue` / `somExceptionFree`, `somEnvironmentEnd`, `somMainProgram`;
-  - `somDataResolveChk`;
-  - the `somRenew` family (`somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero`): objects in the caller's memory;
-  - introspection: `somGetParents`, `_get_somInstanceDataOffsets`, `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetNthMethodData`, `somGetMethodData`, `somGetMethodDescriptor`;
-  - the class manager: `somGetInitFunction`, `somGetRelatedClasses`, `somSubstituteClass`, `somMergeInto`;
-  - copy and assignment: `somDefaultCopyInit`, `somDefaultConstCopyInit`, `somDefaultAssign`, `somDefaultConstAssign` (shallow copies; a null `ctrl` until Stage B2/B3);
-  - `somCastObj` / `somResetObj` (a derived "Class->Ancestor" class; `somResetObj` always returns TRUE);
-  - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods;
-  - the SDK has no SOM headers: the `SOM_*` macros (`SOM_MainProgram`, `SOM_InitEnvironment`, `SOM_UninitEnvironment`, `SOM_Expect`, `SOM_WarnMsg`, …) for GCC / clang programs.
-- [ ] **Settled by the Reference — update the ADRs and `doc/unverified.md`**:
-  - confirmed: 2 blanks per `somPrefixLevel` level; the `<Class>NewClass` fallback after `SOMInitModule`; `SOMInitModule(major, minor, className)`; a class descends from itself; `somNew` = `somNewNoInit` + `somDefaultInit`; a requested version 0.0 matches any; the default `SOMError` ends the process on severity 9 (only its message text and exit code stay Warpine's); `somPrintSelf`'s text; `somGetSize`; `somLocateClassFile` returning the class name without `dllname`;
-  - to correct: `SOMERROR_NotImplementedYet` (20171) ends in 1, the *Ignore* severity, not a warning; ADR-0060's "unknown data token gives 0" and ADR-0070's "SOMInitModule even after a replaced `SOMClassInitFuncName`" are contradicted.
-- [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
-  - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; Free Pascal's LGPL `som.pas` (not used so far) or the rights holders are the routes left;
-  - Stage B2/B3 is on hold (decided 2026-11-20) until IBM-built binaries can load (ordinals 48+) or a source describes the control-block protocol; neither the OS/2 Reference nor the SOMobjects 3.0 *Programmer's Guide* Vol. I does (checked 2026-11-23: semantics and the generated stubs' use only, no fields or macro expansions), so it may need a design of Warpine's own (an ADR): the SOM Programming Guide ("Initializing and Uninitializing Objects") gives the semantics — each class's initializer exactly once, in a left-to-right visit of `directinitclasses` (default: the parents); `somDefaultInit` calls a legacy `somInit`; `somDestruct` runs the class's own clean-up, then its ancestors' — and the Toolkit headers give `somInitCtrl` / `somInitInfo` / `somDestructInfo` / `somAssignInfo`, but neither shows how generated `BeginInitializer` / `Init_<Ancestor>_…` / `EndDestructor` code indexes the mask and info arrays or turns a null `ctrl` into a block;
-  - class building from IBM's static class data, Stage B2/B3 (`somBuildClass` itself is done, ADR-0073): initializers and direct-init classes, the initializer / destructor / assignment control blocks of `somParentMtabStruct`, DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`; `somBuildClass` and the other SOM 2.x entries reach IBM-built binaries only once IBM's ordinals above 47 are known;
-  - the root methods that resolve to the not-implemented procedure: see "Missing, documented by the Reference" above; the class manager's `somInterfaceRepository` / `somRegisteredClasses` attributes are not in the Reference.
-- [ ] **A SOM IDL compiler** (`somidl`, ADR-0122, proposed): SOM headers and IDL in the SDK, C and C++ bindings, a Warpine-own initializer protocol, so SOM source can be rebuilt and run; stages S1–S4.
-- [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
-- [ ] **Class files**: `dllname` for `somLocateClassFile`.
-- [ ] **Utilities and metadata**: `SOMU` classes, the interface repository (`SOMIR`), IDL metadata.
-- [ ] **WPS classes** (after the *Workplace Shell Programming Guide* and *Reference*):
-  - `WPObject`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`;
-  - persistence in OS2.INI;
-  - settings notebooks;
-  - `wpDragOver` / `wpDrop`.
 
 ### XE — a 64-bit OS/2-lineage platform (vision)
 
