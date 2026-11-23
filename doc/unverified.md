@@ -67,6 +67,9 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - equal strings sharing a handle;
   - `xDrop` / `yDrop` updated at each `DM_DRAGOVER`;
   - a container passing its owner's `CN_DRAGOVER` reply on;
+  - the drag image (ADR-0045 addendum): drawn as the pointer, at most 256 × 256 pels, a red "no" sign over the hot spot when refused, polygons and `DRG_TRANSPARENT` not drawn, `DrgSetDragImage` outside a drag only checking the `DRAGINFO`;
+  - container target emphasis as an outline or an insertion line, and the ordered drop bands (a row's upper half before it, the lower half after; mixed: the middle half on the row); `CN_DROP` naming the record under the pointer;
+  - value sets: `VSDRAGINIT.cx` / `cy` as the offset to the item's origin, `VSDRAGINFO` with row and column 0 off a `VIA_DROPONABLE` item;
   - more in ADR-0068: file items, host drops, the operation keys, `WM_ENDDRAG`, the owner getting the gestures.
 - **Buttons**:
   - `BM_CLICK(FALSE)` highlighting only;

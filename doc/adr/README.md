@@ -50,7 +50,7 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0042](0042-embedded-dialogs.md) | Embed a dialog whose parent is a window into that window | Accepted | 2026-11-18 |
 | [0043](0043-container-record-memory.md) | Keep container records in guest memory, carved from per-container arenas | Accepted | 2026-11-18 |
 | [0044](0044-container-sort-call-chains.md) | Run a container sort as a resumable merge sort, one comparison per call chain | Accepted | 2026-11-18 |
-| [0045](0045-drag-and-drop-within-a-process.md) | Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains | Accepted (extended to other programs by ADR-0057) | 2026-11-18 |
+| [0045](0045-drag-and-drop-within-a-process.md) | Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains | Accepted (extended to other programs by ADR-0057; drag images, container emphasis and value sets, 2026-11-23) | 2026-11-18 |
 | [0046](0046-container-icon-view-filter-and-editing.md) | Container icon view, filtering and direct editing: one filter chain, edits written back through the owner's buffer | Accepted | 2026-11-18 |
 | [0047](0047-light-hinting-with-skrifa.md) | Light hinting of Latin text with skrifa, and a contrast curve | Accepted | 2026-11-18 |
 | [0048](0048-builtin-window-procedure-and-tier-1-pm.md) | A guest-callable procedure for built-in windows; standard frames run the default procedure; child presentation spaces in the frame surface | Accepted | 2026-11-18 |

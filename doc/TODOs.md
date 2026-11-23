@@ -65,15 +65,14 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 - [ ] **Drag and drop** (ADR-0045, 0057, 0068):
   - `DrgAcceptDroppedFiles`, `DrgQueryFormat`;
   - lazy drag: `DrgLazyDrag`, `DrgLazyDrop`, `DrgCancelLazyDrag`, `CN_PICKUP`, `CN_DROPNOTIFY`;
-  - drawing the drag image (`DrgSetDragImage` is accepted, but nothing is drawn);
-  - target emphasis drawn by the container, `CN_DRAGAFTER`;
+  - drag images drawn as polygons (`DRG_POLYGON`) or `DRG_TRANSPARENT`; `DM_DROPHELP` / `CN_DROPHELP` / `VN_DROPHELP`;
   - `WM_BEGINDRAG` from the keyboard;
   - a host drop's position on real displays (the last pointer position is used).
 - [ ] **Menus**:
   - a redraw of an owner-drawn item when the mouse highlights it (the keyboard highlight does), `MIA_NODISMISS`.
 - [ ] **Sliders and value sets**:
   - the circular slider's `CSN_QUERYBACKGROUNDCOLOR`;
-  - value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
+  - `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
   - a `wrc` dialog with `CTLDATA` in a sample.
 - [ ] **Text controls**:
   - `WinSetSysValue` for indices other than `SV_CURSORRATE`, `SV_FIRSTSCROLLRATE` and `SV_SCROLLRATE`;

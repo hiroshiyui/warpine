@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Drag images**: the `DRAGIMAGE`s given to `DrgDrag` (icons and bit maps, stretched with `DRG_STRETCH`, at their offsets from the pointer) are drawn as the pointer during the drag, with a "no" sign over a window that refuses; `DrgSetDragImage` changes them while dragging.
+- **Container target emphasis**: a container whose owner accepts a drag outlines the record under the pointer (the whole container over white space); with `CA_ORDEREDTARGETEMPH` / `CA_MIXEDTARGETEMPH` in the name, text and details views it sends `CN_DRAGAFTER` (the record the drop goes after, `CMA_FIRST` before the first) and draws an insertion line. Records with `CRA_TARGET` are outlined too.
+- **Value set drag and drop**: `WM_BEGINDRAG` on a `VIA_DRAGGABLE` item sends `VN_INITDRAG` (`VSDRAGINIT`); as a target the value set asks its owner with `VN_DRAGOVER` / `VN_DRAGLEAVE` / `VN_DROP` (`VSDRAGINFO`: the row and column of the `VIA_DROPONABLE` item under the pointer, 0 elsewhere).
 - **Sliders follow button 2**: a button-2 press moves the arm's middle to the pointer and drags it (`SLN_SLIDERTRACK`, then `SLN_CHANGE` on release).
 - **Notebook looks**: `BKS_ROUNDEDTABS` / `BKS_POLYGONTABS` tabs, the `BKS_SPIRALBIND` binding, back pages at any `BKS_BACKPAGES*` corner, and pictures on notebook buttons (`NOTEBOOKBUTTON.hImage`).
 - **Circular slider buttons**: held − / + buttons repeat, and `CSM_SETBITMAPDATA`'s pictures replace their glyphs, stretched to the buttons.
