@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **VIO window: Font Size, Scroll, keyboard marking, Hide and Help**: Font Size lists the cell sizes 8 × 8, 8 × 12, 8 × 14, 8 × 16, 12 × 24 and 16 × 32 (drawn from the 8 × 16 glyphs; the window is resized for the one chosen); Scroll ("Scrolling: " in the title) makes the arrows, Page Up / Down, Home / End and Ctrl+Home / Ctrl+End scroll the view; in Mark mode the same keys move a mark, Shift extends it and Enter copies it, and a mouse mark held past the window's edge scrolls it on; Hide (Alt+F11) hides the window, which now has a window-list entry, so Ctrl+Esc or another program's window list brings it back; Help lists the window's keys. The system menu gains Window list (Ctrl+Esc).
 - **Drag images**: the `DRAGIMAGE`s given to `DrgDrag` (icons and bit maps, stretched with `DRG_STRETCH`, at their offsets from the pointer) are drawn as the pointer during the drag, with a "no" sign over a window that refuses; `DrgSetDragImage` changes them while dragging.
 - **Container target emphasis**: a container whose owner accepts a drag outlines the record under the pointer (the whole container over white space); with `CA_ORDEREDTARGETEMPH` / `CA_MIXEDTARGETEMPH` in the name, text and details views it sends `CN_DRAGAFTER` (the record the drop goes after, `CMA_FIRST` before the first) and draws an insertion line. Records with `CRA_TARGET` are outlined too.
 - **Value set drag and drop**: `WM_BEGINDRAG` on a `VIA_DRAGGABLE` item sends `VN_INITDRAG` (`VSDRAGINIT`); as a target the value set asks its owner with `VN_DRAGOVER` / `VN_DRAGLEAVE` / `VN_DROP` (`VSDRAGINFO`: the row and column of the `VIA_DROPONABLE` item under the pointer, 0 elsewhere).
@@ -19,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Cascading submenus in pull-downs**: a pull-down row with a submenu shows an arrow and opens its cascade beside the row — from the keyboard with Right, Enter or its mnemonic (Up / Down / Home / End move in it, Enter or a mnemonic chooses, Left or Esc closes it, Right moves on along the bar), or with a click on the row; a click in the cascade chooses. The client gets `WM_INITMENU` for the row's item before its cascade opens, `WM_MEASUREITEM` / `WM_DRAWITEM` for its owner-drawn items, and `WM_MENUSELECT` as in pull-downs. The cascade opens to the right (to the left without room) and stays inside the frame; one level is shown. All three compositors draw it.
 
 ### Changed
+- **A PM frame's system menu enables Window list**, which shows the window list as Ctrl+Esc does.
 - **Console output to a host pipe or file** is text in the process codepage (it was always read as CP437): `WARPINE_CODEPAGE=850` turns 0x9B into "ø", not "¢".
 - **`MM_MCINOTIFY`** carries the command's user parameter (the last argument of `mciSendCommand` / `mciSendString`) in mp1's high word and the MCI message that completed in mp2's.
 

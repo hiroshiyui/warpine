@@ -226,8 +226,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **VIO window**:
-  - Font Size, Scroll, Help, Hide;
-  - keyboard marking, and autoscroll while marking;
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).
 - [ ] **MOUCALLS**: MOUCALLS for NE programs; calls passed to a registered subsystem (`MouRegister` records it only).

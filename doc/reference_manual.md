@@ -129,7 +129,11 @@ Warpine automatically selects an execution mode based on the executable and envi
 - CP437 8×16 VGA font, CGA 16-colour palette, blinking cursor, as in the full-screen mode.
 - Keys typed while the frame is active go to the program (`KbdCharIn`); the close button or a double click on the system-menu icon ends it.
 - The frame has minimize and maximize buttons and a sizing border. Smaller than the screen, it shows scroll bars over it; it cannot grow past the whole screen; maximize fits it to the screen (up to the desktop); the view follows the cursor.
-- The system menu (a click on its icon, Alt+Space or Shift+Esc) has Restore, Move, Size, Minimize, Maximize, Close, Mark, Copy, Copy All and Paste (Hide, Help, Font Size and Scroll are shown greyed). Mark, then drag over the text and Copy, puts that rectangle on the clipboard (shared with the host); Copy All copies the whole screen; Paste types the clipboard text into the program. Alt+F4 / F5 / F7 / F8 / F9 / F10 close, restore, move, size, minimize and maximize the window.
+- The system menu (a click on its icon, Alt+Space or Shift+Esc) has Restore, Move, Size, Minimize, Maximize, Hide, Close, Window list, Help, Font Size, Scroll, Mark, Copy, Copy All and Paste. Alt+F4 / F5 / F7 / F8 / F9 / F10 / F11 close, restore, move, size, minimize, maximize and hide the window; Ctrl+Esc opens the window list.
+- **Mark**, then drag over the text and Copy, puts that rectangle on the clipboard (shared with the host); a drag past the window's edge scrolls it. In Mark mode the arrows, Page Up / Down, Home / End and Ctrl+Home / Ctrl+End move a one-cell mark (starting at the text cursor), Shift with them extends it, and Enter copies it. Copy All copies the whole screen; Paste types the clipboard text into the program.
+- **Scroll** ("Scrolling: " in the title) makes the same keys scroll the window's view; Esc leaves Mark or Scroll mode.
+- **Font Size** lists the cell sizes 8 × 8, 8 × 12, 8 × 14, 8 × 16 (the default), 12 × 24 and 16 × 32; the window is resized for the one chosen.
+- **Hide** hides the window; the window list (Ctrl+Esc, here or in another program's window) brings it back. **Help** lists these keys.
 - Alt+Home switches the program to full screen and back; it keeps running.
 - The mouse reaches programs that use the MOUCALLS API, in text cells.
 

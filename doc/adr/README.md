@@ -18,7 +18,7 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0010](0010-sdl3-safe-only.md) | Use SDL3 through the safe sdl3-rs API only | Accepted | 2026-11-16 |
 | [0011](0011-own-desktop-compositor.md) | Draw the PM desktop in one host window with Warpine's own compositor | Accepted | 2026-04-02 |
 | [0012](0012-fonts-plex-and-unifont.md) | Draw PM text with IBM Plex and text mode with GNU Unifont | Accepted | 2026-11-15 |
-| [0013](0013-vio-in-pm-window.md) | Run text-mode (VIO) programs in a PM window by default | Accepted | 2026-11-17 |
+| [0013](0013-vio-in-pm-window.md) | Run text-mode (VIO) programs in a PM window by default | Accepted (Font Size, Scroll, keyboard marking, Hide and Help, 2026-11-23) | 2026-11-17 |
 | [0014](0014-builtin-cmd.md) | Provide CMD.EXE as a built-in Rust shell | Accepted | 2026-04-01 |
 | [0015](0015-rust-guest-toolchain.md) | Build Rust guest programs with Warpine's own ELF-to-LX linker | Accepted | 2026-04-01 |
 | [0016](0016-locale-from-host.md) | Take the country and codepage from the host locale | Accepted | 2026-11-17 |

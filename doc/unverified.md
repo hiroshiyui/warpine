@@ -293,7 +293,11 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - the scroll-bar and menu look;
   - Alt+Space / Shift+Esc, and Alt+F4 ending the program;
   - mnemonics, and which items are enabled when;
-  - keys in Mark mode;
+  - keys in Mark mode: arrows, Page Up / Down, Home / End, Ctrl+Home / Ctrl+End moving a one-cell mark from the text cursor, Shift extending it, Enter copying it; autoscroll a cell every 60 ms past the view's edge;
+  - Font Size as a pop-up list of sizes drawn from the 8 × 16 glyphs (OS/2 shows a dialog), the "any covered pel" resampling, the frame refitted to the whole screen, the size lasting only for the session;
+  - Scroll as a mode ("Scrolling: " in the title) and its keys; other keys ignored in Mark and Scroll mode;
+  - Hide leaving no window of the program active, the VIO frame's switch-list entry (a `FCF_TASKLIST` frame's fields), Ctrl+Esc opening the window list while the window is hidden;
+  - Help as a pop-up panel of keys (Warpine's own text);
   - Copy All's trailing blank lines;
   - Paste's scan codes and dropped control characters;
   - Alt+Home for OS/2 sessions only, and consumed;
