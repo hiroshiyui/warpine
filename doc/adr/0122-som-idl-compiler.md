@@ -1,6 +1,6 @@
 # ADR-0122: somidl, a SOM IDL compiler for the SDK, with SOM headers and an initializer protocol of Warpine's own
 
-- **Status:** Proposed (builds on ADR-0059–0063 and ADR-0070–0073; follows the SDK's own compilers, ADR-0099 `os2rc` and ADR-0105 `os2msg`)
+- **Status:** Accepted 2026-11-23 (builds on ADR-0059–0063 and ADR-0070–0073; follows the SDK's own compilers, ADR-0099 `os2rc` and ADR-0105 `os2msg`)
 - **Date:** 2026-11-23
 - **Sources:**
   - **What SOM IDL is:**
@@ -26,7 +26,7 @@ A program rebuilt from source with bindings Warpine generates does not depend on
 - it imports `SOM.DLL` by name;
 - its initializer code is whatever Warpine's emitter writes, so it only has to agree with Warpine's own kernel.
 
-## Decision (proposed)
+## Decision
 
 1. **`somidl` (`src/bin/somidl.rs`, the compiler in `src/somidl/`)** compiles SOM IDL into C and C++ bindings, as `os2rc` and `os2msg` do for their formats:
 
@@ -84,7 +84,7 @@ A program rebuilt from source with bindings Warpine generates does not depend on
 - Source that relies on undocumented details of IBM's generated bindings (macro internals, the layout of the control blocks, private `somc*` methods) will not compile, or will behave differently. Such cases are handled case by case.
 - A new tool to maintain: a parser, four emitters, SDK headers and a fuzz target. Its output has no oracle, since `sc` cannot be run. Tests check the generated code by compiling and running it against the kernel, and against the Guide's descriptions of the bindings.
 
-## Unverified (Warpine's choices, to record in `doc/unverified.md` when accepted)
+## Unverified (Warpine's choices, recorded in `doc/unverified.md`)
 
 - The control-block structures, their table, and the macro names beyond those the Guide shows.
 - The exact text and formatting of generated files, the implementation template's contents, and the `def` emitter's output.

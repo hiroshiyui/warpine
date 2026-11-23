@@ -351,6 +351,11 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - `ERROR_PROC_NOT_FOUND` from the default `SOMLoadModule` for a DLL with neither entry point, the DLL staying loaded;
   - an empty or unreadable name from a replaced `SOMClassInitFuncName` falling back to "SOMInitModule".
 - **`somBuildClass`** (ADR-0073): `inheritVars` unused; dynamic / nonstatic methods added as static; scoped override names by their last part; `imt` parents from 1; only the first parent's metaclass considered; the field data token's form; `dataAlignment` / `somDynamicSCI` unused; the class init function called last.
+- **`somidl` and its protocol** (ADR-0122):
+  - the control-block structures (`somInitCtrl`, `somDestructCtrl`, `somAssignCtrl`), their per-class table, and the macro names beyond those the SOM Programming Guide shows;
+  - the exact text and formatting of generated files, the implementation template's contents and the `def` emitter's output;
+  - which SOM IDL modifiers are accepted, ignored or refused at each stage;
+  - `__SOMIDL__` and any other predefined macros.
 - **SOM layouts** (ADR-0072):
   - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;
   - lacking root methods warning (20171) instead of IBM's fatal `SOMERROR_NotImplementedYet`;
