@@ -22,6 +22,8 @@ OS2_BUILD ?= $(WARPINE_SDK)/build/$(notdir $(CC))
 # Where cargo put Warpine's tools (CARGO_TARGET_DIR, as cargo reads it).
 CARGO_TARGET_DIR ?= $(WARPINE_SDK)/../target
 LX_LINK   ?= $(CARGO_TARGET_DIR)/debug/lx_link
+# The SOM IDL compiler (ADR-0122): `$(SOMIDL) -I $(WARPINE_SDK)/include -s h,ih -o dir x.idl`.
+SOMIDL    ?= $(CARGO_TARGET_DIR)/debug/somidl
 # The resource compiler (ADR-0099): `$(OS2_RC) $(OS2_RCFLAGS) x.rc -o x.res`,
 # then pass x.res to $(LX_LINK) with the objects.
 OS2_RC    ?= $(CARGO_TARGET_DIR)/debug/os2rc

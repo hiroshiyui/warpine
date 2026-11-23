@@ -6,7 +6,6 @@
 include ../../sdk/os2.mk
 
 BUILD  ?= .
-SOMIDL ?= $(WARPINE_SDK)/../target/debug/somidl
 CFLAGS  = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -I$(BUILD)
 
 ifeq ($(and $(wildcard $(LX_LINK)),$(wildcard $(SOMIDL))),)
