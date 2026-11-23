@@ -1,0 +1,90 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/*
+ * som.xh - SOM for C++ programs built with GCC or clang (ADR-0061,
+ * ADR-0122): the root classes as C++ classes over the SDK's som.h, which
+ * somidl's C++ bindings (.xh) derive their classes from.
+ *
+ * Written for Warpine from the public SOM documentation (SOM Programming
+ * Guide, "Using SOM classes in C++": SOM classes as C++ classes, new and
+ * delete; SOM Programming Reference: somNewNoInit, somDefaultInit,
+ * somDestruct); nothing is copied from IBM's headers.
+ *
+ * A SOM class is a C++ class with no virtual functions whose only member
+ * is the object's first word, the method-table pointer; its methods are
+ * inline functions that call through the class's ClassData tokens, as
+ * the C bindings do. Objects come only from the SOM runtime:
+ *   - operator new makes an uninitialized instance with somNewNoInit on
+ *     the class object (creating the class first);
+ *   - the constructor of the object's own class calls somDefaultInit (the
+ *     constructors of its C++ bases see another class and do nothing);
+ *   - operator delete calls somDestruct( 1 ), which runs the destructors
+ *     (Warpine's protocol, somcdev.h) and frees the object.
+ * Objects on the stack or in static storage are not SOM objects here:
+ * their constructors see no SOM object and leave them alone.
+ */
+#ifndef WARPINE_SOM_XH
+#define WARPINE_SOM_XH
+
+#include <som.h>
+
+/* What every SOM class's C++ class has: creation, initialization and
+ * deletion through the SOM runtime. _cls is the class-object macro. */
+#define SOM_CPP_CLASS( cls ) \
+    void *operator new( size_t ) { return (void *)_somNewNoInit( _##cls ); } \
+    void operator delete( void *obj ) { if( obj ) _somDestruct( (SOMObject *)obj, 1, 0 ); } \
+    cls() { if( somIsObj( this ) && (SOMObject *)_somGetClass( this ) == (SOMObject *)(_##cls) ) _somDefaultInit( this, 0 ); } \
+    ~cls() {}
+
+#define _SOMObject   (SOMObjectClassData.classObject)
+#define _SOMClass    (SOMClassClassData.classObject)
+#define _SOMClassMgr (SOMClassMgrClassData.classObject)
+
+class SOMObject {
+public:
+    somMethodTab *mtab;
+
+    SOM_CPP_CLASS( SOMObject )
+    void      somInit()                     { _somInit( this ); }
+    void      somUninit()                   { _somUninit( this ); }
+    void      somFree()                     { _somFree( this ); }
+    SOMClass *somGetClass()                 { return _somGetClass( this ); }
+    zString   somGetClassName()             { return _somGetClassName( this ); }
+    integer4  somGetSize()                  { return _somGetSize( this ); }
+    int       somIsA( SOMClass *c )         { return _somIsA( this, c ); }
+    int       somIsInstanceOf( SOMClass *c ) { return _somIsInstanceOf( this, c ); }
+    int       somRespondsTo( somId id )     { return _somRespondsTo( this, id ); }
+    SOMObject *somPrintSelf()               { return _somPrintSelf( this ); }
+    void      somDumpSelf( long level )     { _somDumpSelf( this, level ); }
+    void      somDumpSelfInt( long level )  { _somDumpSelfInt( this, level ); }
+    void      somDefaultInit( somInitCtrl *ctrl ) { _somDefaultInit( this, ctrl ); }
+    void      somDestruct( octet doFree, somDestructCtrl *ctrl ) { _somDestruct( this, doFree, ctrl ); }
+};
+
+class SOMClass : public SOMObject {
+public:
+    SOM_CPP_CLASS( SOMClass )
+    SOMObject *somNew()                     { return _somNew( this ); }
+    SOMObject *somNewNoInit()               { return _somNewNoInit( this ); }
+    zString    somGetName()                 { return _somGetName( this ); }
+    SOMClass  *somGetParent()               { return _somGetParent( this ); }
+    integer4   somGetInstanceSize()         { return _somGetInstanceSize( this ); }
+    somDToken  somGetInstanceToken()        { return _somGetInstanceToken( this ); }
+    int        somDescendedFrom( SOMClass *c ) { return _somDescendedFrom( this, c ); }
+    boolean    somCheckVersion( long major, long minor ) { return _somCheckVersion( this, major, minor ); }
+};
+
+class SOMClassMgr : public SOMObject {
+public:
+    SOM_CPP_CLASS( SOMClassMgr )
+    SOMClass *somFindClass( somId id, long major, long minor ) { return _somFindClass( this, id, major, minor ); }
+    SOMClass *somFindClsInFile( somId id, long major, long minor, zString file )
+                                            { return _somFindClsInFile( this, id, major, minor, file ); }
+    zString   somLocateClassFile( somId id, long major, long minor )
+                                            { return _somLocateClassFile( this, id, major, minor ); }
+    SOMClass *somLoadClassFile( somId id, long major, long minor, zString file )
+                                            { return _somLoadClassFile( this, id, major, minor, file ); }
+    long      somUnregisterClass( SOMClass *c ) { return _somUnregisterClass( this, c ); }
+    long      somUnloadClassFile( SOMClass *c ) { return _somUnloadClassFile( this, c ); }
+};
+
+#endif

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// somidl's C emitters (ADR-0122, stage S1): the usage bindings (`h`), the
-// implementation bindings (`ih`), an implementation template (`c`) and a
-// class library's exports (`def`), from the interfaces of the main IDL
-// file. The names follow the SOM Programming Guide's description of the C
+// somidl's C and C++ emitters (ADR-0122, stages S1 and S2): the usage
+// bindings (`h`; C++ `xh`), the implementation bindings (`ih` / `xih`), an
+// implementation template (`c` / `xc`) and a class library's exports
+// (`def`), from the interfaces of the main IDL file. In C++ a SOM class
+// is a C++ class without virtual functions whose methods call through the
+// ClassData tokens (som.xh's SOM_CPP_CLASS: new through somNewNoInit, the
+// constructor's somDefaultInit, delete through somDestruct). The names follow the SOM Programming Guide's description of the C
 // bindings (`<Class>NewClass`, `<Class>ClassData`, `<Class>CClassData`,
 // `_method` macros, `<Class>GetData`, `<Class>MethodDebug`, `SOM_Scope`,
 // `somSelf`, `somThis`); the text is Warpine's own.
@@ -377,7 +380,7 @@ impl<'a> Emitter<'a> {
 
     // ─── h ───────────────────────────────────────────────────────────────
 
-    fn usage(&self, c: &Class, out: &mut String) -> Res<()> {
+    fn usage(&self, c: &Class, out: &mut String, cpp: bool) -> Res<()> {
         let n = &c.name;
         let _ = writeln!(out, "/* ---- {n} ---- */");
         let _ = writeln!(out, "#define {n}_MajorVersion {}\n#define {n}_MinorVersion {}", c.major, c.minor);
@@ -397,6 +400,24 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(out, "}} SOMDLINK {n}ClassData;");
         let _ = writeln!(out, "SOMEXTERN struct {n}CClassDataStructure {{\n    somMethodTabs parentMtab;\n    somDToken instanceDataToken;\n}} SOMDLINK {n}CClassData;");
         let _ = writeln!(out, "#define _{n} ({n}ClassData.classObject ? {n}ClassData.classObject : {})", self.new_class_call(&c.i.name));
+        if cpp {
+            // A C++ class: no virtual functions, its methods inline calls
+            // through the ClassData tokens; som.xh's SOM_CPP_CLASS gives
+            // new, delete and the constructor.
+            let _ = writeln!(out, "class {n} : public {} {{\npublic:\n    SOM_CPP_CLASS( {n} )", self.cname(&c.parent));
+            for m in &c.methods {
+                let params = self.params(m, c.oidl)?;
+                let mut args: Vec<String> = vec!["this".into()];
+                if !c.oidl { args.push("ev".into()); }
+                args.extend(m.params.iter().map(|p| p.name.clone()));
+                let ret = self.c_type(&m.ret)?;
+                let ret_kw = if m.ret == Type::Void { "" } else { "return " };
+                let _ = writeln!(out, "    {}{}( {} ) {{ {ret_kw}SOM_Resolve( this, {n}, {} )( {} ); }}", spaced(&ret), m.name,
+                                 params.join(", "), m.name, args.join(", "));
+            }
+            let _ = writeln!(out, "}};\n");
+            return Ok(());
+        }
         let _ = writeln!(out, "#define {n}New() (({n} *)_somNew( _{n} ))");
         for m in &c.methods {
             let mut args: Vec<String> = Vec::new();
@@ -464,15 +485,17 @@ impl<'a> Emitter<'a> {
         // ClassData and the class's static information.
         let _ = writeln!(out, "struct {n}ClassDataStructure SOMDLINK {n}ClassData;");
         let _ = writeln!(out, "struct {n}CClassDataStructure SOMDLINK {n}CClassData;");
-        let _ = writeln!(out, "static char *somCN_{n}_s = \"{}\";\nstatic char *somPN_{n}_s = \"{}\";",
+        let _ = writeln!(out, "static char somCN_{n}_t[] = \"{}\";\nstatic char *somCN_{n}_s = somCN_{n}_t;\nstatic char somPN_{n}_t[] = \"{}\";\nstatic char *somPN_{n}_s = somPN_{n}_t;",
                          self.som_name(&c.i.name), self.som_name(&c.parent));
         let _ = writeln!(out, "static somId somPN_{n}[1] = {{ &somPN_{n}_s }};");
-        if let Some(meta) = &c.meta { let _ = writeln!(out, "static char *somMC_{n}_s = \"{}\";", self.som_name(meta)); }
+        if let Some(meta) = &c.meta {
+            let _ = writeln!(out, "static char somMC_{n}_t[] = \"{}\";\nstatic char *somMC_{n}_s = somMC_{n}_t;", self.som_name(meta));
+        }
         for m in &c.methods {
-            let _ = writeln!(out, "static char *somMN_{n}_{0}_s = \"{0}\";\nstatic somId somMN_{n}_{0} = &somMN_{n}_{0}_s;", m.name);
+            let _ = writeln!(out, "static char somMN_{n}_{0}_t[] = \"{0}\";\nstatic char *somMN_{n}_{0}_s = somMN_{n}_{0}_t;\nstatic somId somMN_{n}_{0} = &somMN_{n}_{0}_s;", m.name);
         }
         for o in &c.overrides {
-            let _ = writeln!(out, "static char *somON_{n}_{o}_s = \"{o}\";\nstatic somId somON_{n}_{o} = &somON_{n}_{o}_s;");
+            let _ = writeln!(out, "static char somON_{n}_{o}_t[] = \"{o}\";\nstatic char *somON_{n}_{o}_s = somON_{n}_{o}_t;\nstatic somId somON_{n}_{o} = &somON_{n}_{o}_s;");
         }
         let _ = writeln!(out, "static somStaticMethod_t somSM_{n}[] = {{");
         for m in &c.methods {
@@ -542,17 +565,20 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
     for &kind in kinds {
         let mut out = head(kind);
         match kind {
-            "h" => {
-                let _ = writeln!(out, "#ifndef SOM_{g}_h\n#define SOM_{g}_h\n\n#include <som.h>\n#include <somapi.h>\n");
+            "h" | "xh" => {
+                let cpp = kind == "xh";
+                let (base, objects) = if cpp { ("som.xh", "class") } else { ("som.h", "typedef") };
+                let _ = writeln!(out, "#ifndef SOM_{g}_{kind}\n#define SOM_{g}_{kind}\n\n#include <{base}>\n#include <somapi.h>\n");
                 // Every class's object type first: they name one another.
                 for c in &classes {
-                    let _ = writeln!(out, "#ifndef {0}_defined\n#define {0}_defined\ntypedef SOMObject {0};\n#endif", c.name);
+                    if objects == "class" { let _ = writeln!(out, "class {};", c.name); }
+                    else { let _ = writeln!(out, "#ifndef {0}_defined\n#define {0}_defined\ntypedef SOMObject {0};\n#endif", c.name); }
                 }
                 let mut body = String::new();
                 for d in defs {
                     if let Definition::Type(t, 0) = d { e.type_decl(&mut body, "", t)?; }
                 }
-                for c in &classes { e.usage(c, &mut body)?; }
+                for c in &classes { e.usage(c, &mut body, cpp)?; }
                 // The sequence types the declarations use, before them.
                 for (name, elem) in e.sequences.borrow().iter() {
                     let _ = writeln!(out, "#ifndef {name}_defined\n#define {name}_defined\ntypedef struct {{\n    unsigned long _maximum;\n    unsigned long _length;\n    {}*_buffer;\n}} {name};\n#endif",
@@ -562,13 +588,15 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
                 out.push_str(&body);
                 out.push_str("#endif\n");
             }
-            "ih" => {
-                let _ = writeln!(out, "#ifndef SOM_{g}_ih\n#define SOM_{g}_ih\n\n#include \"{stem}.h\"\n");
+            "ih" | "xih" => {
+                let usage = if kind == "xih" { "xh" } else { "h" };
+                let _ = writeln!(out, "#ifndef SOM_{g}_{kind}\n#define SOM_{g}_{kind}\n\n#include \"{stem}.{usage}\"\n");
                 for c in &classes { e.implementation(c, &mut out)?; }
                 out.push_str("#endif\n");
             }
-            "c" => {
-                let _ = writeln!(out, "#include \"{stem}.ih\"\n");
+            "c" | "xc" => {
+                let imp = if kind == "xc" { "xih" } else { "ih" };
+                let _ = writeln!(out, "#include \"{stem}.{imp}\"\n");
                 for c in &classes { e.template(c, &mut out)?; }
             }
             "def" => {
@@ -577,7 +605,7 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
                     let _ = writeln!(out, "{0}NewClass\n{0}ClassData\n{0}CClassData", c.name);
                 }
             }
-            other => return Err(format!("unknown emitter {other} (h, ih, c, def; xh, xih and xc come with stage S2)")),
+            other => return Err(format!("unknown emitter {other} (h, ih, c, xh, xih, xc, def)")),
         }
         outputs.push(Output { name: format!("{stem}.{kind}"), text: out });
     }

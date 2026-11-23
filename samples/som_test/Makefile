@@ -2,8 +2,8 @@
 #
 # The Open Watcom SOM samples (vendor/watcom/samples/os2/som), built
 # unchanged against Warpine's SOM runtime (ADR-0059). Their C sources come
-# straight from the Open Watcom tree. hello's and animals' bindings are
-# generated from their .idl by somidl (ADR-0122; cargo build makes it);
+# straight from the Open Watcom tree. hello's, animals' and hellocpp's
+# bindings are generated from their .idl by somidl (ADR-0122; cargo build makes it);
 # the classes' (from OIDL .csc files, which somidl does not read) are
 # written by hand here, over include/som.h.
 #
@@ -13,7 +13,7 @@
 #   animals/ -> animals.exe  (somidl's bindings) metaclasses with data and constructors, a
 #                            derived metaclass, attributes, sequences,
 #                            somPrintf and SOMMalloc
-#   hellocpp/ -> hellocpp.exe the C++ bindings: a SOM class as a C++
+#   hellocpp/ -> hellocpp.exe the C++ bindings (somidl's): a SOM class as a C++
 #                            class, new through somNewNoInit and
 #                            somDefaultInit (ADR-0061)
 #   findcls/ -> findcls.exe  Warpine's own check of class loading:
@@ -98,20 +98,23 @@ $(B)/amain.obj: $(SOMSAMPLES)/animals/main.c $(B)/animals/animals.h | $(B)
 animals.exe: $(B)/animals.obj $(B)/amain.obj som.lnk
 	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/animals.obj $(B)/amain.obj }
 
-# ---- hellocpp: the C++ bindings ----
-HPP = -I$(CURDIR)/hellocpp
-$(B)/hellocpp.obj: $(SOMSAMPLES)/hellocpp/hello.cpp hellocpp/hello.xh hellocpp/hello.xih include/som.xh | $(B)
+# ---- hellocpp: the C++ bindings, generated from hello.idl by somidl ----
+$(B)/hellocpp/hello.xh $(B)/hellocpp/hello.xih &: $(SOMSAMPLES)/hellocpp/hello.idl $(SOMIDL) $(wildcard ../../sdk/include/*.idl) | $(B)
+	mkdir -p $(B)/hellocpp
+	$(SOMIDL) -I $(CURDIR)/../../sdk/include -s xh,xih -o $(B)/hellocpp $<
+HPP = -I$(CURDIR)/$(B)/hellocpp
+$(B)/hellocpp.obj: $(SOMSAMPLES)/hellocpp/hello.cpp $(B)/hellocpp/hello.xh $(B)/hellocpp/hello.xih include/som.xh | $(B)
 	$(WPP386) $(CFLAGS) $(HPP) -fo=$@ $<
-$(B)/hcmain.obj: $(SOMSAMPLES)/hellocpp/main.cpp hellocpp/hello.xh include/som.xh | $(B)
+$(B)/hcmain.obj: $(SOMSAMPLES)/hellocpp/main.cpp $(B)/hellocpp/hello.xh include/som.xh | $(B)
 	$(WPP386) $(CFLAGS) $(HPP) -fo=$@ $<
 hellocpp.exe: $(B)/hellocpp.obj $(B)/hcmain.obj som.lnk
 	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/hellocpp.obj $(B)/hcmain.obj }
 
-# ---- cpp: Warpine's own C++ check ----
+# ---- cpp: Warpine's own C++ check, on hellocpp's generated Hello ----
 CPP = $(HPP) -I$(CURDIR)/cpp
-$(B)/loud.obj: cpp/loud.cpp cpp/loud.xh cpp/loud.xih hellocpp/hello.xh include/som.xh | $(B)
+$(B)/loud.obj: cpp/loud.cpp cpp/loud.xh cpp/loud.xih $(B)/hellocpp/hello.xh include/som.xh | $(B)
 	$(WPP386) $(CFLAGS) $(CPP) -fo=$@ $<
-$(B)/sompp.obj: cpp/sompp.cpp cpp/loud.xh hellocpp/hello.xh include/som.xh | $(B)
+$(B)/sompp.obj: cpp/sompp.cpp cpp/loud.xh $(B)/hellocpp/hello.xh include/som.xh | $(B)
 	$(WPP386) $(CFLAGS) $(CPP) -fo=$@ $<
 sompp.exe: $(B)/hellocpp.obj $(B)/loud.obj $(B)/sompp.obj som.lnk
 	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/hellocpp.obj $(B)/loud.obj $(B)/sompp.obj }

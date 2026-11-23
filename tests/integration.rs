@@ -2409,6 +2409,7 @@ fn som_idl_classes_built_by_gcc_and_clang_run() {
         // Open Watcom's hello and animals, their sources unchanged, from
         // generated bindings (built when Open Watcom's tree is there).
         for (exe, want) in [("ow_hello.exe", "Hello, World from SOM (C version)"),
+                            ("ow_hellocpp.exe", "Hello, World from SOM (C++ version)"),
                             ("ow_animals.exe", "Its breed is French Poodle and its color is black.\n\nThe animal named Lassie"),
                             ("ow_animals.exe", "Total animal population is currently 9.")] {
             let path = dir.path().join(exe);

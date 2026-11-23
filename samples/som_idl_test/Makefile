@@ -11,7 +11,7 @@ CFLAGS  = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -I$(BUILD)
 # Open Watcom's SOM samples, their C sources unchanged, when its tree is
 # there (vendor/setup_watcom.sh): built from bindings somidl generates.
 OWSOM := $(wildcard $(WARPINE_SDK)/../vendor/watcom/samples/os2/som)
-OWEXE := $(if $(OWSOM),$(BUILD)/ow_hello.exe $(BUILD)/ow_animals.exe)
+OWEXE := $(if $(OWSOM),$(BUILD)/ow_hello.exe $(BUILD)/ow_animals.exe $(BUILD)/ow_hellocpp.exe)
 
 ifeq ($(and $(wildcard $(LX_LINK)),$(wildcard $(SOMIDL))),)
 all:
@@ -49,11 +49,21 @@ $(BUILD)/ow_animals_impl.o: $(OWSOM)/animals/animals.c $(BUILD)/animals/animals.
 	$(CC) $(OWFLAGS) -I$(BUILD)/animals -c $< -o $@
 $(BUILD)/ow_animals_main.o: $(OWSOM)/animals/main.c $(BUILD)/animals/animals.h
 	$(CC) $(OWFLAGS) -I$(BUILD)/animals -c $< -o $@
+# hellocpp: the C++ bindings (xh, xih), built with the SDK's C++.
+$(BUILD)/hellocpp/hello.xh $(BUILD)/hellocpp/hello.xih &: $(OWSOM)/hellocpp/hello.idl $(SOMIDL)
+	mkdir -p $(BUILD)/hellocpp
+	$(SOMIDL) -I $(WARPINE_SDK)/include -s xh,xih -o $(BUILD)/hellocpp $<
+$(BUILD)/ow_hellocpp_impl.o: $(OWSOM)/hellocpp/hello.cpp $(BUILD)/hellocpp/hello.xih
+	$(OS2_CXX) $(OS2_CXXFLAGS) -w -I$(BUILD)/hellocpp -c $< -o $@
+$(BUILD)/ow_hellocpp_main.o: $(OWSOM)/hellocpp/main.cpp $(BUILD)/hellocpp/hello.xh
+	$(OS2_CXX) $(OS2_CXXFLAGS) -w -I$(BUILD)/hellocpp -c $< -o $@
+$(BUILD)/ow_hellocpp.exe: $(BUILD)/ow_hellocpp_impl.o $(BUILD)/ow_hellocpp_main.o $(OS2_CRT0) $(OS2_LIBC) $(OS2_LIBCXX)
+	$(LX_LINK) --gc-sections $(OS2_CRT0) $(BUILD)/ow_hellocpp_impl.o $(BUILD)/ow_hellocpp_main.o $(OS2_LIBCXX) $(OS2_LIBC) -o $@
 $(BUILD)/ow_%.exe: $(BUILD)/ow_%_impl.o $(BUILD)/ow_%_main.o $(OS2_CRT0) $(OS2_LIBC)
 	$(LX_LINK) --gc-sections $(OS2_CRT0) $(BUILD)/ow_$*_impl.o $(BUILD)/ow_$*_main.o $(OS2_LIBC) -o $@
 
 clean:
 	rm -f *.o *.exe counter.h counter.ih
-	rm -rf hello animals
+	rm -rf hello animals hellocpp
 
 .PHONY: all clean
