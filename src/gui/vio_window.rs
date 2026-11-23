@@ -23,6 +23,15 @@
 //! pointer. Click on the system icon and select 'Copy'"; "Select 'Copy all'
 //! to copy the screen contents to the clipboard"; Paste: "The text is
 //! copied from the clipboard character-by-character into the input area").
+//!
+//! The rest of the menu is Warpine's design (recorded as unverified):
+//! Font Size offers cell sizes drawn from the 8 × 16 glyphs
+//! (`VIO_FONT_SIZES`) in a pop-up list rather than OS/2's dialog; Scroll
+//! is a mode, like Mark, in which the arrow and page keys scroll the view;
+//! in Mark mode the keys mark too (Shift extends, Enter copies) and a mark
+//! dragged past the view's edge scrolls it on; Hide hides the frame, which
+//! the window list (Ctrl+Esc, its switch-list entry) brings back; Help
+//! lists the window's keys in a pop-up panel.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -31,16 +40,18 @@ use crate::lx::header::AppType;
 use crate::loader::constants::{frame_border_width, CHROME_TITLE_H, WS_MAXIMIZED, WS_MINIMIZED};
 use crate::loader::moucalls::{self, MouButton};
 use crate::loader::pm_minmax::WinRect;
+use crate::loader::constants::{SC_HIDE, SC_TASKMANAGER};
 use crate::loader::vio_frame::{
-    clamp_vio_size, vio_client_size, VIO_CELL_H, VIO_CELL_W, VIO_FRAME_FLAGS, VIO_SCROLLBAR_W,
+    clamp_vio_size, vio_client_size, CellSize, VIO_FONT_SIZES, VIO_FRAME_FLAGS, VIO_SCROLLBAR_W,
 };
 use crate::loader::{MutexExt, SharedState};
 use super::frame_track::{KeyTrack, TrackOutcome};
 pub use super::frame_track::TrackKey;
 use super::popup_menu::PopupItem;
 use super::system_menu::{can_track, window_items};
-use super::text_renderer::{render_cells, VgaTextBuffer};
-use super::vio_view::{follow_cursor, paste_keys, rect_text, BarHit, CellRect, ScrollBar, VioLayout};
+use super::text_renderer::{render_cells_sized, VgaTextBuffer};
+pub use super::vio_view::ViewKey;
+use super::vio_view::{follow_cursor, mark_key, paste_keys, rect_text, BarHit, CellRect, ScrollBar, VioLayout};
 
 /// Environment variable choosing how a VIO program is shown:
 /// `window` (the default) or `fullscreen`.
@@ -55,6 +66,12 @@ pub const VIO_POLL: Duration = Duration::from_millis(30);
 
 /// Title prefix while the window is in Mark mode (Warpine's wording).
 pub const MARKING_PREFIX: &str = "Marking: ";
+/// Title prefix while the window is in Scroll mode (Warpine's wording).
+pub const SCROLLING_PREFIX: &str = "Scrolling: ";
+
+/// How often a mark held past the view's edge scrolls it on by a cell
+/// (Warpine's choice).
+pub const AUTOSCROLL_RATE: Duration = Duration::from_millis(60);
 
 /// Colour of the area right of / below the screen and of the corner
 /// between two scroll bars.
@@ -71,31 +88,98 @@ pub const CMD_MARK: u32 = 0x0104;
 pub const CMD_COPY: u32 = 0x0105;
 pub const CMD_COPY_ALL: u32 = 0x0106;
 pub const CMD_PASTE: u32 = 0x0107;
+/// The lines of the Help panel: choosing one only closes it.
+pub const CMD_HELP_LINE: u32 = 0x0110;
+/// The Font Size list's items: `CMD_FONT_FIRST + n` picks
+/// `VIO_FONT_SIZES[n]`.
+pub const CMD_FONT_FIRST: u32 = 0x0120;
+
+/// The VIO window's modes: Mark and Scroll take the arrow keys (and, in
+/// Mark mode, the mouse) from the program until left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VioMode {
+    #[default]
+    Normal,
+    /// Marking a rectangle of cells (system menu Mark).
+    Mark,
+    /// Scrolling the view with the keyboard (system menu Scroll).
+    Scroll,
+}
+
+impl VioMode {
+    /// What the title shows in front while in this mode.
+    fn title_prefix(self) -> &'static str {
+        match self {
+            VioMode::Normal => "",
+            VioMode::Mark => MARKING_PREFIX,
+            VioMode::Scroll => SCROLLING_PREFIX,
+        }
+    }
+}
 
 /// The VIO window's system menu for a frame in `state` (`WS_MINIMIZED` /
 /// `WS_MAXIMIZED`), in the order of the GG24-3732 screenshot. Restore,
 /// Move, Size, Minimize and Maximize are enabled as for PM frames (Restore
 /// only when minimized or maximized, Move unless maximized, Size only in
-/// the normal state). Hide is greyed: there is no window list to bring
-/// the window back. Help and Font Size are greyed (not implemented), and
-/// Scroll too (its behaviour is not documented). Mark is checked in Mark
-/// mode; Copy needs a marked rectangle, Paste clipboard text (these
-/// conditions are Warpine's choice).
-pub fn system_menu_items(state: u32, marking: bool, has_mark: bool, can_paste: bool) -> Vec<PopupItem> {
-    // The window items as for a PM frame with the VIO frame's flags (no
-    // hide button: Hide is greyed).
+/// the normal state); Hide always (the window list brings the window
+/// back); Window list always. Mark and Scroll are checked in their modes;
+/// Copy needs a marked rectangle, Paste clipboard text (these conditions
+/// are Warpine's choice).
+pub fn system_menu_items(state: u32, mode: VioMode, has_mark: bool, can_paste: bool) -> Vec<PopupItem> {
+    // The window items as for a PM frame with the VIO frame's flags; it
+    // has no hide button, but Hide works from the menu and Alt+F11.
     let mut items = window_items(VIO_FRAME_FLAGS, state);
+    for item in items.iter_mut().filter(|i| i.id == SC_HIDE) {
+        item.enabled = true;
+    }
     items.extend([
         PopupItem::separator(),
-        PopupItem::new(CMD_HELP, "H~elp...", "", false),
-        PopupItem::new(CMD_FONT_SIZE, "~Font Size...", "", false),
-        PopupItem::new(CMD_SCROLL, "Scro~ll", "", false),
-        PopupItem::new(CMD_MARK, "M~ark", "", true).checked(marking),
+        PopupItem::new(SC_TASKMANAGER, "~Window list", "Ctrl+Esc", true),
+        PopupItem::separator(),
+        PopupItem::new(CMD_HELP, "H~elp...", "", true),
+        PopupItem::new(CMD_FONT_SIZE, "~Font Size...", "", true),
+        PopupItem::new(CMD_SCROLL, "Scro~ll", "", true).checked(mode == VioMode::Scroll),
+        PopupItem::new(CMD_MARK, "M~ark", "", true).checked(mode == VioMode::Mark),
         PopupItem::new(CMD_COPY, "C~opy", "", has_mark),
         PopupItem::new(CMD_COPY_ALL, "Cop~y All", "", true),
         PopupItem::new(CMD_PASTE, "~Paste", "", can_paste),
     ]);
     items
+}
+
+/// The Font Size list: each of `VIO_FONT_SIZES` as "width × height", the
+/// one in use (`current`) checked.
+pub fn font_size_items(current: CellSize) -> Vec<PopupItem> {
+    VIO_FONT_SIZES.iter().enumerate().map(|(n, &(w, h))| {
+        PopupItem::new(CMD_FONT_FIRST + n as u32, &format!("{w} × {h}"), "", true).checked((w, h) == current)
+    }).collect()
+}
+
+/// The cell size a Font Size item `id` picks.
+pub fn font_size_of(id: u32) -> Option<CellSize> {
+    VIO_FONT_SIZES.get(id.checked_sub(CMD_FONT_FIRST)? as usize).copied()
+}
+
+/// The Help panel: what the window's keys do (Warpine's own text).
+pub fn help_items() -> Vec<PopupItem> {
+    let line = |text: &str, keys: &str| PopupItem::new(CMD_HELP_LINE, text, keys, true);
+    vec![
+        line("System menu", "Alt+Space"),
+        line("Window list", "Ctrl+Esc"),
+        line("Restore", "Alt+F5"),
+        line("Move, Size", "Alt+F7, Alt+F8"),
+        line("Minimize, Maximize", "Alt+F9, Alt+F10"),
+        line("Hide", "Alt+F11"),
+        line("Close", "Alt+F4"),
+        line("Full screen", "Alt+Home"),
+        PopupItem::separator(),
+        line("Mark: drag, or move with", "arrows, PgUp, PgDn, Home, End"),
+        line("Extend the mark", "Shift+key"),
+        line("Copy the mark", "Enter"),
+        line("Scroll: scroll the view with", "arrows, PgUp, PgDn, Home, End"),
+        line("Top, bottom of the screen", "Ctrl+Home, Ctrl+End"),
+        line("Leave Mark or Scroll", "Esc"),
+    ]
 }
 
 /// How a VIO program is shown.
@@ -163,11 +247,16 @@ pub struct VioWindow {
     layout: Option<VioLayout>,
     /// Where the cursor was at the last update.
     last_cursor: Option<(i32, i32)>,
-    /// Mark mode, and the marked rectangle's anchor and moving corner.
-    marking: bool,
+    /// Mark or Scroll mode, and the marked rectangle's anchor and moving
+    /// corner.
+    mode: VioMode,
     mark: Option<((i32, i32), (i32, i32))>,
     drag: Option<Drag>,
-    /// The frame's title outside Mark mode.
+    /// Where a mark drag last was, from the client's top-left, and when it
+    /// last scrolled the view on (autoscroll).
+    drag_point: Option<(i32, i32)>,
+    last_autoscroll: Option<Instant>,
+    /// The frame's title outside Mark and Scroll mode.
     title: Option<String>,
     track: Option<KeyTrack>,
 }
@@ -177,8 +266,8 @@ impl VioWindow {
     pub fn new(frame: u32) -> Self {
         VioWindow {
             frame, shown: None, blink_epoch: Instant::now(), pixels: Vec::new(), client_px: Vec::new(),
-            origin: (0, 0), layout: None, last_cursor: None, marking: false, mark: None, drag: None,
-            title: None, track: None,
+            origin: (0, 0), layout: None, last_cursor: None, mode: VioMode::Normal, mark: None, drag: None,
+            drag_point: None, last_autoscroll: None, title: None, track: None,
         }
     }
 
@@ -202,7 +291,12 @@ impl VioWindow {
 
     /// Whether the window is in Mark mode.
     pub fn marking(&self) -> bool {
-        self.marking
+        self.mode == VioMode::Mark
+    }
+
+    /// The window's mode.
+    pub fn mode(&self) -> VioMode {
+        self.mode
     }
 
     /// The marked rectangle, if any.
@@ -230,7 +324,7 @@ impl VioWindow {
         let cursor_shown = buf.cursor_visible && blink_on;
 
         // Lock order: window manager, then surface.
-        let (surface, border, client) = {
+        let (surface, border, client, cell) = {
             let mut wm = shared.window_mgr.lock_or_recover();
             if wm.vio_frame != self.frame { return false; }
             wm.fit_vio_frame(buf.cols, buf.rows);
@@ -243,9 +337,9 @@ impl VioWindow {
                 return false;
             }
             let Some(surface) = wm.frame_surface(self.frame) else { return false };
-            (surface, border, client)
+            (surface, border, client, wm.vio_cell)
         };
-        let layout = VioLayout::new(client.0, client.1, buf.cols, buf.rows);
+        let layout = VioLayout::new(client.0, client.1, buf.cols, buf.rows, cell);
         let cursor = (buf.cursor_col as i32, buf.cursor_row as i32);
         self.origin = if self.layout != Some(layout) || self.last_cursor != Some(cursor) {
             follow_cursor(&layout, self.origin, cursor)
@@ -267,11 +361,12 @@ impl VioWindow {
         if self.shown.as_ref() == Some(&shown) {
             return false;
         }
-        let (w, h) = (buf.cols as usize * VIO_CELL_W as usize, buf.rows as usize * VIO_CELL_H as usize);
+        let cell_px = (cell.0 as usize, cell.1 as usize);
+        let (w, h) = (buf.cols as usize * cell_px.0, buf.rows as usize * cell_px.1);
         self.pixels.resize(w * h, 0);
-        render_cells(&buf, blink_on, &mut self.pixels, w, h);
+        render_cells_sized(&buf, blink_on, &mut self.pixels, w, h, cell_px);
         if let Some(r) = self.mark() {
-            invert_cells(&mut self.pixels, w, r);
+            invert_cells(&mut self.pixels, w, r, cell_px);
         }
         let (cw, ch) = (client.0 as usize, client.1 as usize);
         compose_client(&mut self.client_px, (cw, ch), &self.pixels, (w, h), &layout, self.origin);
@@ -382,23 +477,25 @@ impl VioWindow {
         if layout.vbar && layout.hbar && cx >= layout.view_w && cy >= layout.view_h {
             return true; // the corner between the bars
         }
-        if self.marking && let Some(cell) = layout.cell_at(self.origin, cx, cy) {
+        if self.mode == VioMode::Mark && let Some(cell) = layout.cell_at(self.origin, cx, cy) {
             self.mark = Some((cell, cell));
             self.drag = Some(Drag::Mark);
+            self.drag_point = Some((cx, cy));
             return true;
         }
         false
     }
 
     /// The pointer moved to desktop `(x, os2_y)` with button 1 held: a mark
-    /// follows it (up to the view's edge; dragging past it does not scroll,
-    /// Warpine's simplification), a thumb drag scrolls. Returns whether the
+    /// follows it up to the view's edge (held past it, the view scrolls on:
+    /// [`Self::autoscroll`]), a thumb drag scrolls. Returns whether the
     /// window holds the button.
     pub fn drag_to(&mut self, shared: &SharedState, x: i32, os2_y: i32) -> bool {
         let Some(drag) = self.drag else { return false };
         let (Some((cx, cy)), Some(layout)) = (self.client_point(shared, x, os2_y), self.layout) else { return true };
         match drag {
             Drag::Mark => {
+                self.drag_point = Some((cx, cy));
                 if let Some((anchor, _)) = self.mark {
                     self.mark = Some((anchor, layout.cell_clamped(self.origin, cx, cy)));
                 }
@@ -417,26 +514,106 @@ impl VioWindow {
 
     /// Button 1 came up: ends a drag. Returns whether there was one.
     pub fn release(&mut self) -> bool {
+        self.drag_point = None;
         self.drag.take().is_some()
+    }
+
+    /// A mark drag held past the view's edge: every [`AUTOSCROLL_RATE`]
+    /// the view scrolls a cell on toward the pointer and the mark follows
+    /// to the cell beyond the edge. Called each pass of the GUI loop;
+    /// returns whether the view scrolled.
+    pub fn autoscroll(&mut self, now: Instant) -> bool {
+        let (Some(Drag::Mark), Some((x, y)), Some(layout), Some((anchor, _))) =
+            (self.drag, self.drag_point, self.layout, self.mark) else { return false };
+        let inside = x >= 0 && y >= 0 && x < layout.view_w && y < layout.view_h;
+        if inside || self.last_autoscroll.is_some_and(|t| now.duration_since(t) < AUTOSCROLL_RATE) {
+            return false;
+        }
+        let corner = layout.cell_beyond(self.origin, x, y);
+        let origin = follow_cursor(&layout, self.origin, corner);
+        // One cell a step in each direction the pointer is past the edge.
+        let step = |o: i32, n: i32| o + (n - o).signum();
+        let origin = layout.clamp_origin((step(self.origin.0, origin.0), step(self.origin.1, origin.1)));
+        self.last_autoscroll = Some(now);
+        if origin == self.origin { return false; }
+        self.origin = origin;
+        self.mark = Some((anchor, layout.cell_clamped(self.origin, x, y)));
+        true
     }
 
     /// Enter or leave Mark mode. The title shows "Marking: " in front while
     /// marking; leaving drops the marked rectangle.
     pub fn set_marking(&mut self, shared: &SharedState, on: bool) {
+        if on {
+            self.set_mode(shared, VioMode::Mark);
+        } else if self.mode == VioMode::Mark {
+            self.set_mode(shared, VioMode::Normal);
+        }
+    }
+
+    /// Enter or leave Scroll mode. The title shows "Scrolling: " in front
+    /// meanwhile.
+    pub fn set_scrolling(&mut self, shared: &SharedState, on: bool) {
+        if on {
+            self.set_mode(shared, VioMode::Scroll);
+        } else if self.mode == VioMode::Scroll {
+            self.set_mode(shared, VioMode::Normal);
+        }
+    }
+
+    /// Switch to `mode` (one mode at a time): the title gets the new
+    /// mode's prefix; leaving Mark mode drops the marked rectangle.
+    fn set_mode(&mut self, shared: &SharedState, mode: VioMode) {
+        if mode == self.mode { return; }
         let mut wm = shared.window_mgr.lock_or_recover();
         let Some(f) = wm.get_window_mut(self.frame) else { return };
-        if on && !self.marking {
-            self.title = Some(f.text.clone());
-            f.text = format!("{MARKING_PREFIX}{}", f.text);
-        } else if !on && self.marking && let Some(t) = self.title.take() {
-            f.text = t;
+        let plain = self.title.take().unwrap_or_else(|| f.text.clone());
+        f.text = format!("{}{plain}", mode.title_prefix());
+        if mode != VioMode::Normal {
+            self.title = Some(plain);
         }
-        self.marking = on;
-        if !on {
+        if self.mode == VioMode::Mark {
             self.mark = None;
-            if self.drag == Some(Drag::Mark) { self.drag = None; }
+            if self.drag == Some(Drag::Mark) {
+                self.drag = None;
+                self.drag_point = None;
+            }
         }
+        self.mode = mode;
         wm.mark_dirty(self.frame);
+    }
+
+    /// A key in Mark mode (see `vio_view::mark_key`): the mark moves or,
+    /// with `extend` (Shift), grows from its anchor; the view follows its
+    /// moving corner. The first key starts at the text cursor.
+    pub fn mark_key(&mut self, shared: &SharedState, key: ViewKey, extend: bool) {
+        let Some(layout) = self.layout else { return };
+        let buf = VgaTextBuffer::snapshot(shared);
+        let start = layout.clamp_cell((buf.cursor_col as i32, buf.cursor_row as i32));
+        let mark = mark_key(&layout, self.mark, start, key, extend);
+        self.mark = Some(mark);
+        self.origin = follow_cursor(&layout, self.origin, mark.1);
+    }
+
+    /// A key in Scroll mode: the view scrolls (`VioLayout::scrolled_origin`).
+    pub fn scroll_key(&mut self, key: ViewKey) {
+        if let Some(layout) = self.layout {
+            self.origin = layout.scrolled_origin(self.origin, key);
+        }
+    }
+
+    /// Hide the window (system menu Hide, Alt+F11): the frame is hidden and,
+    /// with no other frame of this program to take it, nothing here is
+    /// active; the window list brings it back. The desktop server is told.
+    pub fn hide(&mut self, shared: &SharedState) {
+        {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            wm.hide_frame(self.frame);
+            if wm.focused_hwnd == self.frame {
+                wm.claim_activation(0);
+            }
+        }
+        crate::loader::pm_switch::report_host_change(shared);
     }
 
     /// The text of the marked rectangle, leaving Mark mode (Copy); `None`
@@ -474,7 +651,7 @@ impl VioWindow {
         let allowed = can_track(f.frame_flags, f.style & (WS_MINIMIZED | WS_MAXIMIZED), size);
         if allowed {
             let orig = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
-            self.track = Some(KeyTrack::new(orig, size, (VIO_CELL_W, VIO_CELL_H)));
+            self.track = Some(KeyTrack::new(orig, size, wm.vio_cell));
         }
         allowed
     }
@@ -486,8 +663,8 @@ impl VioWindow {
         let mut wm = shared.window_mgr.lock_or_recover();
         let Some(f) = wm.get_window(self.frame) else { self.track = None; return true };
         let current = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
-        let (cols, rows) = wm.vio_screen;
-        match track.key(current, key, |cx, cy| clamp_vio_size(cx, cy, cols, rows)) {
+        let ((cols, rows), cell) = (wm.vio_screen, wm.vio_cell);
+        match track.key(current, key, |cx, cy| clamp_vio_size(cx, cy, cols, rows, cell)) {
             TrackOutcome::Continue(None) => {}
             TrackOutcome::Continue(Some(r)) if track.size => wm.set_vio_rect(r),
             TrackOutcome::Continue(Some(r)) => wm.move_frame(self.frame, r.x, r.y),
@@ -501,10 +678,10 @@ impl VioWindow {
     }
 }
 
-/// Invert the cells of `rect` in `pixels`, a rendered screen `w` pels wide.
-fn invert_cells(pixels: &mut [u32], w: usize, rect: CellRect) {
+/// Invert the cells of `rect` in `pixels`, a rendered screen `w` pels wide
+/// of `cw × ch` cells.
+fn invert_cells(pixels: &mut [u32], w: usize, rect: CellRect, (cw, ch): (usize, usize)) {
     let h = pixels.len() / w.max(1);
-    let (cw, ch) = (VIO_CELL_W as usize, VIO_CELL_H as usize);
     let x0 = rect.col0.max(0) as usize * cw;
     let x1 = ((rect.col1 + 1).max(0) as usize * cw).min(w);
     let y0 = rect.row0.max(0) as usize * ch;
@@ -523,7 +700,7 @@ fn compose_client(out: &mut Vec<u32>, (cw, ch): (usize, usize), pixels: &[u32], 
                   layout: &VioLayout, origin: (i32, i32)) {
     out.clear();
     out.resize(cw * ch, VIO_BLANK);
-    let (sx, sy) = (origin.0.max(0) as usize * VIO_CELL_W as usize, origin.1.max(0) as usize * VIO_CELL_H as usize);
+    let (sx, sy) = (origin.0.max(0) as usize * layout.cell.0 as usize, origin.1.max(0) as usize * layout.cell.1 as usize);
     let (vw, vh) = (layout.view_w.max(0) as usize, layout.view_h.max(0) as usize);
     for r in 0..vh.min(ch) {
         let src_y = sy + r;
@@ -782,6 +959,134 @@ mod tests {
     }
 
     #[test]
+    fn keys_mark_from_the_cursor_and_shift_extends_the_mark() {
+        let (shared, mut vio) = setup();
+        {
+            let mut con = shared.console_mgr.lock_or_recover();
+            let cols = con.cols as usize;
+            for (i, c) in "abc".chars().enumerate() { con.buffer[cols + 4 + i] = (c, 7); }
+            (con.cursor_row, con.cursor_col) = (1, 3);
+        }
+        vio.update(&shared);
+        vio.set_marking(&shared, true);
+        vio.mark_key(&shared, ViewKey::Right, false);
+        assert_eq!(vio.mark(), Some(CellRect { col0: 4, row0: 1, col1: 4, row1: 1 }), "one cell right of the cursor");
+        vio.mark_key(&shared, ViewKey::Right, true);
+        vio.mark_key(&shared, ViewKey::Right, true);
+        assert_eq!(vio.copy_mark(&shared).as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_keyboard_mark_scrolls_the_view_to_its_moving_corner() {
+        let (shared, mut vio) = setup();
+        resize_client(&shared, 320 + 16, 160 + 16);
+        vio.update(&shared);
+        vio.set_marking(&shared, true);
+        vio.mark_key(&shared, ViewKey::Bottom, true);
+        assert_eq!(vio.view_origin(), (40, 15), "the screen's last cell is in view");
+    }
+
+    #[test]
+    fn a_mark_held_past_the_view_scrolls_it_on() {
+        let (shared, mut vio) = setup();
+        resize_client(&shared, 320 + 16, 160 + 16);
+        vio.update(&shared);
+        vio.set_marking(&shared, true);
+        let (x, y) = desktop(&shared, 10, 10);
+        assert!(vio.press(&shared, x, y));
+        // Below the view (on the horizontal bar and beyond).
+        let (x, y) = desktop(&shared, 10, 200);
+        assert!(vio.drag_to(&shared, x, y));
+        let t0 = Instant::now();
+        assert!(vio.autoscroll(t0));
+        assert_eq!(vio.view_origin(), (0, 1));
+        assert!(!vio.autoscroll(t0 + AUTOSCROLL_RATE / 2), "not yet");
+        assert!(vio.autoscroll(t0 + AUTOSCROLL_RATE));
+        assert_eq!(vio.view_origin(), (0, 2));
+        assert_eq!(vio.mark().map(|r| r.row1), Some(2 + 9), "the mark reaches the view's last row");
+        // Back inside: no more scrolling; released: none either.
+        let (x, y) = desktop(&shared, 10, 50);
+        vio.drag_to(&shared, x, y);
+        assert!(!vio.autoscroll(t0 + 4 * AUTOSCROLL_RATE));
+        let (x, y) = desktop(&shared, 10, 200);
+        vio.drag_to(&shared, x, y);
+        vio.release();
+        assert!(!vio.autoscroll(t0 + 8 * AUTOSCROLL_RATE));
+    }
+
+    #[test]
+    fn scroll_mode_scrolls_with_keys_and_shows_in_the_title() {
+        let (shared, mut vio) = setup();
+        resize_client(&shared, 320 + 16, 160 + 16);
+        vio.update(&shared);
+        let frame = vio.frame();
+        let title = |s: &SharedState| s.window_mgr.lock_or_recover().get_window(frame).unwrap().text.clone();
+        vio.set_scrolling(&shared, true);
+        assert_eq!((vio.mode(), title(&shared).as_str()), (VioMode::Scroll, "Scrolling: t"));
+        vio.scroll_key(ViewKey::PageDown);
+        vio.scroll_key(ViewKey::Right);
+        assert_eq!(vio.view_origin(), (1, 10));
+        // Mark mode replaces Scroll mode, and the title follows.
+        vio.set_marking(&shared, true);
+        assert_eq!((vio.mode(), title(&shared).as_str()), (VioMode::Mark, "Marking: t"));
+        vio.set_scrolling(&shared, false);
+        assert_eq!(vio.mode(), VioMode::Mark, "leaving a mode not in force changes nothing");
+        vio.set_marking(&shared, false);
+        assert_eq!((vio.mode(), title(&shared).as_str()), (VioMode::Normal, "t"));
+    }
+
+    #[test]
+    fn another_font_size_draws_the_cells_at_that_size() {
+        let (shared, mut vio) = setup();
+        {
+            let mut con = shared.console_mgr.lock_or_recover();
+            con.buffer[0] = ('X', 0x07);
+        }
+        vio.update(&shared);
+        let frame = vio.frame();
+        assert!(shared.window_mgr.lock_or_recover().set_vio_cell((16, 32)));
+        assert!(vio.update(&shared));
+        assert_eq!(vio.layout().unwrap().cell, (16, 32));
+        let (fcx, fcy) = {
+            let wm = shared.window_mgr.lock_or_recover();
+            let f = wm.get_window(frame).unwrap();
+            (f.cx, f.cy)
+        };
+        let (cw, ch) = vio_client_size(fcx, fcy);
+        let (dw, dh) = crate::loader::constants::desktop_size();
+        assert!(cw <= dw as i32 + 2 && ch <= dh as i32 + 2, "fitted on the desktop: {cw} × {ch}");
+        // The X fills twice the pels both ways, in the first 16 × 32 cell.
+        let surface = shared.window_mgr.lock_or_recover().frame_surface(frame).unwrap();
+        let s = surface.lock().unwrap();
+        let lit = |w: usize, h: usize| (0..h as i32).flat_map(|r| s.row_pels(s.height as i32 - 1 - r).unwrap()
+            [2..2 + w].to_vec()).filter(|&p| p == 0xAA_AA_AA).count();
+        let x_pels = crate::gui::text_renderer::get_glyph_for_char('X').iter().map(|b| b.count_ones() as usize).sum::<usize>();
+        assert_eq!(lit(16, 32), 4 * x_pels);
+        // The pointer maps to the bigger cells.
+        assert_eq!(vio.cell_at(17, 33), Some((1, 1)));
+    }
+
+    #[test]
+    fn hide_hides_the_frame_and_the_window_list_brings_it_back() {
+        let (shared, mut vio) = setup();
+        let frame = vio.frame();
+        shared.window_mgr.lock_or_recover().add_vio_switch(437);
+        vio.hide(&shared);
+        {
+            let wm = shared.window_mgr.lock_or_recover();
+            assert!(!wm.get_window(frame).unwrap().visible);
+            assert_eq!(wm.focused_hwnd, 0, "nothing here is active");
+        }
+        let entries = crate::loader::pm_switch::window_list_entries(&shared, 437);
+        assert_eq!(entries, vec![(frame, "t".to_string())]);
+        assert!(crate::loader::pm_switch::host_switch_to(&shared, frame));
+        let wm = shared.window_mgr.lock_or_recover();
+        assert!(wm.get_window(frame).unwrap().visible);
+        assert_eq!(wm.focused_hwnd, frame);
+        assert_eq!(wm.z_order.last(), Some(&frame));
+    }
+
+    #[test]
     fn paste_types_the_text_into_the_keyboard_queue() {
         let (shared, vio) = setup();
         vio.paste(&shared, "ab\r\nc");
@@ -792,30 +1097,59 @@ mod tests {
     #[test]
     fn system_menu_items_follow_the_window_state() {
         let enabled = |items: &[PopupItem], id: u32| items.iter().find(|i| i.id == id).unwrap().enabled;
-        let normal = system_menu_items(0, false, false, false);
+        let checked = |items: &[PopupItem], id: u32| items.iter().find(|i| i.id == id).unwrap().checked;
+        let normal = system_menu_items(0, VioMode::Normal, false, false);
         let ids: Vec<u32> = normal.iter().filter(|i| !i.separator).map(|i| i.id).collect();
         assert_eq!(ids, vec![SC_RESTORE, SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE, SC_HIDE, SC_CLOSE,
-                             CMD_HELP, CMD_FONT_SIZE, CMD_SCROLL, CMD_MARK, CMD_COPY, CMD_COPY_ALL, CMD_PASTE]);
-        assert_eq!(normal.iter().filter(|i| i.separator).count(), 2);
+                             SC_TASKMANAGER, CMD_HELP, CMD_FONT_SIZE, CMD_SCROLL, CMD_MARK, CMD_COPY,
+                             CMD_COPY_ALL, CMD_PASTE]);
+        assert_eq!(normal.iter().filter(|i| i.separator).count(), 3);
         assert!(!enabled(&normal, SC_RESTORE) && enabled(&normal, SC_MOVE) && enabled(&normal, SC_SIZE));
         assert!(enabled(&normal, SC_MINIMIZE) && enabled(&normal, SC_MAXIMIZE));
-        for id in [SC_HIDE, CMD_HELP, CMD_FONT_SIZE, CMD_SCROLL, CMD_COPY, CMD_PASTE] {
-            assert!(!enabled(&normal, id), "{id:#x} greyed");
+        for id in [SC_HIDE, SC_TASKMANAGER, CMD_HELP, CMD_FONT_SIZE, CMD_SCROLL, SC_CLOSE, CMD_MARK, CMD_COPY_ALL] {
+            assert!(enabled(&normal, id), "{id:#x} enabled");
         }
-        assert!(enabled(&normal, SC_CLOSE) && enabled(&normal, CMD_MARK) && enabled(&normal, CMD_COPY_ALL));
-        let max = system_menu_items(WS_MAXIMIZED, true, true, true);
+        assert!(!enabled(&normal, CMD_COPY) && !enabled(&normal, CMD_PASTE));
+        assert!(!checked(&normal, CMD_MARK) && !checked(&normal, CMD_SCROLL));
+        let max = system_menu_items(WS_MAXIMIZED, VioMode::Mark, true, true);
         assert!(enabled(&max, SC_RESTORE) && !enabled(&max, SC_MOVE) && !enabled(&max, SC_SIZE));
         assert!(enabled(&max, SC_MINIMIZE) && !enabled(&max, SC_MAXIMIZE));
         assert!(enabled(&max, CMD_COPY) && enabled(&max, CMD_PASTE));
-        assert!(max.iter().find(|i| i.id == CMD_MARK).unwrap().checked);
-        let min = system_menu_items(WS_MINIMIZED, false, false, false);
+        assert!(checked(&max, CMD_MARK) && !checked(&max, CMD_SCROLL));
+        let min = system_menu_items(WS_MINIMIZED, VioMode::Scroll, false, false);
         assert!(enabled(&min, SC_RESTORE) && enabled(&min, SC_MOVE) && !enabled(&min, SC_SIZE));
         assert!(!enabled(&min, SC_MINIMIZE) && enabled(&min, SC_MAXIMIZE));
+        assert!(checked(&min, CMD_SCROLL) && !checked(&min, CMD_MARK));
+    }
+
+    #[test]
+    fn font_size_items_offer_every_size_and_check_the_current_one() {
+        use crate::loader::vio_frame::VIO_DEFAULT_CELL;
+        let items = font_size_items(VIO_DEFAULT_CELL);
+        assert_eq!(items.len(), VIO_FONT_SIZES.len());
+        assert_eq!(items.iter().filter(|i| i.checked).count(), 1);
+        let current = items.iter().find(|i| i.checked).unwrap();
+        assert_eq!(current.text, "8 × 16");
+        assert_eq!(font_size_of(current.id), Some(VIO_DEFAULT_CELL));
+        for (n, item) in items.iter().enumerate() {
+            assert_eq!(font_size_of(item.id), Some(VIO_FONT_SIZES[n]));
+        }
+        assert_eq!(font_size_of(CMD_FONT_FIRST + VIO_FONT_SIZES.len() as u32), None);
+        assert_eq!(font_size_of(CMD_PASTE), None);
+    }
+
+    #[test]
+    fn the_help_panel_names_the_keys_of_every_item_it_mentions() {
+        let items = help_items();
+        assert!(items.iter().filter(|i| !i.separator).all(|i| i.id == CMD_HELP_LINE && i.enabled && !i.accel.is_empty()));
+        for key in ["Alt+F11", "Ctrl+Esc", "Shift+key", "Enter", "Esc"] {
+            assert!(items.iter().any(|i| i.accel == key || i.accel.contains(key)), "{key}");
+        }
     }
 
     #[test]
     fn system_menu_mnemonics_are_unique() {
-        let items = system_menu_items(0, false, false, false);
+        let items = system_menu_items(0, VioMode::Normal, false, false);
         let mut letters: Vec<char> = items.iter().filter(|i| !i.separator).map(|i| {
             let at = i.text.find('~').unwrap_or_else(|| panic!("{} has no mnemonic", i.text));
             i.text[at + 1..].chars().next().unwrap().to_ascii_lowercase()
@@ -879,7 +1213,7 @@ mod tests {
     #[test]
     fn compose_puts_the_view_blank_space_and_the_corner_in_place() {
         // A 2 × 1 screen in a client larger than it, with both bars forced.
-        let layout = VioLayout { cols: 2, rows: 1, view_w: 20, view_h: 20, vbar: true, hbar: true };
+        let layout = VioLayout { cols: 2, rows: 1, view_w: 20, view_h: 20, vbar: true, hbar: true, cell: (8, 16) };
         let (w, h) = (16usize, 16usize);
         let pixels = vec![0x11u32; w * h];
         let mut out = Vec::new();

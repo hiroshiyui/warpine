@@ -19,7 +19,7 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     CF_TEXT, KC_PREVDOWN, WM_CHAR_REPEAT_SHIFT, WM_CHAR_SCANCODE_SHIFT, WM_CHAR_VKEY_SHIFT,
     FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_HIDEBUTTON,
     FCF_SIZEBORDER, FCF_BORDER,
-    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE, SC_CLOSE, SC_HIDE,
+    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE, SC_CLOSE, SC_HIDE, SC_TASKMANAGER,
     WS_MINIMIZED, WS_MAXIMIZED, CMDSRC_MENU, CMDSRC_OTHER};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
@@ -102,6 +102,9 @@ use crate::loader::constants::{CHROME_BORDER_W, CHROME_TITLE_H, CHROME_TITLE_ACT
 const CHROME_BTN_W: i32   = 16;
 /// Offset of the system-menu icon from the frame's left edge.
 const SYSMENU_ICON_X: i32 = 3;
+/// About half the VIO window list's width, to centre it (as
+/// `pm_switch.rs` centres a PM program's).
+const VIO_WINDOW_LIST_HALF_WIDTH: i32 = 100;
 /// Gap between adjacent title-bar buttons.
 const CHROME_BTN_GAP: i32 = 2;
 /// Right margin before the close button.
@@ -861,6 +864,9 @@ pub struct SdlRenderer {
     popup: Option<PopupMenu>,
     /// What the open pop-up menu belongs to.
     popup_owner: PopupOwner,
+    /// The windows of the VIO window's window list, by item
+    /// (`SC_WINDOWLIST_FIRST + n`).
+    vio_window_list: Vec<u32>,
     /// A keyboard move or size of a PM frame (Alt+F7 / Alt+F8, system menu
     /// Move / Size); it takes the arrows, Enter and Esc.
     frame_track: Option<FrameTrack>,
@@ -981,7 +987,9 @@ impl SdlRenderer {
                 wm.claim_activation(existing);
                 existing
             } else {
-                wm.create_vio_frame(title, cols, rows)
+                let frame = wm.create_vio_frame(title, cols, rows);
+                wm.add_vio_switch(shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed));
+                frame
             }
         };
         self.vio = Some(super::vio_window::VioWindow::new(frame));
@@ -1019,11 +1027,50 @@ impl SdlRenderer {
             let wm = shared.window_mgr.lock_or_recover();
             let Some(f) = wm.get_window(vio.frame()) else { return };
             let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
-            let items = system_menu_items(state, vio.marking(), vio.mark().is_some(),
+            let items = system_menu_items(state, vio.mode(), vio.mark().is_some(),
                                           !wm.clipboard_text.is_empty());
             (items, f.x + SYSMENU_ICON_X, dh as i32 - f.y - f.cy + CHROME_TITLE_H)
         };
         self.show_popup(PopupMenu::new(items, x, top, (dw as i32, dh as i32), keyboard), PopupOwner::Vio);
+    }
+
+    /// Open `items` as a pop-up of the VIO window (the Font Size list, the
+    /// Help panel) where its system menu opens, or in the middle of the
+    /// desktop (`centred`: the window list); the first item highlighted.
+    fn open_vio_popup(&mut self, shared: &SharedState, items: Vec<super::popup_menu::PopupItem>, centred: bool) {
+        let Some(vio) = &self.vio else { return };
+        let (dw, dh) = self.desktop_size();
+        let (dw, dh) = (dw as i32, dh as i32);
+        let (x, top) = match shared.window_mgr.lock_or_recover().get_window(vio.frame()) {
+            Some(f) if !centred && f.visible => (f.x + SYSMENU_ICON_X, dh - f.y - f.cy + CHROME_TITLE_H),
+            _ => (dw / 2 - VIO_WINDOW_LIST_HALF_WIDTH, dh / 2),
+        };
+        self.show_popup(PopupMenu::new(items, x, top, (dw, dh), true), PopupOwner::Vio);
+    }
+
+    /// The VIO window's window list (Ctrl+Esc, system menu Window list):
+    /// the switch list's visible entries — the VIO window's own among them,
+    /// hidden or not — in a pop-up in the middle of the desktop; the one
+    /// chosen is shown and activated (`vio_command`).
+    fn open_vio_window_list(&mut self, shared: &SharedState) {
+        use crate::loader::pm_switch::SC_WINDOWLIST_FIRST;
+        let cp = shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let entries = crate::loader::pm_switch::window_list_entries(shared, cp);
+        if entries.is_empty() { return; }
+        let items = entries.iter().enumerate().map(|(n, (_, title))| {
+            super::popup_menu::PopupItem::new(SC_WINDOWLIST_FIRST + n as u32, title, "", true)
+        }).collect();
+        self.vio_window_list = entries.into_iter().map(|(h, _)| h).collect();
+        self.open_vio_popup(shared, items, true);
+    }
+
+    /// Whether Ctrl+Esc is the VIO window's to take although the window is
+    /// not active: it is hidden or no window of this program is active, so
+    /// PM has no window to give the key to.
+    fn vio_takes_window_list_key(&self, shared: &SharedState) -> bool {
+        let Some(vio) = &self.vio else { return false };
+        let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
+        focused == 0 || focused == vio.frame()
     }
 
     /// Show `menu`, belonging to `owner`, as the pop-up menu (replacing any
@@ -1226,9 +1273,39 @@ impl SdlRenderer {
     /// for the VIO window. Returns whether Warpine keeps running (Close
     /// ends the program).
     fn vio_command(&mut self, shared: &SharedState, id: u32) -> bool {
-        use super::vio_window::{CMD_COPY, CMD_COPY_ALL, CMD_MARK, CMD_PASTE};
+        use super::vio_window::{font_size_of, CMD_COPY, CMD_COPY_ALL, CMD_FONT_SIZE, CMD_HELP, CMD_MARK, CMD_PASTE,
+                                CMD_SCROLL};
+        use crate::loader::pm_switch::{MAX_WINDOW_LIST_ITEMS, SC_WINDOWLIST_FIRST};
+        // Commands that open another pop-up: the Font Size list, the Help
+        // panel, the window list.
+        match id {
+            CMD_FONT_SIZE => {
+                let cell = shared.window_mgr.lock_or_recover().vio_cell;
+                self.open_vio_popup(shared, super::vio_window::font_size_items(cell), false);
+                return true;
+            }
+            CMD_HELP => {
+                self.open_vio_popup(shared, super::vio_window::help_items(), false);
+                return true;
+            }
+            SC_TASKMANAGER => {
+                self.open_vio_window_list(shared);
+                return true;
+            }
+            _ if (SC_WINDOWLIST_FIRST..SC_WINDOWLIST_FIRST + MAX_WINDOW_LIST_ITEMS as u32).contains(&id) => {
+                if let Some(&hwnd) = self.vio_window_list.get((id - SC_WINDOWLIST_FIRST) as usize) {
+                    crate::loader::pm_switch::host_switch_to(shared, hwnd);
+                }
+                if let Some(vio) = self.vio.as_mut() { vio.update(shared); }
+                return true;
+            }
+            _ => {}
+        }
         let Some(vio) = self.vio.as_mut() else { return true };
         let mut copied = None;
+        if let Some(cell) = font_size_of(id) {
+            shared.window_mgr.lock_or_recover().set_vio_cell(cell);
+        }
         match id {
             // The program is asked to end (`run_pm_loop`).
             SC_CLOSE => return false,
@@ -1238,9 +1315,14 @@ impl SdlRenderer {
                 }
             }
             SC_MOVE | SC_SIZE => { vio.start_track(shared, id == SC_SIZE); }
+            SC_HIDE => vio.hide(shared),
             CMD_MARK => {
                 let on = !vio.marking();
                 vio.set_marking(shared, on);
+            }
+            CMD_SCROLL => {
+                let on = vio.mode() != super::vio_window::VioMode::Scroll;
+                vio.set_scrolling(shared, on);
             }
             CMD_COPY => copied = vio.copy_mark(shared),
             CMD_COPY_ALL => copied = Some(vio.copy_all(shared)),
@@ -1313,25 +1395,38 @@ impl SdlRenderer {
             self.open_vio_menu(shared, true);
             return true;
         }
-        if alt && !ctrl {
-            let command = match kc {
-                Keycode::F4 => Some(SC_CLOSE),
-                Keycode::F5 => Some(SC_RESTORE),
-                Keycode::F7 => Some(SC_MOVE),
-                Keycode::F8 => Some(SC_SIZE),
-                Keycode::F9 => Some(SC_MINIMIZE),
-                Keycode::F10 => Some(SC_MAXIMIZE),
-                _ => None,
-            };
-            if let Some(id) = command {
-                return self.vio_command(shared, id);
-            }
+        let command = match kc {
+            Keycode::F4 if alt && !ctrl => Some(SC_CLOSE),
+            Keycode::F5 if alt && !ctrl => Some(SC_RESTORE),
+            Keycode::F7 if alt && !ctrl => Some(SC_MOVE),
+            Keycode::F8 if alt && !ctrl => Some(SC_SIZE),
+            Keycode::F9 if alt && !ctrl => Some(SC_MINIMIZE),
+            Keycode::F10 if alt && !ctrl => Some(SC_MAXIMIZE),
+            Keycode::F11 if alt && !ctrl => Some(SC_HIDE),
+            Keycode::Escape if ctrl && !alt => Some(SC_TASKMANAGER),
+            _ => None,
+        };
+        if let Some(id) = command {
+            return self.vio_command(shared, id);
         }
-        if vio.marking() {
-            if kc == Keycode::Escape {
-                vio.set_marking(shared, false);
-                vio.update(shared);
+        let Some(vio) = self.vio.as_mut() else { return true };
+        let mode = vio.mode();
+        if mode != super::vio_window::VioMode::Normal {
+            let shift = keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD);
+            match (kc, view_key_of(kc, ctrl)) {
+                (Keycode::Escape, _) => {
+                    vio.set_marking(shared, false);
+                    vio.set_scrolling(shared, false);
+                }
+                (Keycode::Return | Keycode::KpEnter, _) if mode == super::vio_window::VioMode::Mark => {
+                    return self.vio_command(shared, super::vio_window::CMD_COPY);
+                }
+                (_, Some(key)) if mode == super::vio_window::VioMode::Mark => vio.mark_key(shared, key, shift),
+                (_, Some(key)) => vio.scroll_key(key),
+                // Other keys are ignored in these modes (Warpine's choice).
+                _ => {}
             }
+            vio.update(shared);
             return true;
         }
         super::text_renderer::kbd_key_down(shared, kc, sc, keymod);
@@ -1433,6 +1528,7 @@ impl SdlRenderer {
             vio: None,
             popup: None,
             popup_owner: PopupOwner::Vio,
+            vio_window_list: Vec::new(),
             frame_track: None,
             overlay_placed: Rect::EMPTY,
             overlay_changed: false,
@@ -1801,6 +1897,13 @@ impl SdlRenderer {
             // the keyboard too.
             // Esc ends a running drag without a drop (pm_drag.rs).
             Event::KeyDown { keycode: Some(Keycode::Escape), .. } if shared.drag_channel.cancel() => {}
+            // Ctrl+Esc with the VIO window hidden, or nothing here active:
+            // its window list, which can bring the window back.
+            Event::KeyDown { keycode: Some(Keycode::Escape), keymod, .. }
+                if keymod.intersects(KeyMod::LCTRLMOD | KeyMod::RCTRLMOD) && self.popup.is_none()
+                    && !self.takes_keys(shared) && self.vio_takes_window_list_key(shared) => {
+                self.open_vio_window_list(shared);
+            }
             Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat, .. }
                 if self.takes_keys(shared) => {
                 if self.popup.is_none() && self.frame_track.is_none()
@@ -1812,7 +1915,8 @@ impl SdlRenderer {
             Event::KeyUp { .. } | Event::TextEditing { .. } if self.takes_keys(shared) => {}
             Event::TextInput { text, .. } if self.takes_keys(shared) => {
                 if self.popup.is_none() && self.frame_track.is_none() && self.vio_active(shared)
-                    && self.vio.as_ref().is_some_and(|v| !v.marking() && !v.tracking()) {
+                    && self.vio.as_ref().is_some_and(|v| v.mode() == super::vio_window::VioMode::Normal
+                                                       && !v.tracking()) {
                     super::text_renderer::kbd_text_input(shared, &text);
                 }
             }
@@ -2220,6 +2324,7 @@ impl PmRenderer for SdlRenderer {
         self.audio.pump(&shared.audio);
         // A windowed VIO program: show what it wrote since the last pass.
         if let Some(vio) = self.vio.as_mut() {
+            vio.autoscroll(Instant::now());
             vio.update(shared);
         }
         // Read the host clipboard once at start-up; after that SDL tells us
@@ -2501,6 +2606,25 @@ fn is_system_menu_key(kc: Keycode, keymod: KeyMod) -> bool {
     let alt = keymod.intersects(KeyMod::LALTMOD | KeyMod::RALTMOD);
     let shift = keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD);
     (alt && kc == Keycode::Space) || (shift && kc == Keycode::Escape)
+}
+
+/// The Mark or Scroll mode key `kc` stands for (with Ctrl held: Home and
+/// End go to the top and bottom of the screen), if any.
+fn view_key_of(kc: Keycode, ctrl: bool) -> Option<super::vio_window::ViewKey> {
+    use super::vio_window::ViewKey;
+    Some(match kc {
+        Keycode::Left | Keycode::Kp4 => ViewKey::Left,
+        Keycode::Right | Keycode::Kp6 => ViewKey::Right,
+        Keycode::Up | Keycode::Kp8 => ViewKey::Up,
+        Keycode::Down | Keycode::Kp2 => ViewKey::Down,
+        Keycode::PageUp | Keycode::Kp9 => ViewKey::PageUp,
+        Keycode::PageDown | Keycode::Kp3 => ViewKey::PageDown,
+        Keycode::Home | Keycode::Kp7 if ctrl => ViewKey::Top,
+        Keycode::End | Keycode::Kp1 if ctrl => ViewKey::Bottom,
+        Keycode::Home | Keycode::Kp7 => ViewKey::Home,
+        Keycode::End | Keycode::Kp1 => ViewKey::End,
+        _ => return None,
+    })
 }
 
 /// The keyboard move / size key `kc` stands for, if any.

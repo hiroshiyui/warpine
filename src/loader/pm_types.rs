@@ -748,6 +748,9 @@ pub struct WindowManager {
     /// Columns and rows of the VIO screen the VIO frame was last fitted to
     /// (`WindowManager::fit_vio_frame`).
     pub vio_screen: (u16, u16),
+    /// The size of the VIO window's text cells (system menu Font Size,
+    /// `WindowManager::set_vio_cell`).
+    pub vio_cell: super::vio_frame::CellSize,
     /// Help Manager instances and the windows associated with them
     /// (`helpmgr.rs`).
     pub help: super::helpmgr::HelpRegistry,
@@ -899,6 +902,7 @@ impl WindowManager {
             hidden_with_owner: HashMap::new(),
             vio_frame: 0,
             vio_screen: (0, 0),
+            vio_cell: super::vio_frame::VIO_DEFAULT_CELL,
             help: Default::default(),
             sys_colors: Default::default(),
             key_state: Default::default(),

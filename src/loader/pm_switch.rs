@@ -243,6 +243,55 @@ pub fn switch_block<'a>(entries: impl Iterator<Item = (u32, &'a SwControl)>, cb:
     (out, n)
 }
 
+/// The window list's entries for the GUI thread (a VIO window's Ctrl+Esc,
+/// which has no guest thread to ask): the visible entries of the switch
+/// list — the session's, or this process's with titles decoded from
+/// `codepage` — as `(window, title)`.
+pub fn window_list_entries(shared: &super::SharedState, codepage: u32) -> Vec<(u32, String)> {
+    let entries: Vec<(u32, u32, String)> = match shared.desktop_link.get() {
+        Some(link) => match link.call(SERVER_ADDRESS, WinCall::SwitchList) {
+            Some(WinReply::Switches(es)) => es.into_iter().map(|e| (e.hwnd, e.visibility, e.title)).collect(),
+            _ => Vec::new(),
+        },
+        None => shared.window_mgr.lock_or_recover().switch_list.list()
+            .map(|(_, c)| (c.hwnd, c.visibility, super::codepage::cp_decode(&c.title, codepage))).collect(),
+    };
+    entries.into_iter().filter(|e| e.1 & SWL_VISIBLE != 0).take(MAX_WINDOW_LIST_ITEMS)
+        .map(|(h, _, t)| (h, t)).collect()
+}
+
+/// Bring window `hwnd` forward from the GUI thread (an item of the VIO
+/// window's window list): a frame of this process is shown and activated
+/// and the change reported to the desktop server; another program's frame
+/// is shown and activated through the server. Returns whether it worked.
+pub fn host_switch_to(shared: &super::SharedState, hwnd: u32) -> bool {
+    if shared.window_mgr.lock_or_recover().is_foreign(hwnd) {
+        return switch_to_other_program(shared, hwnd);
+    }
+    let switched = shared.window_mgr.lock_or_recover().switch_to_frame(hwnd);
+    report_host_change(shared);
+    switched
+}
+
+/// Show and activate `hwnd`, another program's frame, through the desktop
+/// server; false without one or when the program does not answer.
+pub fn switch_to_other_program(shared: &super::SharedState, hwnd: u32) -> bool {
+    let Some(link) = shared.desktop_link.get() else { return false };
+    matches!(link.call(hwnd, WinCall::Show { show: true }), Some(WinReply::Value(_)))
+        && matches!(link.call(hwnd, WinCall::Activate), Some(WinReply::Value(_)))
+}
+
+/// Tell the desktop server what the GUI thread changed in this program's
+/// activation or stacking (as `Loader::report_activation` does after an
+/// API call), without waiting; the link is not used under the window
+/// manager's lock.
+pub fn report_host_change(shared: &super::SharedState) {
+    let report = shared.window_mgr.lock_or_recover().take_report();
+    if let (Some(report), Some(link)) = (report, shared.desktop_link.get()) {
+        link.notify(SERVER_ADDRESS, report);
+    }
+}
+
 impl WindowManager {
     /// Bring the frame of switch entry `hwnd` forward: shown, on top,
     /// active, `WM_ACTIVATE` to the old and the new frame (as

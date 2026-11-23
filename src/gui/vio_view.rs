@@ -11,7 +11,7 @@
 //! screenshot of an OS/2 window shows both). Their look and the details
 //! below marked "unverified" are Warpine's own.
 
-use crate::loader::vio_frame::{vio_scroll_bars, VIO_CELL_H, VIO_CELL_W, VIO_SCROLLBAR_W};
+use crate::loader::vio_frame::{vio_scroll_bars, CellSize, VIO_SCROLLBAR_W};
 use crate::loader::KbdKeyInfo;
 use super::text_renderer::CellKind;
 
@@ -40,22 +40,25 @@ pub struct VioLayout {
     /// Whether the vertical / horizontal scroll bar is shown.
     pub vbar: bool,
     pub hbar: bool,
+    /// The size of a cell in pels (the window's Font Size).
+    pub cell: CellSize,
 }
 
 impl VioLayout {
     /// The layout of a `client_w × client_h` client showing a `cols × rows`
-    /// screen, with the scroll bars `vio_scroll_bars` asks for.
-    pub fn new(client_w: i32, client_h: i32, cols: u16, rows: u16) -> VioLayout {
+    /// screen of `cell`-sized cells, with the scroll bars `vio_scroll_bars`
+    /// asks for.
+    pub fn new(client_w: i32, client_h: i32, cols: u16, rows: u16, cell: CellSize) -> VioLayout {
         let (cw, ch) = (client_w.max(0), client_h.max(0));
-        let (vbar, hbar) = vio_scroll_bars(cw, ch, cols, rows);
+        let (vbar, hbar) = vio_scroll_bars(cw, ch, cols, rows, cell);
         let view_w = (cw - if vbar { VIO_SCROLLBAR_W } else { 0 }).max(0);
         let view_h = (ch - if hbar { VIO_SCROLLBAR_W } else { 0 }).max(0);
-        VioLayout { cols, rows, view_w, view_h, vbar, hbar }
+        VioLayout { cols, rows, view_w, view_h, vbar, hbar, cell }
     }
 
     /// Whole cells the view shows across and down.
     pub fn visible(&self) -> (i32, i32) {
-        (self.view_w / VIO_CELL_W, self.view_h / VIO_CELL_H)
+        (self.view_w / self.cell.0.max(1), self.view_h / self.cell.1.max(1))
     }
 
     /// The largest view origin `(col, row)`: the last column and row then
@@ -100,9 +103,94 @@ impl VioLayout {
     pub fn cell_clamped(&self, origin: (i32, i32), x: i32, y: i32) -> (i32, i32) {
         let x = x.clamp(0, (self.view_w - 1).max(0));
         let y = y.clamp(0, (self.view_h - 1).max(0));
-        ((origin.0 + x / VIO_CELL_W).min(self.cols as i32 - 1).max(0),
-         (origin.1 + y / VIO_CELL_H).min(self.rows as i32 - 1).max(0))
+        self.cell_beyond(origin, x, y)
     }
+
+    /// `(col, row)` kept on the screen.
+    pub fn clamp_cell(&self, (col, row): (i32, i32)) -> (i32, i32) {
+        (col.clamp(0, (self.cols as i32 - 1).max(0)), row.clamp(0, (self.rows as i32 - 1).max(0)))
+    }
+
+    /// The cell under client point `(x, y)` even outside the view (one a
+    /// mark dragged past the view's edge reaches as the view scrolls on),
+    /// clamped into the screen.
+    pub fn cell_beyond(&self, origin: (i32, i32), x: i32, y: i32) -> (i32, i32) {
+        ((origin.0 + x.div_euclid(self.cell.0.max(1))).min(self.cols as i32 - 1).max(0),
+         (origin.1 + y.div_euclid(self.cell.1.max(1))).min(self.rows as i32 - 1).max(0))
+    }
+
+    /// `cell` moved by `key` (Mark mode from the keyboard): a cell for an
+    /// arrow, a view's height for Page Up / Down, the row's first or last
+    /// cell for Home / End, the screen's first or last cell for Top /
+    /// Bottom; kept on the screen.
+    pub fn moved_cell(&self, (col, row): (i32, i32), key: ViewKey) -> (i32, i32) {
+        let page = self.visible().1.max(1);
+        let (last_col, last_row) = (self.cols as i32 - 1, self.rows as i32 - 1);
+        let (c, r) = match key {
+            ViewKey::Left => (col - 1, row),
+            ViewKey::Right => (col + 1, row),
+            ViewKey::Up => (col, row - 1),
+            ViewKey::Down => (col, row + 1),
+            ViewKey::PageUp => (col, row - page),
+            ViewKey::PageDown => (col, row + page),
+            ViewKey::Home => (0, row),
+            ViewKey::End => (last_col, row),
+            ViewKey::Top => (0, 0),
+            ViewKey::Bottom => (last_col, last_row),
+        };
+        (c.clamp(0, last_col.max(0)), r.clamp(0, last_row.max(0)))
+    }
+
+    /// The view origin after `key` in Scroll mode: an arrow scrolls a
+    /// column or row, Page Up / Down a view's height, Home / End to the
+    /// first or last columns, Top / Bottom to the screen's top-left or
+    /// bottom-right (Warpine's choice of keys).
+    pub fn scrolled_origin(&self, (col, row): (i32, i32), key: ViewKey) -> (i32, i32) {
+        let page = self.visible().1.max(1);
+        let (max_col, max_row) = self.max_origin();
+        self.clamp_origin(match key {
+            ViewKey::Left => (col - 1, row),
+            ViewKey::Right => (col + 1, row),
+            ViewKey::Up => (col, row - 1),
+            ViewKey::Down => (col, row + 1),
+            ViewKey::PageUp => (col, row - page),
+            ViewKey::PageDown => (col, row + page),
+            ViewKey::Home => (0, row),
+            ViewKey::End => (max_col, row),
+            ViewKey::Top => (0, 0),
+            ViewKey::Bottom => (max_col, max_row),
+        })
+    }
+}
+
+/// A key that moves over the screen in Mark or Scroll mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewKey {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    /// Ctrl+Home.
+    Top,
+    /// Ctrl+End.
+    Bottom,
+}
+
+/// The marked rectangle `(anchor, moving corner)` after `key` in Mark mode
+/// (Warpine's choice of keys, OS/2's are not documented): the moving
+/// corner — or, with nothing marked yet, `start` (the text cursor) — moves
+/// by `key`; with `extend` (Shift held) the anchor stays, so the mark grows
+/// or shrinks, otherwise the mark is the one cell moved to.
+pub fn mark_key(layout: &VioLayout, mark: Option<((i32, i32), (i32, i32))>, start: (i32, i32),
+                key: ViewKey, extend: bool) -> ((i32, i32), (i32, i32)) {
+    let point = mark.map_or(start, |m| m.1);
+    let moved = layout.moved_cell(point, key);
+    let anchor = if extend { mark.map_or(point, |m| m.0) } else { moved };
+    (anchor, moved)
 }
 
 /// The view origin after the cursor moved to `(col, row)`: scrolled as
@@ -363,11 +451,14 @@ pub fn paste_keys(text: &str, cp: u32) -> Vec<KbdKeyInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loader::vio_frame::VIO_DEFAULT_CELL;
+
+    const C: CellSize = VIO_DEFAULT_CELL;
 
     #[test]
     fn a_whole_screen_needs_no_scroll_bars() {
-        let l = VioLayout::new(640, 400, 80, 25);
-        assert_eq!(l, VioLayout { cols: 80, rows: 25, view_w: 640, view_h: 400, vbar: false, hbar: false });
+        let l = VioLayout::new(640, 400, 80, 25, C);
+        assert_eq!(l, VioLayout { cols: 80, rows: 25, view_w: 640, view_h: 400, vbar: false, hbar: false, cell: C });
         assert_eq!(l.max_origin(), (0, 0));
         assert!(l.vertical_bar((0, 0)).is_none() && l.horizontal_bar((0, 0)).is_none());
     }
@@ -375,15 +466,15 @@ mod tests {
     #[test]
     fn a_narrower_window_needs_both_bars() {
         // Narrower only: the horizontal bar takes height, so rows no longer fit.
-        let l = VioLayout::new(600, 400, 80, 25);
+        let l = VioLayout::new(600, 400, 80, 25, C);
         assert!(l.hbar && l.vbar);
         assert_eq!((l.view_w, l.view_h), (600 - VIO_SCROLLBAR_W, 400 - VIO_SCROLLBAR_W));
         // Shorter only, with room to spare across: just the vertical bar
         // would need 16 more pels, which the width does not have.
-        let l = VioLayout::new(640, 300, 80, 25);
+        let l = VioLayout::new(640, 300, 80, 25, C);
         assert!(l.vbar && l.hbar);
         // A client wider than the screen keeps room for the vertical bar.
-        let l = VioLayout::new(640 + VIO_SCROLLBAR_W, 300, 80, 25);
+        let l = VioLayout::new(640 + VIO_SCROLLBAR_W, 300, 80, 25, C);
         assert!(l.vbar && !l.hbar);
         assert_eq!(l.visible(), (80, 300 / 16));
         assert_eq!(l.max_origin(), (0, 25 - 18));
@@ -391,7 +482,7 @@ mod tests {
 
     #[test]
     fn the_origin_stays_inside_the_screen() {
-        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25);
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, C);
         assert_eq!(l.visible(), (40, 10));
         assert_eq!(l.max_origin(), (40, 15));
         assert_eq!(l.clamp_origin((-3, 99)), (0, 15));
@@ -400,7 +491,7 @@ mod tests {
 
     #[test]
     fn the_view_follows_the_cursor() {
-        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25);
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, C);
         assert_eq!(follow_cursor(&l, (0, 0), (5, 5)), (0, 0), "visible: no scrolling");
         assert_eq!(follow_cursor(&l, (0, 0), (50, 24)), (11, 15), "scrolled just far enough");
         assert_eq!(follow_cursor(&l, (30, 10), (2, 3)), (2, 3), "back up and left");
@@ -408,12 +499,68 @@ mod tests {
 
     #[test]
     fn cells_under_the_pointer_include_the_scroll_position() {
-        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25);
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, C);
         assert_eq!(l.cell_at((0, 0), 0, 0), Some((0, 0)));
         assert_eq!(l.cell_at((10, 3), 17, 33), Some((12, 5)));
         assert_eq!(l.cell_at((0, 0), 320, 0), None, "on the vertical bar");
         assert_eq!(l.cell_at((0, 0), -1, 0), None);
         assert_eq!(l.cell_clamped((0, 0), 5000, -20), (39, 0), "dragged out of the view");
+    }
+
+    #[test]
+    fn other_cell_sizes_change_what_the_view_holds() {
+        // 8 × 8 cells: twice the rows in the same client.
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, (8, 8));
+        assert_eq!(l.visible(), (40, 20));
+        assert_eq!(l.cell_at((0, 0), 17, 33), Some((2, 4)));
+        // 16 × 32 cells: a quarter of the cells.
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, (16, 32));
+        assert_eq!(l.visible(), (20, 5));
+        assert_eq!(l.cell_at((0, 0), 17, 33), Some((1, 1)));
+    }
+
+    #[test]
+    fn a_point_past_the_view_names_the_cell_beyond_it() {
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, C);
+        assert_eq!(l.cell_beyond((10, 5), -1, -1), (9, 4), "one cell up and left of the view");
+        assert_eq!(l.cell_beyond((10, 5), 330, 170), (51, 15));
+        assert_eq!(l.cell_beyond((0, 0), -100, 5000), (0, 24), "kept on the screen");
+    }
+
+    #[test]
+    fn keys_move_the_mark_and_shift_extends_it() {
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, C);
+        // Nothing marked: the first arrow starts at the text cursor.
+        let m = mark_key(&l, None, (5, 5), ViewKey::Right, false);
+        assert_eq!(m, ((6, 5), (6, 5)));
+        // Shift extends from the anchor.
+        let m = mark_key(&l, Some(m), (0, 0), ViewKey::Down, true);
+        assert_eq!(m, ((6, 5), (6, 6)));
+        let m = mark_key(&l, Some(m), (0, 0), ViewKey::End, true);
+        assert_eq!(m, ((6, 5), (79, 6)));
+        // Shift with nothing marked anchors at the cursor.
+        assert_eq!(mark_key(&l, None, (3, 3), ViewKey::Left, true), ((3, 3), (2, 3)));
+        // Without Shift the mark collapses onto the moved cell.
+        assert_eq!(mark_key(&l, Some(m), (0, 0), ViewKey::Home, false), ((0, 6), (0, 6)));
+        // Pages are a view's height; the screen's edges hold.
+        assert_eq!(l.moved_cell((0, 20), ViewKey::PageDown), (0, 24));
+        assert_eq!(l.moved_cell((0, 12), ViewKey::PageUp), (0, 2));
+        assert_eq!(l.moved_cell((0, 0), ViewKey::Up), (0, 0));
+        assert_eq!(l.moved_cell((9, 9), ViewKey::Top), (0, 0));
+        assert_eq!(l.moved_cell((9, 9), ViewKey::Bottom), (79, 24));
+    }
+
+    #[test]
+    fn scroll_keys_move_the_view() {
+        let l = VioLayout::new(320 + 16, 160 + 16, 80, 25, C);
+        assert_eq!(l.scrolled_origin((0, 0), ViewKey::Right), (1, 0));
+        assert_eq!(l.scrolled_origin((0, 0), ViewKey::Left), (0, 0), "already at the left");
+        assert_eq!(l.scrolled_origin((0, 0), ViewKey::PageDown), (0, 10));
+        assert_eq!(l.scrolled_origin((0, 12), ViewKey::PageDown), (0, 15), "the last page");
+        assert_eq!(l.scrolled_origin((3, 3), ViewKey::End), (40, 3));
+        assert_eq!(l.scrolled_origin((3, 3), ViewKey::Home), (0, 3));
+        assert_eq!(l.scrolled_origin((3, 3), ViewKey::Bottom), (40, 15));
+        assert_eq!(l.scrolled_origin((3, 3), ViewKey::Top), (0, 0));
     }
 
     fn bar() -> ScrollBar {

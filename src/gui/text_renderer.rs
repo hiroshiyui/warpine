@@ -249,135 +249,110 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
 /// `pixels`, an ARGB buffer `win_w` × `win_h` pels with rows from the top.
 /// Shared by the text window and the VIO window on the PM desktop.
 pub fn render_cells(buf: &VgaTextBuffer, blink_on: bool, pixels: &mut [u32], win_w: usize, win_h: usize) {
+    render_cells_sized(buf, blink_on, pixels, win_w, win_h, (GLYPH_W, GLYPH_H));
+}
+
+/// Width and height of a Unifont glyph (a DBCS glyph is twice as wide).
+const GLYPH_W: usize = 8;
+const GLYPH_H: usize = 16;
+
+/// The source pels `[from, to)` that destination pel `i` of `dst` pels
+/// takes from `src` pels: when enlarging, the one under it; when shrinking,
+/// every one it covers, so that a thin stroke is not lost (a pel is set if
+/// any of them is: Warpine's choice of resampling).
+fn source_span(i: usize, src: usize, dst: usize) -> (usize, usize) {
+    let from = i * src / dst;
+    let to = if dst >= src { from + 1 } else { ((i + 1) * src).div_ceil(dst) };
+    (from.min(src - 1), to.clamp(from + 1, src))
+}
+
+/// Draw a `src_w` × 16 glyph (`bit(x, y)`: whether that pel is set) as a
+/// `cw` × `ch` cell at `(x0, y0)` in `fg` on `bg`.
+#[allow(clippy::too_many_arguments)]
+fn draw_glyph(pixels: &mut [u32], (win_w, win_h): (usize, usize), (x0, y0): (usize, usize),
+              (cw, ch): (usize, usize), src_w: usize, bit: impl Fn(usize, usize) -> bool, fg: u32, bg: u32) {
+    for y in 0..ch {
+        let py = y0 + y;
+        if py >= win_h { break; }
+        let (sy0, sy1) = source_span(y, GLYPH_H, ch);
+        for x in 0..cw {
+            let px = x0 + x;
+            if px >= win_w { break; }
+            let (sx0, sx1) = source_span(x, src_w, cw);
+            let set = (sy0..sy1).any(|sy| (sx0..sx1).any(|sx| bit(sx, sy)));
+            pixels[py * win_w + px] = if set { fg } else { bg };
+        }
+    }
+}
+
+/// XOR-invert the cursor's scan lines (`start..=end` of the 16 of a VGA
+/// cell, scaled to `ch`) across `w` pels at `(x0, y0)`: always visible
+/// whatever the cell's colours (including black-on-black attr=0x00). An
+/// inverted or degenerate shape from the guest draws the usual underline.
+#[allow(clippy::too_many_arguments)]
+fn invert_cursor(pixels: &mut [u32], (win_w, win_h): (usize, usize), (x0, y0): (usize, usize),
+                 w: usize, ch: usize, start: u8, end: u8) {
+    let (start, end) = (start as usize, (end as usize).min(GLYPH_H - 1));
+    let (start, end) = if start <= end { (start, end) } else { (GLYPH_H - 2, GLYPH_H - 1) };
+    let (from, to) = (start * ch / GLYPH_H, ((end + 1) * ch).div_ceil(GLYPH_H).max(start * ch / GLYPH_H + 1));
+    for py in (y0 + from..y0 + to.min(ch)).take_while(|&py| py < win_h) {
+        for px in (x0..x0 + w).take_while(|&px| px < win_w) {
+            let old = pixels[py * win_w + px];
+            pixels[py * win_w + px] = (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+        }
+    }
+}
+
+/// [`render_cells`] with cells of `cell` pels (the VIO window's Font
+/// Size): each glyph is resampled from its 8 × 16 Unifont bitmap
+/// ([`source_span`]) and the cursor's scan lines are scaled with it.
+pub fn render_cells_sized(buf: &VgaTextBuffer, blink_on: bool, pixels: &mut [u32], win_w: usize, win_h: usize,
+                          (cw, ch): (usize, usize)) {
     let cols = buf.cols as usize;
     let rows = buf.rows as usize;
+    let win = (win_w, win_h);
+    let cursor_at = |row: usize, col: usize| buf.cursor_visible && blink_on
+        && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col;
 
     for row in 0..rows {
         let mut col = 0usize;
         while col < cols {
             let idx = row * cols + col;
-            let (ch, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (' ', 0x07) };
+            let (ch_, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (' ', 0x07) };
             let kind = if idx < buf.cell_kind.len() { buf.cell_kind[idx] } else { CellKind::Sbcs };
 
             let fg = CGA_PALETTE[(attr & 0x0F) as usize];
             let bg = CGA_PALETTE[((attr >> 4) & 0x0F) as usize];
-            let base_x = col * 8;
-            let base_y = row * 16;
-            let cursor_here = buf.cursor_visible && blink_on
-                && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col;
+            let base = (col * cw, row * ch);
 
             match kind {
                 CellKind::DbcsLead => {
-                    // ch holds the correct Unicode codepoint decoded from the
-                    // lead+trail raw byte pair by VgaTextBuffer::snapshot() (B4).
-                    // Phase B5 will replace the stub get_glyph_dbcs() with a real
-                    // lookup in the Unifont wide-glyph binary table.
-                    let glyph = get_glyph_dbcs(ch);
-
-                    for gr in 0..16usize {
-                        let py = base_y + gr;
-                        if py >= win_h { break; }
-                        let hi = glyph[gr * 2];
-                        let lo = glyph[gr * 2 + 1];
-                        for gc in 0..8usize {
-                            let px = base_x + gc;
-                            if px < win_w {
-                                pixels[py * win_w + px] =
-                                    if hi & (0x80 >> gc) != 0 { fg } else { bg };
-                            }
-                        }
-                        for gc in 0..8usize {
-                            let px = base_x + 8 + gc;
-                            if px < win_w {
-                                pixels[py * win_w + px] =
-                                    if lo & (0x80 >> gc) != 0 { fg } else { bg };
-                            }
-                        }
+                    // ch_ holds the Unicode codepoint decoded from the
+                    // lead+trail byte pair by VgaTextBuffer::snapshot().
+                    let glyph = get_glyph_dbcs(ch_);
+                    draw_glyph(pixels, win, base, (2 * cw, ch), 2 * GLYPH_W,
+                               |x, y| glyph[y * 2 + x / 8] & (0x80 >> (x % 8)) != 0, fg, bg);
+                    // The cursor on the lead cell covers both halves.
+                    if cursor_at(row, col) {
+                        invert_cursor(pixels, win, base, 2 * cw, ch, buf.cursor_start, buf.cursor_end);
                     }
-
-                    // Cursor overlay: XOR-invert both 8-pixel halves.
-                    if cursor_here {
-                        let cstart = buf.cursor_start as usize;
-                        let cend   = (buf.cursor_end as usize).min(15);
-                        let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                        for gr in cstart..=cend {
-                            let py = base_y + gr;
-                            if py >= win_h { break; }
-                            for gc in 0..16usize {
-                                let px = base_x + gc;
-                                if px < win_w {
-                                    let old = pixels[py * win_w + px];
-                                    pixels[py * win_w + px] =
-                                        (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
-                                }
-                            }
-                        }
-                    }
-
                     col += 2;
                 }
-
                 CellKind::DbcsTail => {
-                    // Already rendered by the preceding DbcsLead cell.
-                    // If the cursor lands on the tail cell, invert only the
-                    // right 8-pixel half (this cell's column).
-                    if buf.cursor_visible && blink_on
-                        && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col
-                    {
-                        let cstart = buf.cursor_start as usize;
-                        let cend   = (buf.cursor_end as usize).min(15);
-                        let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                        for gr in cstart..=cend {
-                            let py = base_y + gr;
-                            if py >= win_h { break; }
-                            for gc in 0..8usize {
-                                let px = base_x + gc;
-                                if px < win_w {
-                                    let old = pixels[py * win_w + px];
-                                    pixels[py * win_w + px] =
-                                        (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
-                                }
-                            }
-                        }
+                    // Drawn with the lead cell; the cursor on it inverts
+                    // only this cell's half.
+                    if cursor_at(row, col) {
+                        invert_cursor(pixels, win, base, cw, ch, buf.cursor_start, buf.cursor_end);
                     }
                     col += 1;
                 }
-
                 CellKind::Sbcs => {
-                    let glyph = get_glyph_for_char(ch);
-
-                    for (gr, &bits) in glyph.iter().enumerate() {
-                        let py = base_y + gr;
-                        if py >= win_h { break; }
-                        for gc in 0..8usize {
-                            let px = base_x + gc;
-                            if px >= win_w { break; }
-                            pixels[py * win_w + px] =
-                                if bits & (0x80 >> gc) != 0 { fg } else { bg };
-                        }
+                    let glyph = get_glyph_for_char(ch_);
+                    draw_glyph(pixels, win, base, (cw, ch), GLYPH_W,
+                               |x, y| glyph[y] & (0x80 >> x) != 0, fg, bg);
+                    if cursor_at(row, col) {
+                        invert_cursor(pixels, win, base, cw, ch, buf.cursor_start, buf.cursor_end);
                     }
-
-                    // Cursor overlay for the cursor cell.
-                    if cursor_here {
-                        let cstart = buf.cursor_start as usize;
-                        let cend   = (buf.cursor_end as usize).min(15);
-                        // Guard against inverted/degenerate shapes from guest.
-                        let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                        for gr in cstart..=cend {
-                            let py = base_y + gr;
-                            if py >= win_h { break; }
-                            for gc in 0..8usize {
-                                let px = base_x + gc;
-                                if px >= win_w { break; }
-                                // XOR-invert RGB channels: always visible regardless of
-                                // cell fg/bg colour (including black-on-black attr=0x00).
-                                let old = pixels[py * win_w + px];
-                                pixels[py * win_w + px] =
-                                    (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
-                            }
-                        }
-                    }
-
                     col += 1;
                 }
             }
@@ -873,6 +848,54 @@ impl TextModeRenderer for HeadlessTextRenderer {
 
 #[cfg(test)]
 mod tests {
+
+    fn one_cell(ch: char, cursor: bool) -> VgaTextBuffer {
+        VgaTextBuffer {
+            rows: 1, cols: 1, cells: vec![(ch, 0x07)], raw_bytes: vec![ch as u8], cell_kind: vec![CellKind::Sbcs],
+            cursor_row: 0, cursor_col: 0, cursor_visible: cursor, cursor_start: 14, cursor_end: 15,
+        }
+    }
+
+    fn lit(pixels: &[u32]) -> usize {
+        pixels.iter().filter(|&&p| p & 0x00FF_FFFF != 0).count()
+    }
+
+    #[test]
+    fn source_spans_cover_every_source_pel_when_shrinking() {
+        assert_eq!(source_span(0, 8, 8), (0, 1));
+        assert_eq!(source_span(5, 16, 32), (2, 3), "enlarged: the pel under it");
+        assert_eq!(source_span(0, 16, 8), (0, 2), "halved: two rows");
+        // 16 rows into 14: every source row is used, none twice per output.
+        let covered: Vec<usize> = (0..14).flat_map(|i| { let (a, b) = source_span(i, 16, 14); a..b }).collect();
+        assert!((0..16).all(|r| covered.contains(&r)), "{covered:?}");
+    }
+
+    #[test]
+    fn glyphs_and_the_cursor_scale_with_the_cell_size() {
+        // The default size draws the Unifont glyph pel for pel.
+        let mut px = vec![0u32; 8 * 16];
+        render_cells(&one_cell('H', false), true, &mut px, 8, 16);
+        let glyph = get_glyph_for_char('H');
+        let expect = glyph.iter().map(|b| b.count_ones() as usize).sum::<usize>();
+        assert_eq!(lit(&px), expect);
+        // 8 × 8 keeps the strokes (the crossbar of H stays).
+        let mut small = vec![0u32; 8 * 8];
+        render_cells_sized(&one_cell('H', false), true, &mut small, 8, 8, (8, 8));
+        assert!(lit(&small) > expect / 3, "{} of {expect}", lit(&small));
+        assert!((0..8).any(|y| (0..8).all(|x| small[y * 8 + x] != 0 || !(1..7).contains(&x))),
+                "a row of the crossbar is lit");
+        // 16 × 32 doubles each pel both ways.
+        let mut big = vec![0u32; 16 * 32];
+        render_cells_sized(&one_cell('H', false), true, &mut big, 16, 32, (16, 32));
+        assert_eq!(lit(&big), expect * 4);
+        // The cursor's two scan lines of 16 are four of 32, one of 8.
+        let mut cur = vec![0u32; 16 * 32];
+        render_cells_sized(&one_cell(' ', true), true, &mut cur, 16, 32, (16, 32));
+        assert_eq!(lit(&cur), 16 * 4);
+        let mut cur = vec![0u32; 8 * 8];
+        render_cells_sized(&one_cell(' ', true), true, &mut cur, 8, 8, (8, 8));
+        assert_eq!(lit(&cur), 8);
+    }
     use super::*;
     use std::sync::atomic::Ordering;
     use crate::loader::Loader;

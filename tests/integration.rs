@@ -2991,6 +2991,37 @@ fn vio_window_mark_copy_and_paste() {
     assert!(has_dir(&drive_c, "Zk4"), "the pasted `md Zk4` ran");
 }
 
+/// Mark from the keyboard (Ctrl+Home, Down, Shift+End), copy with Enter and
+/// paste: the marked `md Kb7` runs. Font Size 8 × 8 (the list's first
+/// item) halves the frame's height; Alt+F11 hides the window and the
+/// window list (Ctrl+Esc, Enter on its only entry) brings it back.
+#[test]
+fn vio_window_keyboard_mark_font_size_hide_and_window_list() {
+    let steps = "\
+        1500 text echo md Kb7\n1600 key enter\n\
+        2300 key alt+space\n2400 key a\n\
+        2500 key ctrl+home\n2600 key down\n2700 key shift+end\n2800 key enter\n\
+        2900 key alt+space\n3000 key p\n\
+        3300 key enter\n\
+        3800 key alt+space\n3900 key f\n4000 key enter\n\
+        4300 dump {dump0}\n\
+        4400 key alt+f11\n\
+        4700 dump {dump1}\n\
+        4800 key ctrl+esc\n4900 key enter\n\
+        5200 dump {dump2}\n\
+        5300 quit\n";
+    let Some((shots, drive_c, _dir)) = run_cmd_windowed(steps, 3) else { return };
+    assert!(has_dir(&drive_c, "Kb7"), "the keyboard-marked, pasted `md Kb7` ran");
+    // 8 × 8 cells: the 25 rows take 200 pels, so below them is the desktop.
+    let below = VIO_CELLS_Y + 25 * 8 + 40;
+    assert_eq!(gui_pixel(&shots[0], VIO_CELLS_X + 100, below), 0x40_8040, "the desktop below the smaller frame");
+    let full = navy_in_row(&shots[0], VIO_TITLE_Y);
+    assert!(full > 400, "the title bar keeps the 80 columns' width: {full}");
+    // Hidden: no title bar; back from the window list: the same frame.
+    assert_eq!(navy_in_row(&shots[1], VIO_TITLE_Y), 0, "hidden");
+    assert_eq!(navy_in_row(&shots[2], VIO_TITLE_Y), full, "shown and active again");
+}
+
 /// The tile comparison itself: identical signatures match, a visible change
 /// is reported at the right tile, and sub-tolerance noise is ignored.
 #[test]

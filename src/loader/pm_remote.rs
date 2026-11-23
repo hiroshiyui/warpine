@@ -801,9 +801,7 @@ impl Loader {
     /// `WinSwitchToProgram` for another program's frame `hwnd`: shown and
     /// activated, as for a frame of this program.
     pub(super) fn switch_to_other_program(&self, hwnd: u32) -> bool {
-        let Some(link) = self.shared.desktop_link.get() else { return false };
-        matches!(link.call(hwnd, WinCall::Show { show: true }), Some(WinReply::Value(_)))
-            && matches!(link.call(hwnd, WinCall::Activate), Some(WinReply::Value(_)))
+        super::pm_switch::switch_to_other_program(&self.shared, hwnd)
     }
 
     /// Report a change of this program's active frame, and the frames the

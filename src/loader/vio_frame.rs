@@ -6,9 +6,12 @@
 //!
 //! The frame belongs to the host, not to a guest message queue: it has a
 //! title bar, a system-menu icon, minimize and maximize buttons and a sizing
-//! border; its client is the text screen (`cols × 8` by `rows × 16` pels,
+//! border; its client is the text screen (`cols × cell width` by `rows ×
+//! cell height` pels, 8 × 16 unless the user chose another Font Size,
 //! drawn by `gui::vio_window`), keys typed while it is active go to the VIO
-//! program's keyboard queue, and closing it ends the program.
+//! program's keyboard queue, and closing it ends the program. It has an
+//! entry in the switch list, so the window list can bring it back after
+//! Hide.
 //!
 //! The window is a view on the program's logical video buffer (LVB): IBM's
 //! `MouGetPtrPos` reference says "For a text window (VIO) application, the
@@ -31,9 +34,20 @@ use super::constants::{
 use super::pm_minmax::WinRect;
 use super::pm_types::WindowManager;
 
-/// Width and height in pels of one text cell.
+/// Width and height in pels of one text cell at the default font size.
 pub const VIO_CELL_W: i32 = 8;
 pub const VIO_CELL_H: i32 = 16;
+
+/// The size of a text cell, `(width, height)` in pels.
+pub type CellSize = (i32, i32);
+
+/// The cell size a VIO window starts with.
+pub const VIO_DEFAULT_CELL: CellSize = (VIO_CELL_W, VIO_CELL_H);
+
+/// The cell sizes the system menu's Font Size offers (Warpine's choice:
+/// OS/2's list depends on the display's fonts). Each is drawn from the
+/// 8 × 16 Unifont glyphs (`gui::text_renderer::render_cells_sized`).
+pub const VIO_FONT_SIZES: [CellSize; 6] = [(8, 8), (8, 12), (8, 14), VIO_DEFAULT_CELL, (12, 24), (16, 32)];
 
 /// The frame-creation flags of a VIO window.
 pub const VIO_FRAME_FLAGS: u32 =
@@ -50,12 +64,12 @@ pub const VIO_MIN_FRAME_CX: i32 = 160;
 /// (Warpine's choice).
 pub const VIO_MIN_CLIENT_CY: i32 = 3 * VIO_SCROLLBAR_W;
 
-/// The size of a VIO frame for a `cols × rows` text screen: the cells, the
-/// border on the left, right and bottom, and the title bar on top (which the
-/// top border is part of).
-pub fn vio_frame_size(cols: u16, rows: u16) -> (i32, i32) {
+/// The size of a VIO frame for a `cols × rows` text screen of `cell`-sized
+/// cells: the cells, the border on the left, right and bottom, and the
+/// title bar on top (which the top border is part of).
+pub fn vio_frame_size(cols: u16, rows: u16, cell: CellSize) -> (i32, i32) {
     let bw = frame_border_width(VIO_FRAME_FLAGS);
-    (cols as i32 * VIO_CELL_W + 2 * bw, rows as i32 * VIO_CELL_H + CHROME_TITLE_H + bw)
+    (cols as i32 * cell.0 + 2 * bw, rows as i32 * cell.1 + CHROME_TITLE_H + bw)
 }
 
 /// The client area (text view plus scroll bars) of a VIO frame `cx × cy`.
@@ -65,11 +79,11 @@ pub fn vio_client_size(cx: i32, cy: i32) -> (i32, i32) {
 }
 
 /// Which scroll bars a client of `client_w × client_h` pels showing a
-/// `cols × rows` screen needs: `(vertical, horizontal)`. A bar is needed for
-/// a direction the view cannot show whole; the room one bar takes may make
-/// the other one needed too.
-pub fn vio_scroll_bars(client_w: i32, client_h: i32, cols: u16, rows: u16) -> (bool, bool) {
-    let (tw, th) = (cols as i32 * VIO_CELL_W, rows as i32 * VIO_CELL_H);
+/// `cols × rows` screen of `cell`-sized cells needs: `(vertical,
+/// horizontal)`. A bar is needed for a direction the view cannot show
+/// whole; the room one bar takes may make the other one needed too.
+pub fn vio_scroll_bars(client_w: i32, client_h: i32, cols: u16, rows: u16, cell: CellSize) -> (bool, bool) {
+    let (tw, th) = (cols as i32 * cell.0, rows as i32 * cell.1);
     let (mut vbar, mut hbar) = (false, false);
     // Two rounds settle it: a bar can only make the other one needed.
     for _ in 0..2 {
@@ -87,8 +101,8 @@ pub fn vio_scroll_bars(client_w: i32, client_h: i32, cols: u16, rows: u16) -> (b
 /// is needed, so the window never shows more than the whole screen
 /// (Warpine's choice: what OS/2 does with a window larger than its LVB is
 /// not documented).
-pub fn vio_size_limits(cols: u16, rows: u16) -> ((i32, i32), (i32, i32)) {
-    let full = vio_frame_size(cols, rows);
+pub fn vio_size_limits(cols: u16, rows: u16, cell: CellSize) -> ((i32, i32), (i32, i32)) {
+    let full = vio_frame_size(cols, rows, cell);
     let max = (full.0 + VIO_SCROLLBAR_W, full.1 + VIO_SCROLLBAR_W);
     let bw = frame_border_width(VIO_FRAME_FLAGS);
     let min = (VIO_MIN_FRAME_CX.min(full.0), (VIO_MIN_CLIENT_CY + CHROME_TITLE_H + bw).min(full.1));
@@ -98,23 +112,23 @@ pub fn vio_size_limits(cols: u16, rows: u16) -> ((i32, i32), (i32, i32)) {
 /// The frame size `(cx, cy)` of a `cols × rows` screen kept within
 /// [`vio_size_limits`] and no wider (taller) than the whole screen unless a
 /// vertical (horizontal) scroll bar takes the extra room.
-pub fn clamp_vio_size(cx: i32, cy: i32, cols: u16, rows: u16) -> (i32, i32) {
-    let (min, max) = vio_size_limits(cols, rows);
+pub fn clamp_vio_size(cx: i32, cy: i32, cols: u16, rows: u16, cell: CellSize) -> (i32, i32) {
+    let (min, max) = vio_size_limits(cols, rows, cell);
     let (cx, cy) = (cx.clamp(min.0, max.0), cy.clamp(min.1, max.1));
     let (cw, ch) = vio_client_size(cx, cy);
-    let (vbar, hbar) = vio_scroll_bars(cw, ch, cols, rows);
-    let full = vio_frame_size(cols, rows);
+    let (vbar, hbar) = vio_scroll_bars(cw, ch, cols, rows, cell);
+    let full = vio_frame_size(cols, rows, cell);
     (if vbar { cx } else { cx.min(full.0) }.max(min.0), if hbar { cy } else { cy.min(full.1) }.max(min.1))
 }
 
 /// The frame size for a `cols × rows` screen that also fits on the desktop
 /// (its border may lie just outside it, as a maximized frame's does): the
 /// whole screen if there is room, else as much as fits with scroll bars.
-fn fit_on_desktop(cols: u16, rows: u16) -> (i32, i32) {
+fn fit_on_desktop(cols: u16, rows: u16, cell: CellSize) -> (i32, i32) {
     let (dw, dh) = desktop_size();
     let bw = frame_border_width(VIO_FRAME_FLAGS);
-    let (_, max) = vio_size_limits(cols, rows);
-    clamp_vio_size(max.0.min(dw as i32 + 2 * bw), max.1.min(dh as i32 + 2 * bw), cols, rows)
+    let (_, max) = vio_size_limits(cols, rows, cell);
+    clamp_vio_size(max.0.min(dw as i32 + 2 * bw), max.1.min(dh as i32 + 2 * bw), cols, rows, cell)
 }
 
 impl WindowManager {
@@ -128,7 +142,7 @@ impl WindowManager {
         let frame = self.create_window(Self::VIO_CLASS.to_string(), HWND_DESKTOP, 0);
         let client = self.create_window(Self::VIO_CLASS.to_string(), frame, 0);
         self.frame_to_client.insert(frame, client);
-        let (cx, cy) = fit_on_desktop(cols, rows);
+        let (cx, cy) = fit_on_desktop(cols, rows, self.vio_cell);
         let (x, y) = default_frame_pos(0, cx, cy, desktop_size());
         if let Some(w) = self.get_window_mut(frame) {
             (w.x, w.y, w.cx, w.cy) = (x, y, cx, cy);
@@ -156,17 +170,37 @@ impl WindowManager {
     pub fn fit_vio_frame(&mut self, cols: u16, rows: u16) -> bool {
         if self.vio_screen == (cols, rows) { return false; }
         self.vio_screen = (cols, rows);
+        self.refit_vio_frame();
+        true
+    }
+
+    /// Draw the VIO screen in cells of `cell` (system menu Font Size): the
+    /// frame is fitted to the whole screen in the new cells as after a mode
+    /// change (Warpine's choice: whether OS/2 keeps the window's size or
+    /// its rows and columns is not documented). Returns whether the size
+    /// changed.
+    pub fn set_vio_cell(&mut self, cell: CellSize) -> bool {
+        if self.vio_cell == cell { return false; }
+        self.vio_cell = cell;
+        self.refit_vio_frame();
+        true
+    }
+
+    /// Fit the VIO frame to its screen and cell size (see
+    /// [`Self::fit_vio_frame`]).
+    fn refit_vio_frame(&mut self) {
+        let (cols, rows) = self.vio_screen;
         let frame = self.vio_frame;
-        let Some(w) = self.get_window(frame) else { return true };
+        let Some(w) = self.get_window(frame) else { return };
         let state = w.style & (WS_MINIMIZED | WS_MAXIMIZED);
-        let (cx, cy) = fit_on_desktop(cols, rows);
+        let (cx, cy) = fit_on_desktop(cols, rows, self.vio_cell);
         if state & WS_MINIMIZED != 0 {
             // Restoring brings it back at the new size, top edge in place.
             let top = self.restore_word(frame, QWS_YRESTORE, w.y) + self.restore_word(frame, QWS_CYRESTORE, w.cy);
             self.set_restore_word(frame, QWS_CXRESTORE, cx);
             self.set_restore_word(frame, QWS_CYRESTORE, cy);
             self.set_restore_word(frame, QWS_YRESTORE, top - cy);
-            return true;
+            return;
         }
         let target = if state & WS_MAXIMIZED != 0 {
             self.vio_maximized_rect()
@@ -175,7 +209,6 @@ impl WindowManager {
             WinRect { x: w.x, y: w.y + w.cy - cy, cx, cy }
         };
         self.set_vio_rect(target);
-        true
     }
 
     /// Move and size the VIO frame to `r` and lay it out again.
@@ -196,7 +229,7 @@ impl WindowManager {
     pub fn vio_maximized_rect(&self) -> WinRect {
         let frame = self.vio_frame;
         let (cols, rows) = self.vio_screen;
-        let (cx, cy) = fit_on_desktop(cols, rows);
+        let (cx, cy) = fit_on_desktop(cols, rows, self.vio_cell);
         let (dw, dh) = desktop_size();
         let (dw, dh) = (dw as i32, dh as i32);
         let bw = frame_border_width(VIO_FRAME_FLAGS);
@@ -216,7 +249,7 @@ impl WindowManager {
     /// ([`clamp_vio_size`] of its screen); `None` for other frames.
     pub fn vio_clamp_size(&self, frame: u32, cx: i32, cy: i32) -> Option<(i32, i32)> {
         (frame != 0 && frame == self.vio_frame)
-            .then(|| clamp_vio_size(cx, cy, self.vio_screen.0, self.vio_screen.1))
+            .then(|| clamp_vio_size(cx, cy, self.vio_screen.0, self.vio_screen.1, self.vio_cell))
     }
 
     /// Minimize, maximize or restore the VIO frame at once (`op`: one of
@@ -232,7 +265,7 @@ impl WindowManager {
             SWP_RESTORE => {
                 let (cols, rows) = self.vio_screen;
                 let top = target.y + target.cy;
-                (target.cx, target.cy) = clamp_vio_size(target.cx, target.cy, cols, rows);
+                (target.cx, target.cy) = clamp_vio_size(target.cx, target.cy, cols, rows, self.vio_cell);
                 target.y = top - target.cy;
             }
             _ => {}
@@ -253,6 +286,17 @@ impl WindowManager {
         }
     }
 
+    /// Give the VIO frame its switch-list entry, titled with the frame's
+    /// title in `codepage`, so that the window list shows it and can bring
+    /// it back after Hide (OS/2 lists every session; the entry's fields
+    /// are those of a `FCF_TASKLIST` frame, Warpine's choice).
+    pub fn add_vio_switch(&mut self, codepage: u32) {
+        let frame = self.vio_frame;
+        let Some(text) = self.get_window(frame).map(|w| w.text.clone()) else { return };
+        let bytes = super::codepage::cp_encode(&text, codepage);
+        self.add_frame_switch(frame, bytes, text);
+    }
+
     /// Whether `hwnd` is the VIO frame or its client.
     pub fn is_vio_window(&self, hwnd: u32) -> bool {
         self.vio_frame != 0
@@ -264,6 +308,8 @@ impl WindowManager {
 mod tests {
     use super::*;
     use crate::loader::constants::SWP_MINIMIZE;
+
+    const C: CellSize = VIO_DEFAULT_CELL;
 
     fn rect(wm: &WindowManager) -> WinRect {
         let w = wm.get_window(wm.vio_frame).unwrap();
@@ -309,9 +355,9 @@ mod tests {
         let r = rect(&wm);
         let bw = frame_border_width(VIO_FRAME_FLAGS);
         assert_eq!(r.cy, dh as i32 + 2 * bw, "{r:?}");
-        assert_eq!(r.cx, vio_frame_size(80, 60).0 + VIO_SCROLLBAR_W, "the width and a vertical bar");
+        assert_eq!(r.cx, vio_frame_size(80, 60, C).0 + VIO_SCROLLBAR_W, "the width and a vertical bar");
         let (cw, ch) = vio_client_size(r.cx, r.cy);
-        assert_eq!(vio_scroll_bars(cw, ch, 80, 60), (true, false), "only a vertical scroll bar");
+        assert_eq!(vio_scroll_bars(cw, ch, 80, 60, C), (true, false), "only a vertical scroll bar");
     }
 
     #[test]
@@ -322,7 +368,7 @@ mod tests {
         let before = top(&wm);
         assert!(!wm.fit_vio_frame(80, 25), "unchanged");
         assert!(wm.fit_vio_frame(80, 43));
-        assert_eq!(wm.get_window(frame).unwrap().cy, vio_frame_size(80, 43).1);
+        assert_eq!(wm.get_window(frame).unwrap().cy, vio_frame_size(80, 43, C).1);
         assert_eq!(top(&wm), before);
         let s = wm.frame_surface(frame).unwrap();
         assert_eq!(s.lock().unwrap().height, (43 * 16 + frame_border_width(VIO_FRAME_FLAGS)) as u32);
@@ -341,27 +387,27 @@ mod tests {
 
     #[test]
     fn scroll_bars_appear_where_the_view_is_too_small() {
-        assert_eq!(vio_scroll_bars(640, 400, 80, 25), (false, false));
-        assert_eq!(vio_scroll_bars(600, 400, 80, 25), (true, true), "the horizontal bar takes height");
-        assert_eq!(vio_scroll_bars(640 + VIO_SCROLLBAR_W, 300, 80, 25), (true, false));
-        assert_eq!(vio_scroll_bars(640, 300, 80, 25), (true, true));
+        assert_eq!(vio_scroll_bars(640, 400, 80, 25, C), (false, false));
+        assert_eq!(vio_scroll_bars(600, 400, 80, 25, C), (true, true), "the horizontal bar takes height");
+        assert_eq!(vio_scroll_bars(640 + VIO_SCROLLBAR_W, 300, 80, 25, C), (true, false));
+        assert_eq!(vio_scroll_bars(640, 300, 80, 25, C), (true, true));
     }
 
     #[test]
     fn size_limits_never_exceed_the_whole_screen() {
-        let ((min_cx, min_cy), max) = vio_size_limits(80, 25);
-        let full = vio_frame_size(80, 25);
+        let ((min_cx, min_cy), max) = vio_size_limits(80, 25, C);
+        let full = vio_frame_size(80, 25, C);
         assert_eq!(max, (full.0 + VIO_SCROLLBAR_W, full.1 + VIO_SCROLLBAR_W));
         assert_eq!(min_cx, VIO_MIN_FRAME_CX);
         assert_eq!(min_cy, VIO_MIN_CLIENT_CY + CHROME_TITLE_H + frame_border_width(VIO_FRAME_FLAGS));
-        assert_eq!(clamp_vio_size(5000, 5000, 80, 25), full, "no larger than the whole screen");
+        assert_eq!(clamp_vio_size(5000, 5000, 80, 25, C), full, "no larger than the whole screen");
         // Shorter than the screen: the vertical bar may take extra width.
-        assert_eq!(clamp_vio_size(5000, 300, 80, 25), (full.0 + VIO_SCROLLBAR_W, 300));
-        assert_eq!(clamp_vio_size(full.0 + 8, full.1, 80, 25), full, "no bar, no extra room");
-        assert_eq!(clamp_vio_size(0, 0, 80, 25), (min_cx, min_cy));
-        assert_eq!(clamp_vio_size(300, 200, 80, 25), (300, 200));
+        assert_eq!(clamp_vio_size(5000, 300, 80, 25, C), (full.0 + VIO_SCROLLBAR_W, 300));
+        assert_eq!(clamp_vio_size(full.0 + 8, full.1, 80, 25, C), full, "no bar, no extra room");
+        assert_eq!(clamp_vio_size(0, 0, 80, 25, C), (min_cx, min_cy));
+        assert_eq!(clamp_vio_size(300, 200, 80, 25, C), (300, 200));
         // A tiny screen: the minimum is never above the maximum.
-        let (min, max) = vio_size_limits(4, 1);
+        let (min, max) = vio_size_limits(4, 1, C);
         assert!(min.0 <= max.0 && min.1 <= max.1);
         let mut wm = WindowManager::new();
         let frame = wm.create_vio_frame("t", 80, 25);
@@ -411,8 +457,43 @@ mod tests {
         assert!(wm.fit_vio_frame(80, 43));
         assert!(wm.vio_minmax(SWP_RESTORE));
         let r = rect(&wm);
-        assert_eq!((r.cx, r.cy), vio_frame_size(80, 43));
+        assert_eq!((r.cx, r.cy), vio_frame_size(80, 43, C));
         assert_eq!(r.y + r.cy, normal.y + normal.cy, "top edge kept");
+    }
+
+    #[test]
+    fn a_new_font_size_fits_the_frame_to_the_screen_in_the_new_cells() {
+        let mut wm = WindowManager::new();
+        let frame = wm.create_vio_frame("t", 80, 25);
+        let top = |wm: &WindowManager| wm.get_window(frame).map(|w| w.y + w.cy).unwrap();
+        let before = top(&wm);
+        assert!(!wm.set_vio_cell(VIO_DEFAULT_CELL), "unchanged");
+        assert!(wm.set_vio_cell((8, 12)));
+        let r = rect(&wm);
+        assert_eq!((r.cx, r.cy), vio_frame_size(80, 25, (8, 12)));
+        assert_eq!(top(&wm), before, "top edge kept");
+        // Size limits follow the cells.
+        assert_eq!(wm.vio_clamp_size(frame, 5000, 5000), Some(vio_frame_size(80, 25, (8, 12))));
+        // Maximized: maximized again for the new cells.
+        wm.vio_minmax(SWP_MAXIMIZE);
+        assert!(wm.set_vio_cell((8, 8)));
+        assert_eq!(wm.minmax_state(frame), WS_MAXIMIZED);
+        assert_eq!((rect(&wm).cx, rect(&wm).cy), vio_frame_size(80, 25, (8, 8)));
+        // Every offered size draws cells at least 8 pels wide.
+        assert!(VIO_FONT_SIZES.contains(&VIO_DEFAULT_CELL));
+        assert!(VIO_FONT_SIZES.iter().all(|&(w, h)| w >= 8 && h >= 8));
+    }
+
+    #[test]
+    fn the_vio_frame_gets_a_switch_entry() {
+        let mut wm = WindowManager::new();
+        let frame = wm.create_vio_frame("Warpine — CMD.EXE", 80, 25);
+        wm.add_vio_switch(437);
+        let entries: Vec<_> = wm.switch_list.list().map(|(_, c)| c.clone()).collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hwnd, frame);
+        assert_eq!(entries[0].title, crate::loader::codepage::cp_encode("Warpine — CMD.EXE", 437));
+        assert_ne!(entries[0].visibility & super::super::pm_switch::SWL_VISIBLE, 0);
     }
 
     #[test]
@@ -423,6 +504,6 @@ mod tests {
         assert!(wm.fit_vio_frame(80, 30));
         assert_eq!(wm.minmax_state(frame), WS_MAXIMIZED);
         let r = rect(&wm);
-        assert_eq!((r.cx, r.cy), vio_frame_size(80, 30));
+        assert_eq!((r.cx, r.cy), vio_frame_size(80, 30, C));
     }
 }
