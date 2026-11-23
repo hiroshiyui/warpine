@@ -140,6 +140,9 @@ pub enum InterfaceItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interface {
     pub name: String,
+    /// The source it came from: 0 the main file, else an included one
+    /// (an index into the preprocessor's file list).
+    pub file: usize,
     pub parents: Vec<ScopedName>,
     pub items: Vec<InterfaceItem>,
 }
@@ -151,5 +154,6 @@ pub enum Definition {
     Interface(Interface),
     /// `interface Name;` — a forward declaration.
     Forward(String),
-    Type(TypeDecl),
+    /// A type or constant, and the file it came from (see `Interface`).
+    Type(TypeDecl, usize),
 }

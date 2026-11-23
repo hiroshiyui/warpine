@@ -59,6 +59,54 @@ typedef struct SOMAny_struct {
     somMethodTab *mtab;
 } SOMAny;
 
+typedef struct somMethodTabList {
+    somMethodTab            *mtab;
+    struct somMethodTabList *next;
+} somMethodTabList, *somMethodTabs;
+
+/* What somBuildClass takes (layout version 1, as somidl's bindings fill
+ * it): a class's static methods and overrides, its parents and metaclass
+ * by name (ADR-0073). */
+typedef struct somStaticMethod_t {
+    somMToken     *classData;       /* where its token goes */
+    somId         *methodId;
+    somId         *methodDescriptor;
+    somMethodProc *method;
+    somMethodProc *redispatchStub;
+    somMethodProc *applyStub;
+} somStaticMethod_t;
+typedef struct somOverrideMethod_t {
+    somId         *methodId;
+    somMethodProc *method;
+} somOverrideMethod_t;
+typedef struct somStaticClassInfo {
+    unsigned long        layoutVersion;
+    unsigned long        numStaticMethods;
+    unsigned long        numStaticOverrides;
+    unsigned long        numNonInternalData;
+    unsigned long        numProcMethods;
+    unsigned long        numVarargsFuncs;
+    unsigned long        majorVersion;
+    unsigned long        minorVersion;
+    unsigned long        instanceDataSize;
+    unsigned long        maxMethods;
+    unsigned long        numParents;
+    somId                classId;
+    somId                explicitMetaId;
+    long                 implicitParentMeta;
+    somId               *parents;
+    void                *cds;            /* the class's ClassData */
+    void                *ccds;           /* its CClassData */
+    somStaticMethod_t   *smt;
+    somOverrideMethod_t *omt;
+    char                *nitReferenceBase;
+    void                *nit;
+    void                *pmt;
+    void                *vft;
+    void                *cif;
+} somStaticClassInfo;
+
+
 /* In C every object is a SOMAny; in C++ (som.xh) the classes are C++
  * classes whose only member is that first word. */
 #ifdef __cplusplus
@@ -91,6 +139,10 @@ SOMEXTERN zString         SOMLINK somStringFromId( somId id );
 SOMEXTERN int             SOMLINK somCompareIds( somId a, somId b );
 SOMEXTERN int             SOMLINK somIsObj( void *p );
 SOMEXTERN int             SOMLINK somPrintf( char *fmt, ... );
+SOMEXTERN somMethodProc * SOMLINK somParentNumResolve( somMethodTabs parentMtabs, int parentNum, somMToken method );
+SOMEXTERN SOMClass      * SOMLINK somBuildClass( long inheritVars, somStaticClassInfo *sci, long majorVersion, long minorVersion );
+SOMEXTERN SOMClass      * SOMLINK SOMObjectNewClass( integer4 majorVersion, integer4 minorVersion );
+SOMEXTERN SOMClass      * SOMLINK SOMClassNewClass( integer4 majorVersion, integer4 minorVersion );
 /* Warpine's: the metaclass of a new class that asks for `requested` (0:
  * none) and has parent `parent` - a derived metaclass when they clash. */
 SOMEXTERN SOMClass      * SOMLINK WrpSomMetaclassFor( SOMClass *requested, SOMClass *parent );
@@ -245,6 +297,12 @@ typedef somTP_SOMObject_somDestruct     *somTD_SOMObject_somDestruct;
 #define SOMObject_somIsA( o, c )       _somIsA( o, c )
 #define SOMObject_somPrintSelf( o )    _somPrintSelf( o )
 #define SOMObject_somDumpSelf( o, l )  _somDumpSelf( o, l )
+
+/* A parent's implementation of a method: in the `n`th parent's table of a
+ * class's <Class>CClassData.parentMtab (somidl's bindings). */
+#define SOM_ParentNumResolve( cls, n, mtabs, m ) \
+    ((somTD_##cls##_##m) somParentNumResolve( (mtabs), (n), cls##ClassData.m ))
+#define SOMMethodDebug( c, m ) SOM_MethodDebug( c, m )
 
 /* A parent's implementation of a method: resolved in the parent class. */
 #define SOM_ParentResolve( parent, cls, m ) \

@@ -5,9 +5,12 @@
 //   somidl [-I dir]... [-D name[=value]]... [-s emitters] [-o dir] [--dump] file.idl
 //
 // Reads a SOM IDL file (CORBA 2.0 IDL with SOM's implementation section)
-// through the SDK tools' C preprocessor, with __SOMIDL__ defined. This
-// stage has the front end only: `--dump` prints the syntax tree. The
-// emitters (`-s h,ih,xh,xih,c,xc,def`) come with stage S1's later batches.
+// through the SDK tools' C preprocessor, with __SOMIDL__ defined, and
+// writes C bindings for the interfaces of that file (`-s`, default h,ih):
+// h (usage), ih (implementation), c (a template, written only when the
+// file does not exist yet) and def (a class library's exports), into -o's
+// directory (default: the current one). `--dump` prints the syntax tree
+// instead. The C++ emitters (xh, xih, xc) come with stage S2.
 
 use std::path::PathBuf;
 use std::process;
@@ -64,13 +67,34 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// The emitters run when `-s` is not given.
+const DEFAULT_EMITTERS: &str = "h,ih";
+
+/// Parse the input; `--dump` gives the tree as text, else the emitters
+/// write their files into the output directory (the current one by
+/// default). The `c` template is written only when the file is not there
+/// yet, so it never overwrites an implementation.
 fn run(args: &Args) -> Result<String, String> {
     let defs = somidl::parse_file(&args.input, &args.include_dirs, &args.defines)?;
     if args.dump {
         return Ok(somidl::dump::dump(&defs));
     }
-    Err(format!("{}: parsed; the emitters ({}) are not implemented yet (ADR-0122, stage S1): use --dump",
-                args.input.display(), args.emitters.as_deref().unwrap_or("h,ih")))
+    let stem = args.input.file_stem().and_then(|s| s.to_str()).ok_or("the input has no file name")?;
+    let kinds: Vec<&str> = args.emitters.as_deref().unwrap_or(DEFAULT_EMITTERS).split(',')
+        .map(str::trim).filter(|k| !k.is_empty()).collect();
+    let outputs = somidl::emit_c::emit(&defs, stem, &kinds).map_err(|e| format!("{}: {e}", args.input.display()))?;
+    let dir = args.out_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+    let mut written = String::new();
+    for o in outputs {
+        let path = dir.join(&o.name);
+        if o.name.ends_with(".c") && path.exists() {
+            written.push_str(&format!("{}: kept (it exists)\n", path.display()));
+            continue;
+        }
+        std::fs::write(&path, o.text).map_err(|e| format!("{}: {e}", path.display()))?;
+        written.push_str(&format!("{}\n", path.display()));
+    }
+    Ok(written)
 }
 
 fn main() {
@@ -212,6 +236,111 @@ mod tests {
         assert!(parse_args(&["a.idl".into(), "b.idl".into()]).is_err());
         assert!(parse_args(&["--what".into(), "a.idl".into()]).is_err());
         assert!(parse_args(&[]).is_err());
+    }
+
+    fn emit(text: &str, kinds: &[&str]) -> Result<Vec<somidl::emit_c::Output>, String> {
+        let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/include");
+        let defs = somidl::parse_source(text.as_bytes(), std::path::Path::new("t.idl"), &[sdk], &[], true)?;
+        somidl::emit_c::emit(&defs, "t", kinds)
+    }
+
+    fn emitted(text: &str, kind: &str) -> String {
+        emit(text, &[kind]).unwrap_or_else(|e| panic!("{e}")).remove(0).text
+    }
+
+    const COUNTER: &str = "#include <somobj.idl>\n\
+        interface Counter : SOMObject {\n\
+        \x20 long add(in long n);\n\
+        \x20 void peek(out long calls, inout string s);\n\
+        \x20 implementation {\n\
+        \x20   releaseorder: peek, add;\n\
+        \x20   functionprefix = c_; majorversion = 1; minorversion = 2;\n\
+        \x20   long total; Counter next;\n\
+        \x20   somInit: override; somDestruct: override;\n\
+        \x20 };\n\
+        };\n\
+        interface Kid : Counter { implementation { add: override; }; };\n";
+
+    /// The usage bindings: method types, NewClass, ClassData in release
+    /// order, the class macro, `_method` macros with the Environment.
+    #[test]
+    fn usage_bindings() {
+        let h = emitted(COUNTER, "h");
+        for want in ["#include <som.h>", "#define Counter_MajorVersion 1\n#define Counter_MinorVersion 2",
+                     "typedef SOMObject Counter;",
+                     "typedef long SOMLINK somTP_Counter_add( Counter *somSelf, Environment *ev, long n );",
+                     "typedef void SOMLINK somTP_Counter_peek( Counter *somSelf, Environment *ev, long *calls, string *s );",
+                     "    SOMClass *classObject;\n    somMToken peek;\n    somMToken add;\n} SOMDLINK CounterClassData;",
+                     "#define _Counter (CounterClassData.classObject ? CounterClassData.classObject : CounterNewClass( Counter_MajorVersion, Counter_MinorVersion ))",
+                     "#define CounterNew() ((Counter *)_somNew( _Counter ))",
+                     "#define Counter_add( somSelf, ev, n ) \\\n    SOM_Resolve( somSelf, Counter, add )( (Counter *)(somSelf), (ev), (n) )",
+                     "#define _add Counter_add", "SOMEXTERN SOMClass * SOMLINK KidNewClass("] {
+            assert!(h.contains(want), "{want:?} missing in\n{h}");
+        }
+    }
+
+    /// The implementation bindings: instance data and its macros, the
+    /// prototypes (overrides take the ancestor's signature, oidl ones no
+    /// Environment), parent calls, and the static class information.
+    #[test]
+    fn implementation_bindings() {
+        let ih = emitted(COUNTER, "ih");
+        for want in ["#include \"t.h\"", "typedef struct CounterData_struct {\n    long total;\n    Counter *next;\n} CounterData;",
+                     "somDataResolve( (SOMObject *)(somSelf), CounterCClassData.instanceDataToken )",
+                     "#define _total (somThis->total)",
+                     "SOM_Scope long SOMLINK c_add( Counter *somSelf, Environment *ev, long n );",
+                     "SOM_Scope void SOMLINK c_somInit( Counter *somSelf );",
+                     "SOM_Scope void SOMLINK c_somDestruct( Counter *somSelf, octet doFree, somDestructCtrl *ctrl );",
+                     "#define Counter_parent_SOMObject_somInit( somSelf ) \\\n    SOM_ParentNumResolve( SOMObject, 1, CounterCClassData.parentMtab, somInit )( (SOMObject *)(somSelf) )",
+                     "{ &CounterClassData.add, &somMN_Counter_add, 0, (somMethodProc *)c_add, 0, 0 },",
+                     "{ &somON_Counter_somInit, (somMethodProc *)c_somInit },",
+                     "    1, 2, 2, 0, 0, 0, 1, 2, sizeof( CounterData ), 2, 1, &somCN_Counter_s, 0, 0,",
+                     "#define Kid_parent_Counter_add( somSelf, ev, n ) \\\n    SOM_ParentNumResolve( Counter, 1, KidCClassData.parentMtab, add )( (Counter *)(somSelf), (ev), (n) )",
+                     "#define KidGetData( somSelf ) ((void)(somSelf), (KidData *)0)",
+                     "    CounterNewClass( Counter_MajorVersion, Counter_MinorVersion );\n    return( somBuildClass( 1, &somSCI_Kid, majorVersion, minorVersion ) );"] {
+            assert!(ih.contains(want), "{want:?} missing in\n{ih}");
+        }
+        assert!(!ih.contains("SOMObject_MajorVersion"), "the root classes' NewClass takes any version");
+    }
+
+    #[test]
+    fn template_and_def() {
+        let c = emitted(COUNTER, "c");
+        assert!(c.contains("SOM_Scope long SOMLINK c_add( Counter *somSelf, Environment *ev, long n )\n{"), "{c}");
+        assert!(c.contains("    return( (long)0 );"), "{c}");
+        assert!(c.contains("    Counter_parent_somInit( somSelf );"), "{c}");
+        assert!(c.contains("    return( Kid_parent_add( somSelf, ev, n ) );"), "{c}");
+        assert_eq!(emitted(COUNTER, "def"), "CounterNewClass\nCounterClassData\nCounterCClassData\nKidNewClass\nKidClassData\nKidCClassData\n");
+    }
+
+    /// What stage S1 does not cover, and mistakes, are refused by name.
+    #[test]
+    fn what_s1_does_not_cover_is_refused() {
+        let err = |text: &str| emit(text, &["h"]).err().unwrap_or_default();
+        let base = "#include <somcls.idl>\n";
+        assert!(err(&format!("{base}interface A : SOMObject {{ attribute long x; }};")).contains("attributes"));
+        assert!(err(&format!("{base}interface A : SOMObject, SOMClass {{ }};")).contains("multiple inheritance"));
+        assert!(err(&format!("{base}interface A : SOMObject {{ void f(in any x); }};")).contains("any"));
+        assert!(err(&format!("{base}interface A : SOMObject {{ void f(in sequence<long> x); }};")).contains("sequences"));
+        assert!(err(&format!("{base}interface A : SOMObject {{ void f(); implementation {{ f: init; }}; }};")).contains("init methods"));
+        assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ g: override; }}; }};")).contains("overrides no method"));
+        assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ releaseorder: g; }}; }};")).contains("does not declare"));
+        assert!(err("interface A : Nowhere { };").contains("not declared"));
+        assert!(emit("interface A { };", &["xh"]).err().unwrap_or_default().contains("stage S2"));
+    }
+
+    /// The C template is written only when its file is not there.
+    #[test]
+    fn the_template_never_overwrites() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let idl = dir.path().join("t.idl");
+        std::fs::write(&idl, "interface T { void f(); };\n").unwrap();
+        std::fs::write(dir.path().join("t.c"), "mine\n").unwrap();
+        let args = Args { emitters: Some("h,c".into()), out_dir: Some(dir.path().to_path_buf()), input: idl, ..Args::default() };
+        let report = run(&args).expect("runs");
+        assert!(report.contains("t.c: kept"), "{report}");
+        assert_eq!(std::fs::read_to_string(dir.path().join("t.c")).unwrap(), "mine\n");
+        assert!(std::fs::read_to_string(dir.path().join("t.h")).unwrap().contains("TNewClass"));
     }
 
     /// Open Watcom's SOM samples parse in place (read, never copied), with

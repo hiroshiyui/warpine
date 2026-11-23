@@ -134,6 +134,48 @@ SOMEXTERN void          SOMLINK WrpSomInitCtrlFree( somInitCtrl *ctrl );
 SOMEXTERN void          SOMLINK WrpSomInitWalk( SOMObject *obj );
 SOMEXTERN void          SOMLINK WrpSomDestructWalk( SOMObject *obj, octet doFree );
 
+/* What somBuildClass takes (layout version 1, as somidl's bindings fill
+ * it): a class's static methods and overrides, its parents and metaclass
+ * by name (ADR-0073). */
+typedef struct somStaticMethod_t {
+    somMToken     *classData;       /* where its token goes */
+    somId         *methodId;
+    somId         *methodDescriptor;
+    somMethodProc *method;
+    somMethodProc *redispatchStub;
+    somMethodProc *applyStub;
+} somStaticMethod_t;
+typedef struct somOverrideMethod_t {
+    somId         *methodId;
+    somMethodProc *method;
+} somOverrideMethod_t;
+typedef struct somStaticClassInfo {
+    unsigned long        layoutVersion;
+    unsigned long        numStaticMethods;
+    unsigned long        numStaticOverrides;
+    unsigned long        numNonInternalData;
+    unsigned long        numProcMethods;
+    unsigned long        numVarargsFuncs;
+    unsigned long        majorVersion;
+    unsigned long        minorVersion;
+    unsigned long        instanceDataSize;
+    unsigned long        maxMethods;
+    unsigned long        numParents;
+    somId                classId;
+    somId                explicitMetaId;
+    long                 implicitParentMeta;
+    somId               *parents;
+    void                *cds;            /* the class's ClassData */
+    void                *ccds;           /* its CClassData */
+    somStaticMethod_t   *smt;
+    somOverrideMethod_t *omt;
+    char                *nitReferenceBase;
+    void                *nit;
+    void                *pmt;
+    void                *vft;
+    void                *cif;
+} somStaticClassInfo;
+
 /* ---- Functions ---- */
 SOMEXTERN SOMClassMgr   * SOMLINK somEnvironmentNew( void );
 SOMEXTERN Environment   * SOMLINK somGetGlobalEnvironment( void );
@@ -162,7 +204,10 @@ SOMEXTERN void            SOMLINK somPrefixLevel( long level );
 SOMEXTERN SOMObject     * SOMLINK somTestCls( SOMObject *obj, SOMClass *cls, zString fileName, int lineNum );
 SOMEXTERN void            SOMLINK somTest( int condition, int severity, zString fileName, int lineNum, zString msg );
 SOMEXTERN void            SOMLINK somAssert( int condition, int ecode, zString fileName, int lineNum, zString msg );
-SOMEXTERN SOMClass      * SOMLINK somBuildClass( long inheritVars, void *sci, long majorVersion, long minorVersion );
+SOMEXTERN SOMClass      * SOMLINK somBuildClass( long inheritVars, somStaticClassInfo *sci, long majorVersion, long minorVersion );
+SOMEXTERN SOMClass      * SOMLINK SOMObjectNewClass( integer4 majorVersion, integer4 minorVersion );
+SOMEXTERN SOMClass      * SOMLINK SOMClassNewClass( integer4 majorVersion, integer4 minorVersion );
+SOMEXTERN SOMClass      * SOMLINK SOMClassMgrNewClass( integer4 majorVersion, integer4 minorVersion );
 /* Warpine's: the metaclass of a new class that asks for `requested` (0:
  * none) and has parent `parent`, a derived one when they clash. */
 SOMEXTERN SOMClass      * SOMLINK WrpSomMetaclassFor( SOMClass *requested, SOMClass *parent );

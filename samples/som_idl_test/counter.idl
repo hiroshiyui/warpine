@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// counter.idl - classes for somidl's C bindings (ADR-0122): instance data,
+// a class derived from another of the file, an override calling its
+// parent's, and initializers / destructors in Warpine's protocol.
+#include <somobj.idl>
+
+interface Counter : SOMObject
+{
+    long add(in long n);
+    // Adds n to the total and returns the new total.
+    void reset();
+    long peek(out long calls);
+    // The total; calls gets the number of add calls.
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: add, reset, peek;
+        functionprefix = c_;
+        majorversion = 1;
+        minorversion = 2;
+        long total;
+        long calls;
+        somDefaultInit: override;
+        somDestruct: override;
+    };
+#endif
+};
+
+interface Doubler : Counter
+{
+    long twice();
+    // How many adds were doubled.
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: twice;
+        functionprefix = d_;
+        long doubled;
+        add: override;
+        somDefaultInit: override;
+        somDestruct: override;
+    };
+#endif
+};

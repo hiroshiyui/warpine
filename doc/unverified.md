@@ -360,7 +360,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - the shared preprocessor's 16 MB limit on the text one run reads;
   - `WrpSomDataExport` (SOM 3090) and the data exports as macros over it; `WrpSomInitCtrlNew` / `WrpSomInitCtrlFree` / `WrpSomInitWalk` / `WrpSomDestructWalk` (3091–3094);
   - the table's order (post-order, parents left to right), and the hand-over of an inherited initializer or destructor to the kernel's walk;
-  - the root IDL's signatures for methods the Reference does not document (marked private), `somtypes.idl`, and `somParentMtabStruct` declared only up to `instanceSize`.
+  - the root IDL's signatures for methods the Reference does not document (marked private), `somtypes.idl`, and `somParentMtabStruct` declared only up to `instanceSize`;
+  - the C bindings' text: the names of the static data (`somMN_`, `somSCI_` …), `<Class>_parent_<method>` beside the Guide's `<Class>_parent_<Parent>_<method>`, `SOMGD_<method>` guarding the short forms, interface-level names prefixed with the class, enums from 1, `in` structs passed by value, an empty `<Class>Data` for a class without instance variables, a layout-1 `somStaticClassInfo`, the root classes' `NewClass` called with 0.0, and the `def` emitter's one-name-per-line output.
 - **SOM layouts** (ADR-0072):
   - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;
   - lacking root methods warning (20171) instead of IBM's fatal `SOMERROR_NotImplementedYet`;

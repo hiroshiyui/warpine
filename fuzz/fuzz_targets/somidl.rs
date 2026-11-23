@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The SOM IDL compiler's front end (ADR-0122): an IDL file may come from
-//! anywhere a program's sources do. It is preprocessed and parsed in
-//! memory, reading no file; nesting, include depth and size are bounded.
+//! The SOM IDL compiler (ADR-0122): an IDL file may come from anywhere a
+//! program's sources do. It is preprocessed and parsed in memory, reading
+//! no file (nesting, include depth and size are bounded), dumped, and given
+//! to the C emitters.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -16,5 +17,6 @@ mod somidl;
 fuzz_target!(|data: &[u8]| {
     if let Ok(defs) = somidl::parse_in_memory(data) {
         let _ = somidl::dump::dump(&defs);
+        let _ = somidl::emit_c::emit(&defs, "fuzz", &["h", "ih", "c", "def"]);
     }
 });

@@ -46,7 +46,7 @@ interface SOMClassMgr : SOMObject
                       _get_somRegisteredClasses, somBeginPersistentClasses,
                       somEndPersistentClasses, somcmPrivate1, somcmPrivate2,
                       somRegisterClassLibrary, somJoinAffinityGroup, somUnregisterClassLibrary;
-        callstyle = idl;
+        callstyle = oidl;
         dllname = "som.dll";
     };
 #endif

@@ -109,12 +109,14 @@ impl<'a> Parser<'a> {
         if self.eat_word("interface") {
             return self.interface();
         }
+        let file = self.loc().file;
         let decl = self.type_decl()?;
         self.expect_punct(";")?;
-        Ok(Definition::Type(decl))
+        Ok(Definition::Type(decl, file))
     }
 
     fn interface(&mut self) -> Result<Definition> {
+        let file = self.loc().file;
         let name = self.ident()?;
         if self.eat_punct(";") { return Ok(Definition::Forward(name)); }
         let mut parents = Vec::new();
@@ -131,7 +133,7 @@ impl<'a> Parser<'a> {
             items.push(self.interface_item()?);
         }
         self.expect_punct(";")?;
-        Ok(Definition::Interface(Interface { name, parents, items }))
+        Ok(Definition::Interface(Interface { name, file, parents, items }))
     }
 
     fn interface_item(&mut self) -> Result<InterfaceItem> {

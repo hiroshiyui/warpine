@@ -76,7 +76,7 @@ _The menu and circular-slider screenshots captured from commit `0f27fce` on 2026
 - **Landlock sandbox:** every Warpine process confines its own file access (ADR-0111): the drives and the session read-write, the system's files read-only, the rest of the home directory out of reach. `WARPINE_SANDBOX=off` turns it off; `warpine --sandbox-check <path>` shows whether a path is reachable.
 - **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom required. It follows OS/2's CMD syntax: `%name%` variables, `&` / `&&` / `||` on return codes, `^` escapes, pipes and `<` / `>` / `>>` (inside the drives) that OS/2 programs read and write too, and a `PATH` search; programs start in the shell's directory. Built-in commands: `DIR`, `CD`, `SET`, `PATH`, `PROMPT` (OS/2's `$` codes, ANSI colours), `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `COPY`, `REN`, `MOVE`, `START`, `DETACH`, `HELP`, `EXIT`; commands group with `( … )`, and the programs of a pipeline run at the same time. Line editor with history (↑/↓). `.CMD` scripts in REXX (a first line starting with `/*`; Warpine's own interpreter: the language, conditions, streams on the drives, TRACE and common REXXUTIL functions; OS/2 programs embed it through `RexxStart` and the REXX API) or with OS/2's batch control: `ECHO ON` / `OFF` and `@`, `%0`–`%9` and `SHIFT`, `IF`, `FOR`, `GOTO`, `CALL`, `SETLOCAL` / `ENDLOCAL`, `PAUSE`.
 - **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo build` on the pinned nightly.
-- **C and C++ from GCC and clang:** `os2.h` and the PM headers, a small C runtime, a C++ runtime with exceptions and RTTI, the `os2rc` resource compiler, the `os2msg` message compiler, the start of `somidl`, a SOM IDL compiler (it parses SOM IDL so far), and `lx-link` making programs and DLLs from ELF objects, with resources and bound messages (ADR-0095–0105). Every C sample builds with either compiler, also pinned ones from a Podman image, and the integration tests pass with those builds as with Open Watcom's.
+- **C and C++ from GCC and clang:** `os2.h` and the PM headers, a small C runtime, a C++ runtime with exceptions and RTTI, the `os2rc` resource compiler, the `os2msg` message compiler, `somidl`, a SOM IDL compiler writing C bindings (single inheritance so far), and `lx-link` making programs and DLLs from ELF objects, with resources and bound messages (ADR-0095–0105). Every C sample builds with either compiler, also pinned ones from a Podman image, and the integration tests pass with those builds as with Open Watcom's.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -360,7 +360,7 @@ make -C samples/c_sdk_test         # builds sdk/build/gcc/ first; or CC=clang
 cargo run -- samples/c_sdk_test/c_sdk_test.exe alpha '"beta gamma"'
 cargo build --bin os2rc            # the resource compiler (ADR-0099)
 cargo build --bin os2msg           # the message compiler (ADR-0105)
-cargo build --bin somidl           # the SOM IDL compiler, front end only so far (ADR-0122)
+cargo build --bin somidl           # the SOM IDL compiler: C bindings (ADR-0122)
 make -C samples/c_pm_test          # a PM program with a menu, a dialog and strings from c_pm_test.rc
 cargo run -- samples/c_pm_test/c_pm_test.exe
 ```
@@ -411,7 +411,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2386 unit tests (no KVM required)
+cargo test                        # 2391 unit tests (no KVM required)
 cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

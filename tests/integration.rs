@@ -35,7 +35,7 @@ fn sample_path(path: impl AsRef<Path>) -> String {
     let compiler = cc.strip_prefix("ci-").unwrap_or(&cc);
     let compiler = compiler.strip_suffix("-pinned").unwrap_or(compiler);
     assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
-    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "c_som_test", "cxx_test",
+    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "c_som_test", "som_idl_test", "cxx_test",
                                   "rust_hello", "shapes", "som_test", "wcxx_throw_test"];
     let Some(rest) = path.strip_prefix("samples/") else { return path };
     let Some((dir, _)) = rest.split_once('/') else { return path };
@@ -2367,6 +2367,42 @@ fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
         assert!(text.contains("c_som_test: done 10/10"), "{compiler}:\n{text}");
+        assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
+    }
+}
+
+/// som_idl_test (ADR-0122): classes declared in SOM IDL, bound by somidl's
+/// C emitters, built by GCC and clang: instance data, a derived class, an
+/// override calling its parent's, out arguments, versions, and
+/// initializers and destructors in Warpine's protocol.
+#[test]
+fn som_idl_classes_built_by_gcc_and_clang_run() {
+    if !kvm_available() || Command::new("make").arg("--version").output().is_err() { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping som_idl_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link")),
+                    format!("SOMIDL={}", env!("CARGO_BIN_EXE_somidl"))];
+        let out = Command::new("make").args(["-s", "-C", "samples/som_idl_test"]).args(&vars).output().expect("run make");
+        assert!(out.status.success(), "make ({compiler}):\n{}{}",
+                String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("timeout").arg("30").arg(warpine()).arg(dir.path().join("som_idl_test.exe"))
+            .env("WARPINE_HEADLESS", "1")
+            .env("XDG_DATA_HOME", dir.path())
+            .env("XDG_STATE_HOME", dir.path())
+            .env("XDG_RUNTIME_DIR", dir.path())
+            .envs(PINNED_ENV.iter().copied())
+            .env("RUST_LOG", "error")
+            .stdin(Stdio::null())
+            .output().expect("run warpine");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
+        assert!(text.contains("som_idl_test: done 15/15"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
     }
 }
@@ -4967,8 +5003,8 @@ fn gui_layered_compositor_resizes_windows() {
 
 /// somidl (ADR-0122, the front end): Open Watcom's SOM sample IDL files,
 /// read in place, preprocess and parse; `--dump` prints their syntax
-/// trees, and a run without it reports that the emitters are still to
-/// come. The root classes' IDL are the SDK's.
+/// trees, and without it somidl writes the C bindings. The root classes'
+/// IDL are the SDK's.
 /// Skips when Open Watcom is not installed.
 #[test]
 fn somidl_parses_open_watcom_s_som_samples() {
@@ -4988,8 +5024,12 @@ fn somidl_parses_open_watcom_s_som_samples() {
         assert!(out.status.success(), "{idl}: {}", String::from_utf8_lossy(&out.stderr));
         assert!(text.contains(want), "{idl}:\n{text}");
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots)
+    // Without --dump: the C bindings, into -o's directory.
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots).args(["-s", "h,ih,def", "-o"]).arg(dir.path())
         .arg(samples.join("helloc/hello.idl")).output().unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented yet"));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read_to_string(dir.path().join("hello.h")).unwrap().contains("HelloNewClass"));
+    assert!(std::fs::read_to_string(dir.path().join("hello.ih")).unwrap().contains("somBuildClass( 1, &somSCI_Hello"));
+    assert_eq!(std::fs::read_to_string(dir.path().join("hello.def")).unwrap(), "HelloNewClass\nHelloClassData\nHelloCClassData\n");
 }

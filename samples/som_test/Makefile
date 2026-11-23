@@ -2,11 +2,12 @@
 #
 # The Open Watcom SOM samples (vendor/watcom/samples/os2/som), built
 # unchanged against Warpine's SOM runtime (ADR-0059). Their C sources come
-# straight from the Open Watcom tree; the bindings the SOM compiler would
-# generate from their .idl / .csc files (hello.h, hello.ih, student.h …)
+# straight from the Open Watcom tree. hello's bindings are generated from
+# its hello.idl by somidl (ADR-0122; cargo build makes it); the others the
+# SOM compiler would generate from their .idl / .csc files (student.h …)
 # are written by hand here, over include/som.h.
 #
-#   helloc/  -> hello.exe    a class with one method
+#   helloc/  -> hello.exe    a class with one method (somidl's bindings)
 #   classes/ -> classes.exe  four classes in four DLLs: inheritance,
 #                            overrides, parent calls, instance data
 #   animals/ -> animals.exe  metaclasses with data and constructors, a
@@ -44,11 +45,15 @@ $(B):
 # Every object follows the shared bindings: a change to them rebuilds it.
 $(wildcard $(B)/*.obj): include/som.h include/som.xh
 
-# ---- helloc ----
-$(B)/hello.obj: $(SOMSAMPLES)/helloc/hello.c hello/hello.h hello/hello.ih | $(B)
-	$(WCC386) $(CFLAGS) -I$(CURDIR)/hello -fo=$@ $<
-$(B)/hmain.obj: $(SOMSAMPLES)/helloc/main.c hello/hello.h | $(B)
-	$(WCC386) $(CFLAGS) -I$(CURDIR)/hello -fo=$@ $<
+# ---- helloc: its bindings generated from hello.idl by somidl (ADR-0122) ----
+SOMIDL ?= $(CURDIR)/../../target/debug/somidl
+$(B)/hello/hello.h $(B)/hello/hello.ih &: $(SOMSAMPLES)/helloc/hello.idl $(wildcard ../../sdk/include/*.idl) | $(B)
+	mkdir -p $(B)/hello
+	$(SOMIDL) -I $(CURDIR)/../../sdk/include -s h,ih -o $(B)/hello $<
+$(B)/hello.obj: $(SOMSAMPLES)/helloc/hello.c $(B)/hello/hello.h $(B)/hello/hello.ih | $(B)
+	$(WCC386) $(CFLAGS) -I$(CURDIR)/$(B)/hello -fo=$@ $<
+$(B)/hmain.obj: $(SOMSAMPLES)/helloc/main.c $(B)/hello/hello.h | $(B)
+	$(WCC386) $(CFLAGS) -I$(CURDIR)/$(B)/hello -fo=$@ $<
 hello.exe: $(B)/hello.obj $(B)/hmain.obj som.lnk
 	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/hello.obj $(B)/hmain.obj }
 

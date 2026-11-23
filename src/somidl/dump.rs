@@ -68,7 +68,7 @@ fn definition(out: &mut String, depth: usize, d: &Definition) {
             for d in defs { definition(out, depth + 1, d); }
         }
         Definition::Forward(name) => { let _ = writeln!(out, "{pad}forward {name}"); }
-        Definition::Type(t) => type_decl(out, &pad, t),
+        Definition::Type(t, _) => type_decl(out, &pad, t),
         Definition::Interface(i) => {
             let parents = i.parents.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             let _ = writeln!(out, "{pad}interface {}{}{parents}", i.name, if parents.is_empty() { "" } else { " : " });

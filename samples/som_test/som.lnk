@@ -27,3 +27,9 @@ import SOMLoadModule           SOM.SOMLoadModule
 import SOMDeleteModule         SOM.SOMDeleteModule
 import SOMError                SOM.SOMError
 import somSetOutChar           SOM.somSetOutChar
+# What somidl's generated bindings call (ADR-0122).
+import somBuildClass           SOM.somBuildClass
+import somParentNumResolve     SOM.somParentNumResolve
+import SOMObjectNewClass       SOM.SOMObjectNewClass
+import SOMClassNewClass        SOM.SOMClassNewClass
+import SOMClassMgrNewClass     SOM.SOMClassMgrNewClass

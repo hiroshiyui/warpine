@@ -59,7 +59,7 @@ interface SOMObject
                       somCastObj, somResetObj, somDefaultInit, somDestruct, somPrivate1,
                       somPrivate2, somDefaultCopyInit, somDefaultConstCopyInit, somDefaultAssign,
                       somDefaultConstAssign, somDefaultVAssign, somDefaultConstVAssign;
-        callstyle = idl;
+        callstyle = oidl;
         dllname = "som.dll";
     };
 #endif

@@ -9,6 +9,7 @@
 
 pub mod ast;
 pub mod dump;
+pub mod emit_c;
 pub mod parser;
 
 use crate::cpp::{Error, Preprocessor};

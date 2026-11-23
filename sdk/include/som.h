@@ -156,6 +156,7 @@ typedef somMToken  SOMLINK somTP_SOMClass_somAddStaticMethod( SOMClass *, somId,
 typedef void       SOMLINK somTP_SOMClass_somOverrideSMethod( SOMClass *, somId, somMethodProc * );
 typedef void       SOMLINK somTP_SOMClass_somClassReady( SOMClass * );
 typedef void       SOMLINK somTP_SOMClass_somDeallocate( SOMClass *, string );
+typedef boolean    SOMLINK somTP_SOMClass_somCheckVersion( SOMClass *, long, long );
 typedef void       SOMLINK somTP_SOMClass_somInitMIClass( SOMClass *, long, zString, SOMClassSequence, long, long,
                                                           long, long, long );
 typedef somTP_SOMClass_somNew              *somTD_SOMClass_somNew;
@@ -170,6 +171,7 @@ typedef somTP_SOMClass_somAddStaticMethod  *somTD_SOMClass_somAddStaticMethod;
 typedef somTP_SOMClass_somOverrideSMethod  *somTD_SOMClass_somOverrideSMethod;
 typedef somTP_SOMClass_somClassReady       *somTD_SOMClass_somClassReady;
 typedef somTP_SOMClass_somDeallocate       *somTD_SOMClass_somDeallocate;
+typedef somTP_SOMClass_somCheckVersion     *somTD_SOMClass_somCheckVersion;
 typedef somTP_SOMClass_somInitMIClass      *somTD_SOMClass_somInitMIClass;
 
 #define _somNew( c )              SOM_Resolve( c, SOMClass, somNew )( (SOMClass *)(c) )
@@ -188,6 +190,7 @@ typedef somTP_SOMClass_somInitMIClass      *somTD_SOMClass_somInitMIClass;
 #define _somClassReady( c )       SOM_Resolve( c, SOMClass, somClassReady )( (SOMClass *)(c) )
 #define _somInitMIClass( c, iv, n, ps, sz, al, mx, ma, mi ) \
     SOM_Resolve( c, SOMClass, somInitMIClass )( (SOMClass *)(c), (iv), (n), (ps), (sz), (al), (mx), (ma), (mi) )
+#define _somCheckVersion( c, ma, mi ) SOM_Resolve( c, SOMClass, somCheckVersion )( (SOMClass *)(c), (ma), (mi) )
 #define _somDeallocate( c, p )    SOM_Resolve( c, SOMClass, somDeallocate )( (SOMClass *)(c), (string)(p) )
 
 /* SOMClassMgr: a class by name, loaded from its file when it is not

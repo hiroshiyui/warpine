@@ -115,7 +115,7 @@ interface SOMClass : SOMObject
                       somcPrivate16, somcPrivate17, somcPrivate18, somcPrivate19, somcPrivate20,
                       _get_somDataAlignment, somcPrivate21, somcPrivate22, somcPrivate23,
                       somcPrivate24, somcPrivate25;
-        callstyle = idl;
+        callstyle = oidl;
         dllname = "som.dll";
     };
 #endif
