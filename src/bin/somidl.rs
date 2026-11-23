@@ -6,11 +6,11 @@
 //
 // Reads a SOM IDL file (CORBA 2.0 IDL with SOM's implementation section)
 // through the SDK tools' C preprocessor, with __SOMIDL__ defined, and
-// writes C bindings for the interfaces of that file (`-s`, default h,ih):
-// h (usage), ih (implementation), c (a template, written only when the
-// file does not exist yet) and def (a class library's exports), into -o's
-// directory (default: the current one). `--dump` prints the syntax tree
-// instead. The C++ emitters (xh, xih, xc) come with stage S2.
+// writes bindings for the interfaces of that file (`-s`, default h,ih):
+// h / xh (C / C++ usage), ih / xih (implementation), c / xc (a template,
+// written only when the file does not exist yet) and def (a class
+// library's exports), into -o's directory (default: the current one).
+// `--dump` prints the syntax tree instead.
 
 use std::path::PathBuf;
 use std::process;
@@ -315,9 +315,9 @@ mod tests {
         assert_eq!(emitted(COUNTER, "def"), "CounterNewClass\nCounterClassData\nCounterCClassData\nKidNewClass\nKidClassData\nKidCClassData\n");
     }
 
-    /// What stage S1 does not cover, and mistakes, are refused by name.
+    /// Mistakes are refused by name, with their place.
     #[test]
-    fn what_s1_does_not_cover_is_refused() {
+    fn mistakes_are_refused_by_name() {
         let err = |text: &str| emit(text, &["h"]).err().unwrap_or_default();
         let base = "#include <somcls.idl>\n";
         assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ metaclass = Nowhere; }}; }};")).contains("metaclass Nowhere"));

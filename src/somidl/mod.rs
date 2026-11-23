@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// somidl, the SOM IDL compiler of Warpine's SDK (ADR-0122). The front end:
-// the shared C preprocessor (`src/cpp.rs`, with `__SOMIDL__` defined),
-// then the parser to a syntax tree. The emitters follow in later stages.
+// somidl, the SOM IDL compiler of Warpine's SDK (ADR-0122): the shared C
+// preprocessor (`src/cpp.rs`, with `__SOMIDL__` defined), the parser to a
+// syntax tree (`parser.rs`, `ast.rs`), `--dump` (`dump.rs`), and the C and
+// C++ emitters (`emit_c.rs`).
 //
 // The including crate declares `mod cpp` (`#[path = "../cpp.rs"]`) at
 // its root, beside this module.
