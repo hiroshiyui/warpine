@@ -310,9 +310,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 
 - [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
 - [ ] **Bugs: Warpine contradicts the Reference**:
-  - `somFree` calls `somUninit` and frees the memory itself; it must call `somDestruct` (which a class is expected to override) and free through `somDeallocate`;
-  - `somIdFromString` returns the registry's shared id, but the caller owns the id and frees it: freeing it corrupts the registry (guest memory only); give the caller its own id;
-  - `somGetNumStaticMethods` counts the class's own methods only; it must include inherited ones;
   - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: no major / minor version check (the rule of `somCheckVersion`); the init function is always "SOMInitModule" rather than the `SOMClassInitFuncName` variable (through `somGetInitFunction`); internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
   - the default `SOMLoadModule` succeeds when a DLL has neither `SOMInitModule` nor `<Class>NewClass`; it must fail;
   - `somDataResolve` with an unknown token returns 0; it must raise an error (`somDataResolveChk` is the quiet variant);

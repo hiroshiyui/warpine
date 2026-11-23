@@ -27,6 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Removed
 - **The experimental modern theme** (ADR-0121, withdrawing ADR-0118): `WARPINE_THEME`, rounded and shadowed frames, menus and controls and their compositor shaping leave `main` until the PM widgets are done; the code is kept on the branch `feature/modern-theme`. The desktop protocol drops `Item::rounded` (version 12).
 
+### Fixed
+- **SOM's `somFree` runs the class's destructor**: it calls the object's `somDestruct` (doFree set, no control block), as the SOM Programming Reference says; a class that overrides `somDestruct` had its clean-up skipped. `somDeallocate` of an object (a destructor freeing it) also ends it as an object.
+- **SOM's `somIdFromString` gives the caller an id of its own**, which the caller owns and may free with `SOMFree`; it handed out the registry's shared id, so freeing it as the Reference allows corrupted later lookups.
+- **SOM's `somGetNumStaticMethods` counts inherited methods**, as the Reference says; it counted only the class's own. `som_ordinal_test` checks all three (34 checks).
+
 ## [0.0.14] - 2026-11-23
 
 ### Added

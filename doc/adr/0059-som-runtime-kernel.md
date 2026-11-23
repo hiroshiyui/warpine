@@ -44,7 +44,7 @@ Three constraints shaped the work:
 - **What Warpine keeps.** Each class's record (`SomClass`): name, parent, metaclass, methods by name inherited first, instance layout. Method lookups answer from these records, not from guest memory, so a program that overwrites a method table cannot steer `somResolve`.
 - **Tokens.** A method token is its index in the class's methods plus one: inherited methods keep their indices, so a parent's token works on descendants. A data token is the offset of the class's instance data in the object. (Superseded by ADR-0060: tokens name their introducing class.)
 - **Building classes** uses the documented `SOMClass` methods, as SOM 1.x bindings do: `somNew` on the metaclass, `somInitClass`, `somAddStaticMethod`, `somOverrideSMethod`, `somClassReady`.
-- **Guest overrides run.** `somNew` and `somFree` call the object's `somInit` / `somUninit` — guest overrides included — through call chains (ADR-0026); `somFree` frees the memory after `somUninit` returns.
+- **Guest overrides run.** `somNew` and `somFree` call the object's `somInit` / `somUninit` — guest overrides included — through call chains (ADR-0026); `somFree` frees the memory after `somUninit` returns. (Since 2026-11-23 `somFree` goes through the object's `somDestruct`: see the addendum.)
 - **Bounds.** Classes, methods per class, live objects, `somId`s, instance data and name lengths are bounded (`MAX_*` in `som.rs`). `somFree` frees only objects `somNew` made.
 
 ### Loading
@@ -77,3 +77,11 @@ Three constraints shaped the work:
   - IBM's ordinals (1–47 in ADR-0070);
   - the rest of `SOMClassMgr`, `SOMU`, the interface repository, DSOM;
   - the Workplace Shell classes.
+
+## Addendum (2026-11-23): corrections from IBM's SOM Programming Reference
+
+Checking the kernel against the OS/2 Toolkit's *System Object Model Programming Reference* (TODOs, "SOM / Workplace Shell") found three behaviours the Reference contradicts; they are corrected:
+
+- **`somFree` calls `somDestruct`** ("somFree calls somDestruct", which frees through `somDeallocate`) with doFree set and a null control block, so a class's own destructor runs. The root `somDestruct` keeps its behaviour (the object's `somUninit`, then the memory when doFree is set). `somDeallocate` of an object drops the object's record, so a destructor that frees the object itself leaves no stale object behind.
+- **`somIdFromString` gives each caller its own id** ("Ownership of the somId returned by this function passes to the caller"): a `SOMMalloc` block pointing at the registered copy of the string, which stays when the caller frees its id. Ids are still compared, keyed and counted by their string.
+- **`somGetNumStaticMethods` counts the inherited static methods** ("including inherited ones"), so it equals `somGetNumMethods` while every method is static.
