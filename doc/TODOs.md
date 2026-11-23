@@ -61,9 +61,6 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - `CA_OWNERPAINTBACKGROUND`;
   - the grid squares list (`GRIDINFO.pGrid`, `CN_GRIDRESIZED`);
   - records shared between containers.
-- [ ] **Notebooks** (ADR-0064):
-  - images on notebook buttons (`hImage`);
-  - `BKS_SPIRALBIND`, `BKS_ROUNDEDTABS` / `BKS_POLYGONTABS` and the back-page corners, which are drawn as the defaults now.
 - [ ] **Embedded dialogs** (ADR-0042, 0069): a working title bar (moving the dialog, its buttons).
 - [ ] **Drag and drop** (ADR-0045, 0057, 0068):
   - `DrgAcceptDroppedFiles`, `DrgQueryFormat`;
@@ -75,7 +72,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 - [ ] **Menus**:
   - a redraw of an owner-drawn item when the mouse highlights it (the keyboard highlight does), `MIA_NODISMISS`.
 - [ ] **Sliders and value sets**:
-  - dragging the arm with button 2; the circular slider's `CSN_QUERYBACKGROUNDCOLOR`, button pictures (`CSM_SETBITMAPDATA`) and held buttons repeating;
+  - the circular slider's `CSN_QUERYBACKGROUNDCOLOR`;
   - value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
   - a `wrc` dialog with `CTLDATA` in a sample.
 - [ ] **Text controls**:

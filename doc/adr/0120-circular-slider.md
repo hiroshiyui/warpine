@@ -17,7 +17,7 @@
    - the dial sweeps 270° clockwise from lower left, `CSS_360` a whole turn from the top; `CSS_POINTSELECT` moves the value to a press, without it only a drag turns the dial; `CSS_MIDPOINT` lengthens the middle tick; `CSS_PROPORTIONALTICKS` makes ticks a sixth of the radius; `CSS_CIRCULARVALUE` (with `CSS_360`) wraps steps past an end;
    - keys: Left / Down and Right / Up step, Page Down / Page Up step by the tick increment, Home / End go to the ends;
    - notifications: `WM_CONTROL` with `CSN_CHANGED` (mp2 = the value, a SHORT) after a change by the user or `CSM_SETVALUE`, `CSN_TRACKING` while the dial is dragged, `CSN_SETFOCUS` (mp2 = TRUE / FALSE) when it gains or loses the focus.
-4. **Not done:** `CSN_QUERYBACKGROUNDCOLOR` is not sent, the `CSM_SETBITMAPDATA` pictures are kept but not drawn, held buttons do not repeat.
+4. **Not done:** `CSN_QUERYBACKGROUNDCOLOR` is not sent. (Later: held buttons repeat, and the `CSM_SETBITMAPDATA` pictures are drawn on the buttons, stretched.)
 
 ## Consequences
 
