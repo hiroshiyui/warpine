@@ -8,14 +8,15 @@
 //! the same in every theme. Two exist:
 //!
 //! * `classic` — the look Warpine has always had: bevelled borders and
-//!   title-bar buttons, square frames. It is the look the golden pictures
-//!   and the unit tests hold.
+//!   title-bar buttons, square frames. It is the default, and the look the
+//!   golden pictures and the unit tests hold.
 //! * `modern` — flat chrome: a thin edge line instead of a bevelled
 //!   border, flat title-bar pictograms in the title's text colour, rounded
 //!   outer corners and a soft shadow under each frame
 //!   ([`super::frame_shape`]); rounded controls, menus and thumbs, flat
-//!   arrows. A maximized frame stays square and casts no shadow. It is the
-//!   default.
+//!   arrows. A maximized frame stays square and casts no shadow.
+//!   Experimental: it becomes the default once the PM widgets Warpine still
+//!   lacks are implemented and drawn in it.
 //!
 //! `WARPINE_THEME=classic|modern` picks one for the session; the desktop
 //! server needs no theme of its own (a client marks the pictures it wants
@@ -81,9 +82,9 @@ impl Theme {
     }
 }
 
-/// The theme without a `WARPINE_THEME`: modern, but classic in unit tests,
-/// whose pictures and pels hold the classic look.
-pub const DEFAULT: Theme = if cfg!(test) { Theme::Classic } else { Theme::Modern };
+/// The theme without a `WARPINE_THEME`: classic, while the modern theme is
+/// experimental.
+pub const DEFAULT: Theme = Theme::Classic;
 
 /// The session's theme, read once from [`THEME_ENV`].
 pub fn current() -> Theme {
@@ -102,7 +103,7 @@ mod tests {
         assert_eq!(Theme::from_name(Some("classic"), Theme::Modern), Theme::Classic);
         assert_eq!(Theme::from_name(Some("neon"), Theme::Modern), Theme::Modern);
         assert_eq!(Theme::from_name(None, Theme::Modern), Theme::Modern);
-        assert_eq!(DEFAULT, Theme::Classic, "unit tests hold the classic look");
+        assert_eq!(DEFAULT, Theme::Classic, "classic while modern is experimental");
         assert!(Theme::Modern.rounded_frames() && !Theme::Modern.bevelled());
         assert!(!Theme::Classic.rounded_frames() && Theme::Classic.bevelled());
     }
