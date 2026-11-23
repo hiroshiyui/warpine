@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-23
+
 ### Added
 - **A modern theme** (ADR-0118, `WARPINE_THEME=modern`): frames with rounded, antialiased corners and a soft shadow (the edge line and the title bar's top corners follow the curve), a thin edge line instead of bevelled borders, and flat title-bar pictograms. Only pels change: window sizes, client areas, metrics and hit areas are the same in every theme. It is now the default; `WARPINE_THEME=classic` keeps the bevelled look. The desktop server, the layered and the software compositor draw the same pels.
 
