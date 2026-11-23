@@ -8,13 +8,14 @@
 //! the same in every theme. Two exist:
 //!
 //! * `classic` — the look Warpine has always had: bevelled borders and
-//!   title-bar buttons, square frames. It is the default for now, and the
-//!   look the golden pictures hold.
+//!   title-bar buttons, square frames. It is the look the golden pictures
+//!   and the unit tests hold.
 //! * `modern` — flat chrome: a thin edge line instead of a bevelled
 //!   border, flat title-bar pictograms in the title's text colour, rounded
 //!   outer corners and a soft shadow under each frame
-//!   ([`super::frame_shape`]). A maximized frame stays square and casts no
-//!   shadow.
+//!   ([`super::frame_shape`]); rounded controls, menus and thumbs, flat
+//!   arrows. A maximized frame stays square and casts no shadow. It is the
+//!   default.
 //!
 //! `WARPINE_THEME=classic|modern` picks one for the session; the desktop
 //! server needs no theme of its own (a client marks the pictures it wants
@@ -41,6 +42,14 @@ pub const MODERN_ACCENT_COLOR: u32 = 0x0030_6FD0;
 /// The face of a modern push button under the pointer.
 pub const MODERN_HOVER_FACE: u32 = 0x00E6_E3DC;
 
+/// A modern scroll bar's track.
+pub const MODERN_TRACK_COLOR: u32 = 0x00EA_E7E1;
+/// A modern scroll bar's thumb, and while it is dragged.
+pub const MODERN_THUMB_COLOR: u32 = 0x00A9_A59D;
+pub const MODERN_THUMB_HELD_COLOR: u32 = 0x0080_7C75;
+/// How far a modern thumb stands in from the track's sides.
+pub const MODERN_THUMB_INSET: i32 = 2;
+
 /// How far row `k` (0 = the outermost) of a box with corners of radius
 /// `r` is inset at each end; 0 from row `r` on.
 pub fn corner_inset(r: i32, k: i32) -> i32 {
@@ -51,11 +60,13 @@ pub fn corner_inset(r: i32, k: i32) -> i32 {
 }
 
 impl Theme {
-    /// The theme a `WARPINE_THEME` value names; classic for anything else.
-    pub fn from_name(name: Option<&str>) -> Theme {
+    /// The theme a `WARPINE_THEME` value names; `default` when it names
+    /// none.
+    pub fn from_name(name: Option<&str>, default: Theme) -> Theme {
         match name.map(str::trim) {
             Some(n) if n.eq_ignore_ascii_case("modern") => Theme::Modern,
-            _ => Theme::Classic,
+            Some(n) if n.eq_ignore_ascii_case("classic") => Theme::Classic,
+            _ => default,
         }
     }
 
@@ -70,10 +81,14 @@ impl Theme {
     }
 }
 
+/// The theme without a `WARPINE_THEME`: modern, but classic in unit tests,
+/// whose pictures and pels hold the classic look.
+pub const DEFAULT: Theme = if cfg!(test) { Theme::Classic } else { Theme::Modern };
+
 /// The session's theme, read once from [`THEME_ENV`].
 pub fn current() -> Theme {
     static THEME: OnceLock<Theme> = OnceLock::new();
-    *THEME.get_or_init(|| Theme::from_name(std::env::var(THEME_ENV).ok().as_deref()))
+    *THEME.get_or_init(|| Theme::from_name(std::env::var(THEME_ENV).ok().as_deref(), DEFAULT))
 }
 
 #[cfg(test)]
@@ -81,12 +96,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_theme_comes_from_its_name_and_defaults_to_classic() {
-        assert_eq!(Theme::from_name(Some("modern")), Theme::Modern);
-        assert_eq!(Theme::from_name(Some(" Modern ")), Theme::Modern);
-        assert_eq!(Theme::from_name(Some("classic")), Theme::Classic);
-        assert_eq!(Theme::from_name(Some("neon")), Theme::Classic);
-        assert_eq!(Theme::from_name(None), Theme::Classic);
+    fn the_theme_comes_from_its_name_or_the_default() {
+        assert_eq!(Theme::from_name(Some("modern"), Theme::Classic), Theme::Modern);
+        assert_eq!(Theme::from_name(Some(" Modern "), Theme::Classic), Theme::Modern);
+        assert_eq!(Theme::from_name(Some("classic"), Theme::Modern), Theme::Classic);
+        assert_eq!(Theme::from_name(Some("neon"), Theme::Modern), Theme::Modern);
+        assert_eq!(Theme::from_name(None, Theme::Modern), Theme::Modern);
+        assert_eq!(DEFAULT, Theme::Classic, "unit tests hold the classic look");
         assert!(Theme::Modern.rounded_frames() && !Theme::Modern.bevelled());
         assert!(!Theme::Classic.rounded_frames() && Theme::Classic.bevelled());
     }

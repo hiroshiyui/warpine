@@ -834,7 +834,9 @@ impl Loader {
             SDA_RIBBONSTRIP if style & SLS_RIBBONSTRIP != 0 => {
                 let (t0, t1) = ribbon_span(&g, s.arm);
                 // Inside the shaft's outline.
-                fill(g.rect(t0 + 1, t1 - t0 - 2, g.shaft_c + 1, g.shaft_b - 2), RIBBON_COLOR);
+                let modern = !crate::gui::theme::current().bevelled();
+                let color = if modern { crate::gui::theme::MODERN_ACCENT_COLOR } else { RIBBON_COLOR };
+                fill(g.rect(t0 + 1, t1 - t0 - 2, g.shaft_c + 1, g.shaft_b - 2), color);
             }
             SDA_SLIDERARM => {
                 let (t, c) = g.arm_at(s.arm);
@@ -885,8 +887,11 @@ impl Loader {
             let Some((t, c)) = g.button(dir) else { continue };
             let pressed = held == Some(Held::Button { dir, over: true });
             let (bx, by, bw, bh) = g.rect(t, BUTTON_SIZE, c, BUTTON_SIZE);
-            control_box(p, (x + bx, y + by, bw - 1, bh - 1),
-                        if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
+            // Modern (ADR-0118): flat buttons, a box only while pressed.
+            if pressed || crate::gui::theme::current().bevelled() {
+                control_box(p, (x + bx, y + by, bw - 1, bh - 1),
+                            if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
+            }
             super::pm_scrollbar::draw_arrow(p, (x + bx, y + by, bw, bh), g.vertical,
                                             // The low button points to the low end: left / down.
                                             (dir == Dir::Low) != g.vertical, glyph);

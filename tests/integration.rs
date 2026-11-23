@@ -14,9 +14,12 @@ use std::time::Duration;
 
 /// Return the path to the compiled warpine binary.  Cargo sets
 /// CARGO_BIN_EXE_warpine automatically when building integration tests.
-/// Country and codepage for every run: Warpine takes them from the host
-/// locale, so tests pin the US defaults to stay reproducible on any machine.
-const PINNED_LOCALE: &[(&str, &str)] = &[("WARPINE_COUNTRY", "1"), ("WARPINE_CODEPAGE", "437")];
+/// Country, codepage and theme for every run: Warpine takes the first two
+/// from the host locale, so tests pin the US defaults to stay reproducible
+/// on any machine, and the golden pictures hold the classic theme (a test
+/// of the modern one sets `WARPINE_THEME` after these; ADR-0118).
+const PINNED_ENV: &[(&str, &str)] =
+    &[("WARPINE_COUNTRY", "1"), ("WARPINE_CODEPAGE", "437"), ("WARPINE_THEME", "classic")];
 
 fn warpine() -> &'static str {
     env!("CARGO_BIN_EXE_warpine")
@@ -94,7 +97,7 @@ fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str,
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", data_home.path())
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .envs(env.iter().copied())
         // Suppress tracing/log noise on stderr; we only care about stdout.
         .env("RUST_LOG", "error")
@@ -448,7 +451,7 @@ fn test_ansi_escape_sequences_in_a_vio_window() {
     let status = Command::new("script")
         .args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -484,7 +487,7 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
         .arg(sample_path(sample))
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_STATE_HOME", dir.path())
@@ -539,7 +542,7 @@ fn test_cmd_pipe_to_an_external_program() {
     std::fs::copy(sample_path(find), drive_c.join("FIND.EXE")).unwrap();
     let mut child = Command::new(warpine())
         .arg(sample_path(sample))
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_STATE_HOME", dir.path())
@@ -600,7 +603,7 @@ fn run_cmd_headless(args: &[&str], input: &[u8], prepare: impl FnOnce(&Path))
     let mut child = Command::new(warpine())
         .arg("CMD.EXE")
         .args(args)
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
         .env("XDG_STATE_HOME", dir.path())
@@ -990,7 +993,7 @@ fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(Strin
         .env("XDG_DATA_HOME", work.path())
         .env("XDG_STATE_HOME", work.path())
         .env("XDG_RUNTIME_DIR", work.path())
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1209,7 +1212,7 @@ fn run_kill_test_mode(mode: &str, stdin: &[u8]) -> (String, i32, tempfile::TempD
         .env("XDG_DATA_HOME", data_home.path())
         .env("XDG_STATE_HOME", data_home.path())
         .env("XDG_RUNTIME_DIR", data_home.path())
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1289,7 +1292,7 @@ fn test_sigterm_runs_the_exit_list() {
         .env("XDG_DATA_HOME", data_home.path())
         .env("XDG_STATE_HOME", data_home.path())
         .env("XDG_RUNTIME_DIR", data_home.path())
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().expect("spawn warpine");
@@ -1340,7 +1343,7 @@ fn test_sigquit_is_ctrl_break() {
         .env("XDG_DATA_HOME", data_home.path())
         .env("XDG_STATE_HOME", data_home.path())
         .env("XDG_RUNTIME_DIR", data_home.path())
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("RUST_LOG", "error")
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().expect("spawn warpine");
@@ -1424,7 +1427,7 @@ fn run_kill_test_window(vio: Option<&str>) -> Option<String> {
     let mut cmd = Command::new("script");
     cmd.args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(KILL_TEST))])
         .arg("/dev/null")
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -2232,7 +2235,7 @@ fn gdb_debugs_a_c_program_at_the_source_level() {
             .env("XDG_DATA_HOME", dir.path())
             .env("XDG_STATE_HOME", dir.path())
             .env("XDG_RUNTIME_DIR", dir.path())
-            .envs(PINNED_LOCALE.iter().copied())
+            .envs(PINNED_ENV.iter().copied())
             .env("RUST_LOG", "error")
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
             .spawn().expect("spawn warpine");
@@ -2313,7 +2316,7 @@ fn dos_get_message_reads_bound_and_drive_message_files() {
             .env("XDG_DATA_HOME", dir.path())
             .env("XDG_STATE_HOME", dir.path())
             .env("XDG_RUNTIME_DIR", dir.path())
-            .envs(PINNED_LOCALE.iter().copied())
+            .envs(PINNED_ENV.iter().copied())
             .env("RUST_LOG", "error")
             .stdin(Stdio::null())
             .output().expect("run warpine");
@@ -2387,8 +2390,8 @@ fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, 
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", data_home.path())
+        .envs(PINNED_ENV.iter().copied())
         .envs(env.iter().copied())
-        .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("WARPINE_GUI_SCRIPT", script)
@@ -2588,7 +2591,7 @@ fn run_cmd_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std::
     let mut cmd = Command::new("script");
     cmd.args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -2645,7 +2648,7 @@ fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
     let mut cmd = Command::new("script");
     cmd.args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -2800,7 +2803,7 @@ fn run_cmd_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<Wi
     let status = Command::new("script")
         .args(["-qec", &format!("timeout 40 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
-        .envs(PINNED_LOCALE.iter().copied())
+        .envs(PINNED_ENV.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -3120,6 +3123,16 @@ fn gui_modern_controls_match_golden() {
 fn gui_modern_menu_matches_golden() {
     check_gui_golden_modern("pm_menukey_modern", "samples/pm_menukey_test/pm_menukey_test.exe",
         "1000 key f10\n1200 key right\n1400 key down\n1600 key down\n2200 dump {dump}\n2300 quit\n");
+}
+
+/// The modern theme's scroll bars and sliders: a light track, flat arrows,
+/// slim rounded thumbs, the ribbon in the accent colour.
+#[test]
+fn gui_modern_scroll_bars_and_sliders_match_golden() {
+    check_gui_golden_modern("pm_scroll_modern", "samples/pm_scroll_test/pm_scroll_test.exe",
+        "1500 dump {dump}\n1600 quit\n");
+    check_gui_golden_modern("pm_slider_modern", "samples/pm_slider_valueset_test/pm_slider_valueset_test.exe",
+        "1000 click 204 151\n1300 drag 134 151 241 151\n1800 click 79 151\n2600 dump {dump}\n2700 quit\n");
 }
 
 /// The modern theme in-process, software and layered: the same picture as

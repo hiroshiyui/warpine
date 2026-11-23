@@ -53,9 +53,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 
 ## Presentation Manager
 
-- [ ] **The modern theme** (ADR-0118; frames, controls, menus and pop-ups are done):
-  - slimmer, flat scroll bars and sliders; focus rings on list boxes, check boxes and radio buttons;
-  - then `modern` as the default theme, `classic` kept.
+- [ ] **The modern theme** (ADR-0118; the default; frames, controls, menus, pop-ups, scroll bars and sliders are done): focus rings on list boxes, check boxes and radio buttons.
 
 ### Controls
 

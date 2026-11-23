@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2334 unit tests (2244 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 224 integration tests
+cargo test                                 # 2334 unit tests (2244 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 225 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -92,7 +92,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - API threads rasterise into shared per-frame surfaces (`src/gui/surface.rs`); the GUI thread composites them (`src/gui/sdl_renderer.rs`, software or layered compositor).
    - Input waits in one system input queue and is routed when read (`pm_input.rs`, ADR-0051 / 0058).
    - Each session has one desktop server process (`src/desktop/`, `src/gui/desktop_server.rs`; protocol version 11, ADR-0052–0057, 0067, 0068, 0108). `WARPINE_DESKTOP=local` keeps the desktop in-process.
-   - Themes (`gui/theme.rs`, ADR-0118): `WARPINE_THEME=classic|modern` changes pels only, never geometry a program sees. Modern frames are rounded and shadowed where they are composited (`gui/frame_shape.rs`: the software compositor, the layered compositor, and the desktop server, told per picture by `Item::rounded`); golden pictures stay on `classic`, the modern ones have their own (`check_gui_golden_modern`).
+   - Themes (`gui/theme.rs`, ADR-0118): `WARPINE_THEME=classic|modern` (modern by default) changes pels only, never geometry a program sees. Modern frames are rounded and shadowed where they are composited (`gui/frame_shape.rs`: the software compositor, the layered compositor, and the desktop server, told per picture by `Item::rounded`); golden pictures stay on `classic` (the integration tests pin it in `PINNED_ENV`, unit tests default to it), the modern ones have their own (`check_gui_golden_modern`).
 5. **Processes.** Each OS/2 process is its own Warpine host process (ADR-0020).
    - Shared memory goes through a sealed memfd arena (ADR-0049); shared semaphores through a memfd of slots (ADR-0050).
    - Named pipes are `AF_UNIX` sockets in a private session directory (ADR-0022).
