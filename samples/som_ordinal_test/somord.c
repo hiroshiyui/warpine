@@ -57,6 +57,24 @@ SOMEXTERN long            SOMLINK somLPrintf( long level, char *fmt, ... );
 SOMEXTERN long            SOMLINK somVprintf( char *fmt, va_list ap );
 
 typedef char * SOMLINK name_proc( SOMObject * );
+typedef long   SOMLINK count_proc( SOMClass * );
+typedef void   SOMLINK destruct_proc( SOMObject *, unsigned char, void * );
+
+/* What the class Tidy's own somDestruct saw. */
+static long destruct_calls = 0;
+static long destruct_free  = -1;
+static void *destruct_ctrl = (void *)1;
+
+/* Tidy's somDestruct: note the call, then SOMObject's, which frees the
+ * object when doFree is set. */
+static void SOMLINK tidy_destruct( SOMObject *self, unsigned char doFree, void *ctrl )
+{
+    destruct_calls++;
+    destruct_free = doFree;
+    destruct_ctrl = ctrl;
+    ((destruct_proc *)somClassResolve( SOMObjectClassData.classObject, SOMObjectClassData.somDestruct ))
+        ( self, doFree, ctrl );
+}
 
 static int  n_checks = 0;
 static int  n_passed = 0;
@@ -131,6 +149,9 @@ int main( void )
 {
     SOMClassMgr   *mgr = somEnvironmentNew();
     somId          hello, again, mine;
+    SOMClass      *tidy;
+    SOMObject     *obj;
+    count_proc    *count;
     char          *fresh = "Fresh";
     unsigned long  before;
     name_proc     *name;
@@ -165,9 +186,14 @@ int main( void )
     /* Ids. */
     hello = somIdFromString( "Hello" );
     again = somIdFromString( "Hello" );
-    check( "somIdFromString gives one id", hello == again, 1 );
+    check( "somIdFromString gives each caller its own id", hello != again, 1 );
     check( "somStringFromId", strcmp( somStringFromId( hello ), "Hello" ) == 0, 1 );
     check( "somCompareIds", somCompareIds( hello, again ), 1 );
+    /* The caller owns its id and frees it (SOM Programming Reference). */
+    SOMFree( hello );
+    hello = somIdFromString( "Hello" );
+    check( "the string stays registered after SOMFree",
+           strcmp( somStringFromId( hello ), "Hello" ) == 0 && somUniqueKey( hello ) == somUniqueKey( again ), 1 );
     somSetExpectedIds( 100 );
     somBeginPersistentIds();
     mine = &fresh;
@@ -179,6 +205,28 @@ int main( void )
     check( "somCheckId gives the id back", somCheckId( mine ) == mine, 1 );
     check( "somUniqueKey: one key per string",
            somUniqueKey( mine ) == somUniqueKey( somIdFromString( "Fresh" ) ), 1 );
+
+    /* somGetNumStaticMethods counts inherited methods too. */
+    count = (count_proc *)somResolve( SOMClassClassData.classObject, SOMClassClassData.somGetNumStaticMethods );
+    check( "somGetNumStaticMethods includes inherited ones",
+           count( SOMClassClassData.classObject ) > count( SOMObjectClassData.classObject )
+           && count( SOMObjectClassData.classObject ) > 0, 1 );
+    check( "... as many as somGetNumMethods",
+           count( SOMClassClassData.classObject )
+           == ((count_proc *)somResolve( SOMClassClassData.classObject, SOMClassClassData.somGetNumMethods ))
+                  ( SOMClassClassData.classObject ), 1 );
+
+    /* somFree calls the class's own somDestruct (doFree set, no control). */
+    tidy = _somNew( SOMClassClassData.classObject );
+    _somInitClass( tidy, "Tidy", SOMObjectClassData.classObject, 0, 0, 1, 0 );
+    _somOverrideSMethod( tidy, somIdFromString( "somDestruct" ), (somMethodProc *)tidy_destruct );
+    _somClassReady( tidy );
+    obj = _somNew( tidy );
+    _somFree( obj );
+    check( "somFree calls the class's somDestruct", destruct_calls, 1 );
+    check( "... with doFree set", destruct_free, 1 );
+    check( "... and a null control", destruct_ctrl == NULL, 1 );
+    check( "... which freed the object", somIsObj( obj ), 0 );
 
     /* Printing through the program's own SOMOutCharRoutine. */
     SOMOutCharRoutine = catch_char;

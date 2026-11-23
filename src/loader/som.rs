@@ -306,6 +306,7 @@ const TOKEN_SOM_INIT: u32 = root_token("somInit");
 const TOKEN_SOM_UNINIT: u32 = root_token("somUninit");
 const TOKEN_SOM_DUMP_SELF_INT: u32 = root_token("somDumpSelfInt");
 const TOKEN_SOM_DEFAULT_INIT: u32 = root_token("somDefaultInit");
+const TOKEN_SOM_DESTRUCT: u32 = root_token("somDestruct");
 
 /// One method a class supports: its token and procedure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1096,6 +1097,20 @@ impl Loader {
         id
     }
 
+    /// `somIdFromString`'s result: an id of its own for the caller, which
+    /// owns it and may free it with `SOMFree` (SOM Programming Reference:
+    /// "Ownership of the somId returned by this function passes to the
+    /// caller"). It points at the registered copy of the string, which
+    /// stays when the caller's id is freed; 0 when the registry is full or
+    /// memory runs out.
+    fn som_caller_id(&self, name: &str) -> u32 {
+        let registered = self.som_id(name);
+        if registered == 0 { return 0; }
+        let Some(id) = self.som_malloc(4) else { return 0 };
+        let _ = self.guest_write::<u32>(id, registered + 4);
+        id
+    }
+
     /// A new instance of ready class `cls`, zeroed, its method-table word
     /// set (an instance of a metaclass is a new, uninitialized class).
     fn som_new_instance(&self, cls: u32) -> Option<u32> {
@@ -1747,7 +1762,7 @@ impl Loader {
             SOM_CLASS_RESOLVE => ok(self.shared.som.lock_or_recover().class_method(a[0], a[1]).unwrap_or_else(|| thunk(SOM_METHOD_ERROR))),
             SOM_DATA_RESOLVE => ok(self.som_data_resolve(a[0], a[1])),
             SOM_GET_GLOBAL_ENVIRONMENT => ok(self.shared.som.lock_or_recover().env),
-            SOM_ID_FROM_STRING => ok(self.som_name(a[0]).map_or(0, |n| self.som_id(&n))),
+            SOM_ID_FROM_STRING => ok(self.som_name(a[0]).map_or(0, |n| self.som_caller_id(&n))),
             SOM_STRING_FROM_ID => ok(if a[0] == 0 { 0 } else { self.guest_read::<u32>(a[0]).unwrap_or(0) }),
             SOM_COMPARE_IDS => ok((self.som_id_name(a[0]).is_some() && self.som_id_name(a[0]) == self.som_id_name(a[1])) as u32),
             SOM_IS_OBJ => ok(self.shared.som.lock_or_recover().instances.contains(&a[0]) as u32),
@@ -1860,8 +1875,16 @@ impl Loader {
             // ── SOMObject ──
             3200 | 3201 | 3211 => ok(0), // somInit / somUninit / somDumpSelfInt: nothing at the root
             3202 => {
-                // somFree: somUninit (the object's own), then the memory.
+                // somFree: the object's somDestruct with doFree set and a
+                // null control ("somFree calls somDestruct", SOM
+                // Programming Reference); the root's runs somUninit, then
+                // frees the memory, as an override's chain to it does.
                 if !self.shared.som.lock_or_recover().instances.contains(&a[0]) { return ok(0); }
+                let destruct = self.som_resolve(a[0], TOKEN_SOM_DESTRUCT);
+                if destruct != thunk(3213) {
+                    return self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(destruct, vec![a[0], 1, 0], false)],
+                                                           false, ChainThen::Return(0)));
+                }
                 let uninit = self.som_resolve(a[0], TOKEN_SOM_UNINIT);
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(uninit, vec![a[0]], false)], false,
                                                 ChainThen::SomFree { obj: a[0] }))
@@ -1928,7 +1951,9 @@ impl Loader {
             // The data token of a class is the class itself.
             3306 => ok(info(a[0], &|c| if c.parts.is_empty() { 0 } else { a[0] })),
             3307 => ok(info(a[0], &|c| c.slots.len() as u32)),
-            3308 => ok(info(a[0], &|c| c.own_methods as u32)),
+            // somGetNumStaticMethods: the static methods the class has,
+            // inherited ones included (SOM Programming Reference).
+            3308 => ok(info(a[0], &|c| c.slots.len() as u32)),
             3309 => ok(self.shared.som.lock_or_recover().descends(a[0], a[1]) as u32),
             3310 => {
                 // somInitClass(self, className, parent, dataSize,
@@ -1974,7 +1999,9 @@ impl Loader {
                 }
             }
             3326 => ok(self.som_malloc(a[1]).unwrap_or(0)),
-            3327 => { self.som_free_mem(a[1]); ok(0) }
+            // somDeallocate: the block goes; an object freed this way (a
+            // destructor's own deallocation) is no object any more.
+            3327 => { self.som_forget_object(a[1]); self.som_free_mem(a[1]); ok(0) }
             3311 => ok(self.som_add_method(a[0], a[1], a[3])),
             3312 => ok(self.som_override(a[0], a[1], a[2])),
             3313 => ok(self.som_class_ready(a[0])),
@@ -2019,14 +2046,16 @@ impl Loader {
 
     /// `somFree`'s chain called `somUninit`: the object's memory goes.
     pub(crate) fn som_free_done(&self, obj: u32) -> u32 {
-        let known = {
-            let mut rt = self.shared.som.lock_or_recover();
-            let k = rt.instances.remove(&obj);
-            rt.classes.remove(&obj);
-            k
-        };
-        if known { self.som_free_mem(obj); }
+        if self.som_forget_object(obj) { self.som_free_mem(obj); }
         0
+    }
+
+    /// Drop the records of object `obj` before its memory goes: whether it
+    /// was one.
+    fn som_forget_object(&self, obj: u32) -> bool {
+        let mut rt = self.shared.som.lock_or_recover();
+        rt.classes.remove(&obj);
+        rt.instances.remove(&obj)
     }
 }
 
@@ -2169,7 +2198,9 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_CLASS_RESOLVE, &[som_object, TOKEN_SOM_INIT])), thunk(3200), "the parent's somInit");
         assert_eq!(l.read_guest_string(ok(call(&l, 3204, &[obj]))), "Hello");
         let id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3100, "sayHello")]));
-        assert_eq!(ok(call(&l, SOM_ID_FROM_STRING, &[0x3100])), id, "one id per string");
+        let again = ok(call(&l, SOM_ID_FROM_STRING, &[0x3100]));
+        assert_ne!(again, id, "each caller owns its id");
+        assert_eq!(ok(call(&l, SOM_COMPARE_IDS, &[id, again])), 1, "for the same string");
         assert_eq!(ok(call(&l, 3208, &[obj, id])), 1, "somRespondsTo sayHello");
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1);
         // somFree: somUninit, then the memory.
@@ -2217,6 +2248,17 @@ mod tests {
         finish(&l, call(&l, 3213, &[obj, 1, 0]));
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0);
         assert_eq!(ok(call(&l, 3213, &[obj, 1, 0])), 0, "not twice");
+        // somDestruct overridden: somFree calls it with doFree set and a
+        // null control, and leaves the freeing to it.
+        let tidy = new_class(&l, som_class, "Tidy", &[som_object], 0, &[("somDestruct", 0x0063_0000)]);
+        let obj = finish(&l, call(&l, 3300, &[tidy]));
+        let r = call(&l, 3202, &[obj]);
+        assert_eq!(first(&r), (0x0063_0000, vec![obj, 1, 0]));
+        finish(&l, r);
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1, "freed by the override's chain, not by somFree");
+        // Its chain to the root's somDestruct frees it.
+        finish(&l, call(&l, 3213, &[obj, 1, 0]));
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0);
         // somDefaultInit overridden: somNew calls it with a null control.
         let modern = new_class(&l, som_class, "Modern", &[som_object], 0, &[("somDefaultInit", 0x0062_0000)]);
         let r = call(&l, 3300, &[modern]);
@@ -2593,6 +2635,38 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_TOTAL_REG_IDS, &[])), before + 1);
     }
 
+    /// `somIdFromString` gives the caller an id of its own, which it may
+    /// free with `SOMFree` (SOM Programming Reference) without harming the
+    /// registry: the string is found again afterwards.
+    #[test]
+    fn caller_ids_can_be_freed() {
+        let l = Loader::new_mock();
+        let name = put(&l, 0x3100, "Owned");
+        let id = ok(call(&l, SOM_ID_FROM_STRING, &[name]));
+        assert_eq!(l.read_guest_string(ok(call(&l, SOM_STRING_FROM_ID, &[id]))), "Owned");
+        let key = ok(call(&l, SOM_UNIQUE_KEY, &[id]));
+        let count = ok(call(&l, SOM_TOTAL_REG_IDS, &[]));
+        assert!(l.som_free_mem(id), "the caller's id is a SOMMalloc block");
+        let again = ok(call(&l, SOM_ID_FROM_STRING, &[name]));
+        assert_eq!(l.read_guest_string(ok(call(&l, SOM_STRING_FROM_ID, &[again]))), "Owned");
+        assert_eq!(ok(call(&l, SOM_UNIQUE_KEY, &[again])), key, "the same key");
+        assert_eq!(ok(call(&l, SOM_TOTAL_REG_IDS, &[])), count, "registered once");
+    }
+
+    /// `somGetNumStaticMethods` counts inherited static methods too (SOM
+    /// Programming Reference: "including inherited ones").
+    #[test]
+    fn static_method_counts_include_inherited_ones() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let count = |c: u32| ok(call(&l, 3308, &[c]));
+        assert_eq!(count(som_object) as usize, SOMOBJECT_METHODS.len());
+        assert_eq!(count(som_class) as usize, SOMOBJECT_METHODS.len() + SOMCLASS_METHODS.len());
+        let cls = new_class(&l, som_class, "Counted", &[som_object], 0, &[("one", 0x0060_0000), ("somInit", 0x0060_1000)]);
+        assert_eq!(count(cls), count(som_object) + 1, "the new method, not the override");
+        assert_eq!(count(cls), ok(call(&l, 3307, &[cls])), "every method is static: somGetNumMethods agrees");
+    }
+
     /// `somPrefixLevel`, `somLPrintf` and `somVprintf` write through
     /// `SOMOutCharRoutine` as `somPrintf` does.
     #[test]
@@ -2713,6 +2787,13 @@ mod tests {
         let block = ok(call(&l, 3326, &[c, 64]));
         assert_ne!(block, 0);
         assert_eq!(ok(call(&l, 3327, &[c, block])), 0);
+        // somDeallocate of an object (a destructor freeing it): no object
+        // any more.
+        let o = l.shared.som.lock_or_recover().som_object;
+        let obj = ok(call(&l, 3301, &[o]));
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1);
+        assert_eq!(ok(call(&l, 3327, &[o, obj])), 0);
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0);
         let _ = mgr;
     }
 

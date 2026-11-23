@@ -37,3 +37,5 @@ import somVprintf              SOM.45
 import somDataResolve          SOM.47
 # A SOM 2.x entry whose IBM ordinal is not known: by name.
 import somSetOutChar           SOM.somSetOutChar
+import somClassResolve         SOM.somClassResolve
+import somIsObj                SOM.somIsObj
