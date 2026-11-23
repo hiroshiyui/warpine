@@ -299,21 +299,50 @@ The WPS is a PM application on the session desktop, built on SOM. The SOM kernel
 
 **Sources at hand** (found 2026-11-23; kept locally under `doc/references/`, never committed; public URLs in the README's sources):
 - the OS/2 Warp 4 Toolkit's *System Object Model Programming Guide* and *Reference* and *Workplace Shell Programming Guide* and *Reference* (Internet Archive, reprinted with IBM's permission) — the OS/2 description of SOM and the WPS classes;
-- IBM's OS/390 *SOMobjects Programmer's Reference, Volume 1* (SC28-1997) and *Messages, Codes and Diagnosis* (SC28-1996) — the kernel as documented for OS/390, and the error codes.
+- IBM's OS/390 *SOMobjects Programmer's Reference, Volume 1* (SC28-1997) and *Messages, Codes and Diagnosis* (SC28-1996) — the kernel as documented for OS/390, and the error codes;
+- IBM's *SOMobjects Developer's Toolkit* Version 3.0 books (1996, Internet Archive): *Programmer's Guide* Vol. I–II and *Programmer's Reference* Vol. I–IV — SOM 3.0's concepts, initializers and kernel.
 
 **Object model options** (for Warpine's own objects, and for the WPS should SOM compatibility stay blocked; to be decided in an ADR):
 1. SOM, compatible with IBM's as far as the sources allow (the current course, ADR-0059–0073);
 2. the Cross Platform Component Object Model (XPCOM), Mozilla's portable COM-style component model (interfaces described in XPIDL, reference counting, `QueryInterface`, a component manager; MPL-2.0; also used by VirtualBox on its non-Windows hosts) — not binary-compatible with SOM, so IBM-built SOM and WPS binaries would not run on it.
 
-Not available: IBM's SOM 3.0 publications (`ftp.software.ibm.com/publications/clubod/som30`, gone, never archived). Not used: somFree (LGPLv3, no OS/2 target; excluded by decision) and Netlabs' NOM (binary-incompatible with SOM by design).
+IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30`) is gone and was never archived; the 3.0 books above are a separate copy. Not used: somFree (LGPLv3, no OS/2 target; excluded by decision) and Netlabs' NOM (binary-incompatible with SOM by design).
 
-- [ ] **Check the kernel against the OS/2 SOM Programming Reference**: each function, macro and root-class method Warpine has; behaviour it documents moves from `doc/unverified.md` into the SOM ADRs with a citation, differences become fixes with tests; error codes after *Messages, Codes and Diagnosis*.
+- [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
+- [ ] **Bugs: Warpine contradicts the Reference**:
+  - `somFree` calls `somUninit` and frees the memory itself; it must call `somDestruct` (which a class is expected to override) and free through `somDeallocate`;
+  - `somIdFromString` returns the registry's shared id, but the caller owns the id and frees it: freeing it corrupts the registry (guest memory only); give the caller its own id;
+  - `somGetNumStaticMethods` counts the class's own methods only; it must include inherited ones;
+  - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: no major / minor version check (the rule of `somCheckVersion`); the init function is always "SOMInitModule" rather than the `SOMClassInitFuncName` variable (through `somGetInitFunction`); internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
+  - the default `SOMLoadModule` succeeds when a DLL has neither `SOMInitModule` nor `<Class>NewClass`; it must fail;
+  - `somDataResolve` with an unknown token returns 0; it must raise an error (`somDataResolveChk` is the quiet variant);
+  - `somBuildClass` calls `somClassReady`, `somNew` and `somRegisterClass` internally, so a metaclass's or class manager's overrides never run;
+  - `somPrintSelf` and `somDumpSelf` write to standard output, not through `SOMOutCharRoutine`; `somDumpSelf`'s layout is an opening line, the `somDumpSelfInt` lines and a closing `}`, each indented 2 blanks per level;
+  - `somUnregisterClass` and `somUnloadClassFile` do not free the class object; `somUnloadClassFile` on an unregistered class must raise an error, and `somUnregisterClass` of a loaded class unloads its group;
+  - `somSetOutChar` changes the process-wide variable; it is per application (thread);
+  - `somAssert` / `somTest` ignore `SOM_WarnLevel` / `SOM_AssertLevel` (warnings only above 0; a passed `SOM_Test` prints a message above 0);
+  - `SOMMalloc` / `SOMCalloc` / `SOMRealloc` / `SOMFree` do not call `SOMError` on failure; the default `SOMOutCharRoutine` ignores a failed write;
+  - `somAllocate` / `somDeallocate` bypass a replaced `SOMMalloc` / `SOMFree`;
+  - `SOMObject`'s `somGetInstancePartSize` is 4, not 0; `somGetClassName` does not call the class's `somGetName`;
+  - `somInitMIClass` does not record the class's version.
+- [ ] **Missing, documented by the Reference**:
+  - environments and exceptions: `somSetException`, `somExceptionId` / `somExceptionValue` / `somExceptionFree`, `somEnvironmentEnd`, `somMainProgram`;
+  - `somDataResolveChk`;
+  - the `somRenew` family (`somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero`): objects in the caller's memory;
+  - introspection: `somGetParents`, `_get_somInstanceDataOffsets`, `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetNthMethodData`, `somGetMethodData`, `somGetMethodDescriptor`;
+  - the class manager: `somGetInitFunction`, `somGetRelatedClasses`, `somSubstituteClass`, `somMergeInto`;
+  - copy and assignment: `somDefaultCopyInit`, `somDefaultConstCopyInit`, `somDefaultAssign`, `somDefaultConstAssign` (shallow copies; a null `ctrl` until Stage B2/B3);
+  - `somCastObj` / `somResetObj` (a derived "Class->Ancestor" class; `somResetObj` always returns TRUE);
+  - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods;
+  - the SDK has no SOM headers: the `SOM_*` macros (`SOM_MainProgram`, `SOM_InitEnvironment`, `SOM_UninitEnvironment`, `SOM_Expect`, `SOM_WarnMsg`, …) for GCC / clang programs.
+- [ ] **Settled by the Reference — update the ADRs and `doc/unverified.md`**:
+  - confirmed: 2 blanks per `somPrefixLevel` level; the `<Class>NewClass` fallback after `SOMInitModule`; `SOMInitModule(major, minor, className)`; a class descends from itself; `somNew` = `somNewNoInit` + `somDefaultInit`; a requested version 0.0 matches any; the default `SOMError` ends the process on severity 9 (only its message text and exit code stay Warpine's); `somPrintSelf`'s text; `somGetSize`; `somLocateClassFile` returning the class name without `dllname`;
+  - to correct: `SOMERROR_NotImplementedYet` (20171) ends in 1, the *Ignore* severity, not a warning; ADR-0060's "unknown data token gives 0" and ADR-0070's "SOMInitModule even after a replaced `SOMClassInitFuncName`" are contradicted.
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
   - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; Free Pascal's LGPL `som.pas` (not used so far) or the rights holders are the routes left;
-  - Stage B2/B3 is on hold (decided 2026-11-20) until IBM-built binaries can load (ordinals 48+) or a source describes the control-block protocol: the SOM Programming Guide ("Initializing and Uninitializing Objects") gives the semantics — each class's initializer exactly once, in a left-to-right visit of `directinitclasses` (default: the parents); `somDefaultInit` calls a legacy `somInit`; `somDestruct` runs the class's own clean-up, then its ancestors' — and the Toolkit headers give `somInitCtrl` / `somInitInfo` / `somDestructInfo` / `somAssignInfo`, but neither shows how generated `BeginInitializer` / `Init_<Ancestor>_…` / `EndDestructor` code indexes the mask and info arrays or turns a null `ctrl` into a block;
+  - Stage B2/B3 is on hold (decided 2026-11-20) until IBM-built binaries can load (ordinals 48+) or a source describes the control-block protocol; neither the OS/2 Reference nor the SOMobjects 3.0 *Programmer's Guide* Vol. I does (checked 2026-11-23: semantics and the generated stubs' use only, no fields or macro expansions), so it may need a design of Warpine's own (an ADR): the SOM Programming Guide ("Initializing and Uninitializing Objects") gives the semantics — each class's initializer exactly once, in a left-to-right visit of `directinitclasses` (default: the parents); `somDefaultInit` calls a legacy `somInit`; `somDestruct` runs the class's own clean-up, then its ancestors' — and the Toolkit headers give `somInitCtrl` / `somInitInfo` / `somDestructInfo` / `somAssignInfo`, but neither shows how generated `BeginInitializer` / `Init_<Ancestor>_…` / `EndDestructor` code indexes the mask and info arrays or turns a null `ctrl` into a block;
   - class building from IBM's static class data, Stage B2/B3 (`somBuildClass` itself is done, ADR-0073): initializers and direct-init classes, the initializer / destructor / assignment control blocks of `somParentMtabStruct`, DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`; `somBuildClass` and the other SOM 2.x entries reach IBM-built binaries only once IBM's ordinals above 47 are known;
-  - the root methods that resolve to the not-implemented procedure: the copy, assign, dispatch, cast, reset and renew families, `somGetParents`, the class manager's repository and class-library methods — the SOM Programming Reference documents them, so they no longer wait on a source;
-  - class loading calling a program's own `SOMClassInitFuncName`.
+  - the root methods that resolve to the not-implemented procedure: see "Missing, documented by the Reference" above; the class manager's `somInterfaceRepository` / `somRegisteredClasses` attributes are not in the Reference.
 - [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
 - [ ] **Class files**: `dllname` for `somLocateClassFile`.
 - [ ] **Utilities and metadata**: `SOMU` classes, the interface repository (`SOMIR`), IDL metadata.
