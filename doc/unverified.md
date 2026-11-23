@@ -344,7 +344,6 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 - **SOM ordinals** (ADR-0070):
   - osFree's numbers for ordinals 1–47 being IBM's, data at 1–19;
   - every version accepted by `<Class>NewClass`;
-  - two blanks per `somPrefixLevel` level;
   - `somConstructClass`, `somSaveMetrics`, `somWriteMetrics` doing nothing.
 - **SOM class loading and data resolution** (ADR-0060, ADR-0062 addenda):
   - `SOMERROR_BadArgument` (20199) as `somDataResolve`'s error for an object without the token's data; `somDataResolveChk` at ordinal 3079;
@@ -368,7 +367,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - module-scoped SOM class names as "Module::Interface", interface-level types named `<Class>_<name>`, attribute accessors' parameter named after the attribute, and the accessors the bindings implement (a plain assignment and return, no copying of strings or sequences).
 - **SOM layouts** (ADR-0072):
   - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;
-  - lacking root methods warning (20171) instead of IBM's fatal `SOMERROR_NotImplementedYet`;
+  - lacking root methods raising 20171 (the Ignore severity) instead of IBM's fatal `SOMERROR_NotImplementedYet` (20179);
   - `somParentMtabStruct` fields after the instance size left 0, parents counted from 1;
   - a class without a version accepting any; `somTestCls`'s error code; the text of a kept `somAssert`; `somCheckArgs`'s levels;
   - `dataAlignment` 4, `classInfo` and the protected data 0.

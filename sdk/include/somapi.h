@@ -271,9 +271,10 @@ typedef zString SOMLINK somTD_SOMClassInitFuncName( void );
 /* somSetOutChar( 0 ) puts the default routine back (Warpine's). */
 SOMEXTERN void SOMLINK somSetOutChar( somTD_SOMOutCharRoutine *routine );
 
-/* A SOM error code's last digit is its severity (9: fatal). */
-#define SOM_Ignore  0
-#define SOM_Warn    1
+/* A SOM error code's last digit is its severity: 9 fatal, 2 a warning,
+ * 1 to ignore (SOM Programming Reference). */
+#define SOM_Ignore  1
+#define SOM_Warn    2
 #define SOM_Fatal   9
 #define SOM_Error( code ) SOMError( (code), __FILE__, __LINE__ )
 

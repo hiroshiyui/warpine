@@ -123,3 +123,7 @@ They have `somMethodTab`'s header, then the entries:
     - `new_class_procedures_and_parent_resolution`, reworked;
   - `samples/som_layout_test`: 25 checks;
   - `samples/som_test` and `samples/som_ordinal_test`, rebuilt against the new layouts with unchanged output.
+
+## Addendum (2026-11-24): the severity of 20171
+
+IBM's SOM Programming Reference gives an error code's last digit as its severity: 9 fatal, 2 a warning, 1 *Ignore*. The 20171 that methods Warpine lacks raise is therefore of the Ignore severity, not a warning as this record said; the behaviour is unchanged (the default `SOMError` reports it and the program goes on). The Reference also confirmed choices this kernel had made: two blanks per `somPrefixLevel` level, the `<Class>NewClass` fallback after `SOMInitModule`, `SOMInitModule(major, minor, className)`, a class descending from itself, `somNew` as `somNewNoInit` plus `somDefaultInit`, a requested version 0.0 matching any, the default `SOMError` ending the process on severity 9, `somPrintSelf`'s text, `somGetSize`, and `somLocateClassFile` returning the class's name.

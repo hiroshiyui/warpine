@@ -14,7 +14,7 @@
  *   SOMClassMgrCClassData.parentMtab and somParentNumResolve;
  *   SOMClass methods of IBM's release order: somCheckVersion,
  *   somGetVersionNumbers, somFindSMethod, somLookupMethod;
- *   a method Warpine lacks raising SOMERROR_NotImplementedYet (a warning)
+ *   a method Warpine lacks raising SOMERROR_NotImplementedYet (20171, the Ignore severity)
  *   through the program's own SOMError;
  *   somTestCls and somCheckArgs.
  *
@@ -164,7 +164,7 @@ int main( void )
            ((find_proc *)somResolve( cls, SOMClassClassData.somLookupMethod ))( cls, somIdFromString( "somFindClass" ) )
            == somResolve( mgr, SOMClassMgrClassData.somFindClass ), 1 );
 
-    /* A method Warpine lacks: SOMERROR_NotImplementedYet as a warning. */
+    /* A method Warpine lacks: SOMERROR_NotImplementedYet with the Ignore severity. */
     SOMError = catch_error;
     lacking = (lacking_proc *)somResolve( mgr, SOMObjectClassData.somResetObj );
     check( "a lacking method returns 0", lacking( mgr, 0, mgr ), 0 );

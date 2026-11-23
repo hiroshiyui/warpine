@@ -57,7 +57,7 @@
 //!   IBM's release orders, method tables have the `somMethodTab` header and
 //!   `CClassData.parentMtab` is a `somParentMtabStruct`, as the OS/2 Warp 4
 //!   Toolkit headers give them; root methods Warpine lacks raise
-//!   `SOMERROR_NotImplementedYet` as a warning.
+//!   `SOMERROR_NotImplementedYet` with the Ignore severity (20171).
 //!
 //! Warpine's choices (unverified against IBM's SOM): the token encodings,
 //! osFree's ordinals, the Toolkit copy the layouts come from, the fields of
@@ -213,7 +213,8 @@ pub const SOM_INIT_CTRL_SIZE: u32 = 16;
 /// What an unknown method token resolves to: a procedure returning 0.
 pub const SOM_METHOD_ERROR: u32 = 3199;
 /// The procedure of root methods Warpine does not implement yet: it
-/// raises `SOMERROR_NotImplementedYet`, as a warning, and returns 0.
+/// raises `SOMERROR_NotImplementedYet` with the Ignore severity (20171)
+/// and returns 0.
 pub const SOM_METHOD_NOT_IMPLEMENTED: u32 = 3198;
 // The root classes' methods follow: SOMObject's from 3200, SOMClass's
 // from 3300, SOMClassMgr's from 3400; the module has SOM_ORDINALS.
@@ -720,9 +721,9 @@ pub const SOMERROR_METHOD_NOT_FOUND: u32 = 20039;
 /// for (*SOMobjects Messages, Codes and Diagnosis*).
 pub const SOMERROR_BAD_VERSION: u32 = 20079;
 pub const SOMERROR_TEST_OBJECT_FAILURE: u32 = 20109;
-/// `SOMERROR_NotImplementedYet` (20179) as a warning: Warpine's choice,
+/// `SOMERROR_NotImplementedYet` (20179) with the Ignore severity: Warpine's choice,
 /// so a program calling a method Warpine lacks goes on.
-pub const SOMERROR_NOT_IMPLEMENTED_YET_WARN: u32 = 20171;
+pub const SOMERROR_NOT_IMPLEMENTED_YET_IGNORE: u32 = 20171;
 pub const SOMERROR_OUT_OF_MEMORY: u32 = 20099;
 pub const SOMERROR_BAD_ARGUMENT: u32 = 20199;
 pub const SOMERROR_NO_PARENT_CLASS: u32 = 20219;
@@ -2112,7 +2113,7 @@ impl Loader {
             SOM_PARENT_RESOLVE => ok(self.som_parent_resolve(a[0], 1, a[1])),
             SOM_PARENT_NUM_RESOLVE => ok(self.som_parent_resolve(a[0], a[1], a[2])),
             SOM_BUILD_CLASS => self.som_build_class(vcpu, a[0], a[1], (a[2], a[3])),
-            SOM_METHOD_NOT_IMPLEMENTED => self.som_raise(vcpu, SOMERROR_NOT_IMPLEMENTED_YET_WARN, 0, 0, 0),
+            SOM_METHOD_NOT_IMPLEMENTED => self.som_raise(vcpu, SOMERROR_NOT_IMPLEMENTED_YET_IGNORE, 0, 0, 0),
             SOM_TEST_CLS => {
                 // somTestCls(obj, class, file, line): the object, when it is
                 // one and an instance of the class (or a descendant's);
@@ -3301,7 +3302,7 @@ mod tests {
 
     /// The root classes' `ClassData` hold a token for every method of
     /// IBM's release order, at IBM's offsets; a method Warpine lacks
-    /// raises `SOMERROR_NotImplementedYet` as a warning and returns 0
+    /// raises `SOMERROR_NotImplementedYet` (Ignore severity) and returns 0
     /// (ADR-0072).
     #[test]
     fn class_data_follows_ibm_s_release_order() {
