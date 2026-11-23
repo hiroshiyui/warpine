@@ -210,6 +210,7 @@ pub fn control_sptr(class: &str) -> Option<u32> {
         pm_controls::CLASS_ENTRYFIELD | pm_controls::CLASS_MLE => Some(SPTR_TEXT),
         pm_controls::CLASS_LISTBOX | pm_combo::CLASS_COMBOBOX | pm_scrollbar::CLASS_SCROLLBAR
         | pm_slider::CLASS_SLIDER | pm_spin::CLASS_SPINBUTTON | pm_valueset::CLASS_VALUESET
+        | super::pm_circslider::CLASS_CIRCSLIDER
         | pm_notebook::CLASS_NOTEBOOK | pm_container::CLASS_CONTAINER | "WC_BUTTON" | "WC_STATIC" => Some(SPTR_ARROW),
         _ => None,
     }

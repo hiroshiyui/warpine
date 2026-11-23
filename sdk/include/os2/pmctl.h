@@ -224,6 +224,28 @@
 #define SLM_SETSCALETEXT         0x0370
 #define SLM_SETSLIDERINFO        0x0371
 #define SLM_SETTICKSIZE          0x0372
+/* Circular sliders (WC_CIRCULARSLIDER) */
+#define CSM_QUERYRANGE           0x053D
+#define CSM_SETRANGE             0x053E
+#define CSM_QUERYVALUE           0x053F
+#define CSM_SETVALUE             0x0540
+#define CSM_QUERYRADIUS          0x0541
+#define CSM_SETINCREMENT         0x0542
+#define CSM_QUERYINCREMENT       0x0543
+#define CSM_SETBITMAPDATA        0x0544
+#define CSN_SETFOCUS             0x0548
+#define CSN_CHANGED              0x0549
+#define CSN_TRACKING             0x054A
+#define CSN_QUERYBACKGROUNDCOLOR 0x054B
+#define CSS_NOBUTTON             0x0001
+#define CSS_NOTEXT               0x0002
+#define CSS_NONUMBER             0x0004
+#define CSS_POINTSELECT          0x0008
+#define CSS_360                  0x0010
+#define CSS_MIDPOINT             0x0020
+#define CSS_PROPORTIONALTICKS    0x0040
+#define CSS_NOTICKS              0x0080
+#define CSS_CIRCULARVALUE        0x0100
 #define SLN_CHANGE               0x0001
 #define SLN_SLIDERTRACK          0x0002
 #define SLN_SETFOCUS             0x0003
@@ -1001,6 +1023,13 @@ typedef struct _SLDCDATA {
     USHORT usScale2Increments;
     USHORT usScale2Spacing;
 } SLDCDATA, *PSLDCDATA;
+
+typedef struct _CSBITMAPDATA {
+    HBITMAP hbmLeftUp;
+    HBITMAP hbmLeftDown;
+    HBITMAP hbmRightUp;
+    HBITMAP hbmRightDown;
+} CSBITMAPDATA, *PCSBITMAPDATA;
 
 typedef struct _VSCDATA {
     ULONG  cbSize;

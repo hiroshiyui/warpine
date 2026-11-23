@@ -646,6 +646,11 @@
     P("NOTEBOOKBUTTON.idButton", offsetof(NOTEBOOKBUTTON, idButton));
     P("NOTEBOOKBUTTON.hImage", offsetof(NOTEBOOKBUTTON, hImage));
     P("NOTEBOOKBUTTON.flStyle", offsetof(NOTEBOOKBUTTON, flStyle));
+    P("CSBITMAPDATA", sizeof(CSBITMAPDATA));
+    P("CSBITMAPDATA.hbmLeftUp", offsetof(CSBITMAPDATA, hbmLeftUp));
+    P("CSBITMAPDATA.hbmLeftDown", offsetof(CSBITMAPDATA, hbmLeftDown));
+    P("CSBITMAPDATA.hbmRightUp", offsetof(CSBITMAPDATA, hbmRightUp));
+    P("CSBITMAPDATA.hbmRightDown", offsetof(CSBITMAPDATA, hbmRightDown));
     P("SLDCDATA", sizeof(SLDCDATA));
     P("SLDCDATA.cbSize", offsetof(SLDCDATA, cbSize));
     P("SLDCDATA.usScale1Increments", offsetof(SLDCDATA, usScale1Increments));

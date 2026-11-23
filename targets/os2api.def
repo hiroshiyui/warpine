@@ -755,6 +755,7 @@ PMCTLS.3      WinDefFontDlgProc   # NOTE: from os2386.lib (IMPDEF PMCTLS.3); os2
 PMCTLS.4      WinFileDlg          # NOTE: from os2386.lib (IMPDEF PMCTLS.4); os2_ordinals.md has no PMCTLS section
 PMCTLS.5      WinDefFileDlgProc   # NOTE: from os2386.lib (IMPDEF PMCTLS.5); os2_ordinals.md has no PMCTLS section
 PMCTLS.6      WinFreeFileDlgList  # NOTE: from os2386.lib (IMPDEF PMCTLS.6); os2_ordinals.md has no PMCTLS section
+PMCTLS.24     WinRegisterCircularSlider # NOTE: from os2386.lib (IMPDEF PMCTLS.24); os2_ordinals.md has no PMCTLS section
 
 # ── WARPINE (Warpine's own extensions, not an OS/2 module; warpine_api.rs, ADR-0039)
 WARPINE.1     WrpTime64           # NOTE: Warpine extension, not in os2386.lib

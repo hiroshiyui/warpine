@@ -3158,6 +3158,30 @@ fn gui_modern_theme_is_the_same_in_every_compositor() {
     }
 }
 
+/// pm_circslider_test (default frame at desktop (32, 32)): Volume's − / +
+/// buttons at (80, 329) / (248, 329), Heading's centre at (434, 233).
+const CIRCSLIDER_STEPS: &str = "\
+    1000 key right\n\
+    1200 key pageup\n\
+    1400 key end\n\
+    1600 click 248 329\n\
+    1900 click 80 329\n\
+    2300 drag 484 233 434 283\n";
+
+#[test]
+fn gui_pm_circslider_test_turns_its_dials() {
+    let steps = format!("{CIRCSLIDER_STEPS}2900 key alt+f4\n5000 quit\n");
+    assert_scripted_checks_pass("samples/pm_circslider_test/pm_circslider_test.exe", "pm_circslider_test", 30, &steps);
+}
+
+/// The circular sliders after the session, in both themes.
+#[test]
+fn gui_circslider_matches_golden() {
+    let steps = format!("{CIRCSLIDER_STEPS}2800 dump {{dump}}\n2900 quit\n");
+    check_gui_golden("pm_circslider", "samples/pm_circslider_test/pm_circslider_test.exe", &steps);
+    check_gui_golden_modern("pm_circslider_modern", "samples/pm_circslider_test/pm_circslider_test.exe", &steps);
+}
+
 /// Keyboard menu mode into a cascade: View dropped, Zoom's cascade open
 /// beside its row with Zoom out highlighted (pm_menukey_test).
 const CASCADE_STEPS: &str =

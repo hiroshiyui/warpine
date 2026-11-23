@@ -186,6 +186,8 @@ pub struct OS2Window {
     pub pres_params: super::pm_presparam::PresParams,
     /// A slider's scales, arm and decorations (`pm_slider.rs`).
     pub slider: Option<Box<super::pm_slider::SliderState>>,
+    /// A circular slider's range, value and steps (`pm_circslider.rs`).
+    pub circslider: Option<Box<super::pm_circslider::CircState>>,
     /// A value set's items and selection (`pm_valueset.rs`).
     pub valueset: Option<Box<super::pm_valueset::ValueSetState>>,
     /// A notebook's pages (`pm_notebook.rs`).
@@ -971,6 +973,7 @@ impl WindowManager {
             spin: None,
             pres_params: Default::default(),
             slider: None,
+            circslider: None,
             valueset: None,
             notebook: None,
             container: None,
@@ -1620,11 +1623,18 @@ impl WindowManager {
     /// Tell the owner of control `hwnd` that it gained (`gained`) or lost
     /// the focus: `EN_SETFOCUS` / `EN_KILLFOCUS` for an entry field,
     /// `MLN_*` for an MLE, `LN_*` for a list box, `SLN_*` for a slider,
-    /// `VN_*` for a value set (mp2 = the control). Other
+    /// `VN_*` for a value set (mp2 = the control), `CSN_SETFOCUS` for a
+    /// circular slider (mp2 = TRUE / FALSE). Other
     /// windows have no such notification.
     pub fn notify_focus(&self, hwnd: u32, gained: bool) {
         use super::constants::*;
         let Some(class) = self.windows.get(&hwnd).map(|w| w.class_name.as_str()) else { return };
+        // A circular slider has one notification, with TRUE or FALSE
+        // (pm_circslider.rs).
+        if class == super::pm_circslider::CLASS_CIRCSLIDER {
+            self.notify_owner(hwnd, CSN_SETFOCUS, gained as u32);
+            return;
+        }
         let code = match (class, gained) {
             ("WC_ENTRYFIELD", true) => EN_SETFOCUS,
             ("WC_ENTRYFIELD", false) => EN_KILLFOCUS,

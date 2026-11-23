@@ -19,6 +19,7 @@ mod pm_message;
 mod pm_combo;
 mod pm_spin;
 mod pm_slider;
+mod pm_circslider;
 mod pm_valueset;
 mod pm_notebook;
 mod pm_container;
@@ -859,6 +860,10 @@ impl Loader {
             && let Some(r) = self.slider_message(hwnd, msg, mp1, mp2) {
             return r;
         }
+        if msg != WM_PAINT && class_name == pm_circslider::CLASS_CIRCSLIDER
+            && let Some(r) = self.circslider_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
         if msg != WM_PAINT && class_name == pm_valueset::CLASS_VALUESET
             && let Some(r) = self.valueset_message(hwnd, msg, mp1, mp2) {
             return r;
@@ -963,6 +968,10 @@ impl Loader {
                     pm_slider::CLASS_SLIDER => {
                         let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
                         self.paint_slider(&p, hwnd, (x, y, cx, cy));
+                    }
+                    pm_circslider::CLASS_CIRCSLIDER => {
+                        let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
+                        self.paint_circslider(&p, hwnd, (x, y, cx, cy), &text);
                     }
                     pm_valueset::CLASS_VALUESET => {
                         let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));

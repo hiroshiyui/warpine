@@ -423,6 +423,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             4 => "WinFileDlg",
             5 => "WinDefFileDlgProc",
             6 => "WinFreeFileDlgList",
+            24 => "WinRegisterCircularSlider",
             _ => "?",
         },
 
@@ -1330,7 +1331,8 @@ mod tests {
         assert_eq!(ordinal_to_name(PMCTLS_BASE + 2), "WinFontDlg");
         assert_eq!(ordinal_to_name(PMCTLS_BASE + 4), "WinFileDlg");
         assert_eq!(ordinal_to_name(PMCTLS_BASE + 6), "WinFreeFileDlgList");
-        assert_eq!(ordinal_to_name(PMCTLS_BASE + 24), "?");
+        assert_eq!(ordinal_to_name(PMCTLS_BASE + 24), "WinRegisterCircularSlider");
+        assert_eq!(ordinal_to_name(PMCTLS_BASE + 25), "?");
         // HELPMGR ends where PMSPL begins.
         assert_eq!(ordinal_to_name(HELPMGR_BASE + 56), "WinCreateHelpTable");
         assert_eq!(arg_names_for_ordinal(PMSPL_BASE + 441).len(), 9);

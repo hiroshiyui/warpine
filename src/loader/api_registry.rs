@@ -757,6 +757,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| l.file_dlg_message(a[0],a[1],a[2],a[3]) },
     ApiEntry { ordinal: PMCTLS_BASE + 6, module: "PMCTLS", name: "WinFreeFileDlgList", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.win_free_file_dlg_list(a[0])) },
+    // The class is always there (pm_circslider.rs); registering it succeeds.
+    ApiEntry { ordinal: PMCTLS_BASE + 24, module: "PMCTLS", name: "WinRegisterCircularSlider", argc: 0,
+               handler: |_l,_v,_i,_a| ApiResult::Normal(1) },
 
     // ── WARPINE — Warpine's own extensions (base WARPINE_BASE = 20480; warpine_api.rs)
     ApiEntry { ordinal: WARPINE_BASE + 1, module: "WARPINE", name: "WrpTime64",        argc: 1,

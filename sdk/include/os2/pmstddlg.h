@@ -57,6 +57,7 @@ typedef struct _FILEDLG {
 HWND    APIENTRY WinFileDlg(HWND hwndParent, HWND hwndOwner, PFILEDLG pfild);
 MRESULT EXPENTRY WinDefFileDlgProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2);
 BOOL    APIENTRY WinFreeFileDlgList(PAPSZ papszFQFilename);
+BOOL    APIENTRY WinRegisterCircularSlider(VOID);
 
 /* ── The font dialog ────────────────────────────────────────────────── */
 #define FNTS_CENTER            0x00000001

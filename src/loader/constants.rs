@@ -408,6 +408,29 @@ pub const SPBQ_UPDATEIFVALID: u32 = 0;
 pub const SPBQ_ALWAYSUPDATE:  u32 = 1;
 pub const SPBQ_DONOTUPDATE:   u32 = 3;
 
+// Circular sliders (WC_CIRCULARSLIDER, <pmstddlg.h> INCL_WINCIRCULARSLIDER).
+pub const CSM_QUERYRANGE:           u32 = 0x053D;
+pub const CSM_SETRANGE:             u32 = 0x053E;
+pub const CSM_QUERYVALUE:           u32 = 0x053F;
+pub const CSM_SETVALUE:             u32 = 0x0540;
+pub const CSM_QUERYRADIUS:          u32 = 0x0541;
+pub const CSM_SETINCREMENT:         u32 = 0x0542;
+pub const CSM_QUERYINCREMENT:       u32 = 0x0543;
+pub const CSM_SETBITMAPDATA:        u32 = 0x0544;
+pub const CSN_SETFOCUS:             u32 = 0x0548;
+pub const CSN_CHANGED:              u32 = 0x0549;
+pub const CSN_TRACKING:             u32 = 0x054A;
+pub const CSN_QUERYBACKGROUNDCOLOR: u32 = 0x054B;
+pub const CSS_NOBUTTON:          u32 = 0x0001;
+pub const CSS_NOTEXT:            u32 = 0x0002;
+pub const CSS_NONUMBER:          u32 = 0x0004;
+pub const CSS_POINTSELECT:       u32 = 0x0008;
+pub const CSS_360:               u32 = 0x0010;
+pub const CSS_MIDPOINT:          u32 = 0x0020;
+pub const CSS_PROPORTIONALTICKS: u32 = 0x0040;
+pub const CSS_NOTICKS:           u32 = 0x0080;
+pub const CSS_CIRCULARVALUE:     u32 = 0x0100;
+
 // Sliders (WC_SLIDER, <pmstddlg.h> INCL_WINSTDSLIDER).
 pub const SLS_HORIZONTAL:      u32 = 0x0000_0000;
 pub const SLS_VERTICAL:        u32 = 0x0000_0001;
@@ -1130,6 +1153,7 @@ pub const WC_CONTAINER_ATOM:  u32 = 0xFFFF_0025;
 pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
 pub const WC_SLIDER_ATOM:     u32 = 0xFFFF_0026;
 pub const WC_VALUESET_ATOM:   u32 = 0xFFFF_0027;
+pub const WC_CIRCULARSLIDER_ATOM: u32 = 0xFFFF_0041;
 
 /// Height of the PM menu bar in pixels (OS/2-space units).
 pub const MENU_BAR_HEIGHT: i16 = 20;
@@ -2404,7 +2428,7 @@ mod header_tests {
             ("WC_TITLEBAR", WC_TITLEBAR_ATOM), ("WC_MLE", WC_MLE_ATOM),
             ("WC_SPINBUTTON", WC_SPINBUTTON_ATOM), ("WC_CONTAINER", WC_CONTAINER_ATOM),
             ("WC_NOTEBOOK", WC_NOTEBOOK_ATOM), ("WC_SLIDER", WC_SLIDER_ATOM),
-            ("WC_VALUESET", WC_VALUESET_ATOM),
+            ("WC_VALUESET", WC_VALUESET_ATOM), ("WC_CIRCULARSLIDER", WC_CIRCULARSLIDER_ATOM),
         ] {
             let expected = defs.get(name).unwrap_or_else(|| panic!("{name} not in the headers"));
             assert!(expected.contains(&(atom as i64)), "{name}: {atom:#x}, header {expected:x?}");

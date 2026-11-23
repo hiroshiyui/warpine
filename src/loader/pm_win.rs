@@ -43,6 +43,7 @@ pub(super) fn resolve_class_atom(ptr: u32, string: String) -> String {
         WC_CONTAINER_ATOM  => "WC_CONTAINER".to_string(),
         WC_NOTEBOOK_ATOM   => "WC_NOTEBOOK".to_string(),
         WC_SLIDER_ATOM     => "WC_SLIDER".to_string(),
+        WC_CIRCULARSLIDER_ATOM => "WC_CIRCULARSLIDER".to_string(),
         WC_VALUESET_ATOM   => "WC_VALUESET".to_string(),
         n if (n & 0xFFFF_0000) == 0xFFFF_0000
                            => format!("WC_ATOM_0x{:04X}", n & 0xFFFF),

@@ -77,7 +77,7 @@ const CLASSINFO_SIZE: usize = 12;
 
 /// The preregistered classes Warpine knows: atom (`WC_*` low word) and the
 /// class name Warpine gives their windows (`resolve_class_atom`).
-const PUBLIC_CLASSES: [(u32, &str); 15] = [
+const PUBLIC_CLASSES: [(u32, &str); 16] = [
     (WC_FRAME_ATOM & 0xFFFF, "WC_FRAME"),
     (WC_COMBOBOX_ATOM & 0xFFFF, "WC_COMBOBOX"),
     (WC_BUTTON_ATOM & 0xFFFF, "WC_BUTTON"),
@@ -93,6 +93,7 @@ const PUBLIC_CLASSES: [(u32, &str); 15] = [
     (WC_NOTEBOOK_ATOM & 0xFFFF, "WC_NOTEBOOK"),
     (WC_SLIDER_ATOM & 0xFFFF, "WC_SLIDER"),
     (WC_VALUESET_ATOM & 0xFFFF, "WC_VALUESET"),
+    (WC_CIRCULARSLIDER_ATOM & 0xFFFF, "WC_CIRCULARSLIDER"),
 ];
 
 /// Whether `hwnd` stands for the desktop as a parent.
@@ -853,7 +854,8 @@ mod tests {
         assert_eq!(info(BUF), Some((0, 0x1234, 8)));
         // Errors.
         assert_eq!(info(WC_SLIDER_ATOM), Some((CS_PUBLIC, def_proc, 0)));
-        assert_eq!(info(0xFFFF_0041), None, "WC_CIRCULARSLIDER: Warpine has none");
+        assert_eq!(info(WC_CIRCULARSLIDER_ATOM), Some((CS_PUBLIC, def_proc, 0)));
+        assert_eq!(info(0xFFFF_0042), None, "no such public class");
         assert_eq!(last_error(&loader), err(PMERR_INVALID_INTEGER_ATOM));
         loader.guest_write_bytes(BUF, b"#99\0");
         assert_eq!(info(BUF), None);
