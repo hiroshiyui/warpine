@@ -105,7 +105,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 ### Frames, input and messages
 
 - [ ] **Frames and system keys**:
-  - cascading submenus in the menu bar's pull-downs;
+  - cascades deeper than one level, and opening a cascade when the pointer rests on its row;
   - `MM_SETITEM`, `MM_SETITEMHANDLE`, `MM_SELECTITEM`, `MM_QUERYITEMRECT`, `MM_QUERYSELITEMID` and the default-item messages;
   - icons for minimized frames (`FCF_ICON`, `WinSetIcon`), min/max for dialogs;
   - `WinSetActiveWindow` on minimized or disabled frames;

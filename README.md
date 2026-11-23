@@ -38,7 +38,7 @@ Warpine runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) programs na
 ### Work in progress
 
 - **Containers and drag and drop** — drags work within a program, between programs and from the host's file manager; lazy drag, drag images, container target emphasis and owner-painted container backgrounds are missing.
-- **Menus** — keyboard menus, menu notifications, item changes and owner-drawn items measured with `WM_MEASUREITEM` work; cascading submenus in pull-downs are missing.
+- **Menus** — keyboard menus, menu notifications, item changes and owner-drawn items measured with `WM_MEASUREITEM` and one level of cascading submenus work; deeper cascades are missing.
 - **Help** — F1 posts `WM_HELP`, but there is no help viewer yet (the IPF help format is unpublished).
 - **The modern theme (experimental)** — `WARPINE_THEME=modern` draws frames, controls, menus, scroll bars and sliders rounded and flat, with soft shadows; window sizes and metrics stay the same. It becomes the default once the PM widgets Warpine still lacks are implemented and drawn in it; `classic` is the default.
 
@@ -415,7 +415,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2334 unit tests (no KVM required)
+cargo test                        # 2339 unit tests (no KVM required)
 cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

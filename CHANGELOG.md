@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Cascading submenus in pull-downs**: a pull-down row with a submenu shows an arrow and opens its cascade beside the row — from the keyboard with Right, Enter or its mnemonic (Up / Down / Home / End move in it, Enter or a mnemonic chooses, Left or Esc closes it, Right moves on along the bar), or with a click on the row; a click in the cascade chooses. The client gets `WM_INITMENU` for the row's item before its cascade opens, `WM_MEASUREITEM` / `WM_DRAWITEM` for its owner-drawn items, and `WM_MENUSELECT` as in pull-downs. The cascade opens to the right (to the left without room) and stays inside the frame; one level is shown. All three compositors draw it, rounded and shadowed in the modern theme.
+
 ## [0.0.14] - 2026-11-23
 
 ### Added
