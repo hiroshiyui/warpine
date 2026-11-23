@@ -21,3 +21,6 @@ test.txt
 # The SDK runtime, one directory per compiler (sdk/Makefile)
 /sdk/build/
 /samples/build/
+
+# Third-party reference documents (copyrighted; kept local, cited only)
+doc/references/
