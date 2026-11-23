@@ -88,9 +88,19 @@ const MCI_MODE_STOP:      u32 = 4;
 // ── MMPM/2 window messages ────────────────────────────────────────────────────
 
 /// MM_MCINOTIFY — posted to hwndCallback when an MCI command with MCI_NOTIFY
-/// completes. mp1 low word = notify code, mp2 low word = device ID (the
-/// high words — user parameter, message — are not filled in yet).
+/// completes: mp1 = MPFROM2SHORT(notify code, the command's usUserParm),
+/// mp2 = MPFROM2SHORT(device ID, the MCI message that completed).
 pub const MM_MCINOTIFY: u32 = 0x0500;
+
+/// `MM_MCINOTIFY`'s mp1: the notify code and the user parameter.
+pub fn notify_mp1(code: u32, user_parm: u16) -> u32 {
+    (code & 0xFFFF) | (user_parm as u32) << 16
+}
+
+/// `MM_MCINOTIFY`'s mp2: the device and the message that completed.
+pub fn notify_mp2(device_id: u32, message: u16) -> u32 {
+    (device_id & 0xFFFF) | (message as u32) << 16
+}
 
 /// Notify codes for MM_MCINOTIFY.
 pub const MCI_NOTIFY_SUCCESSFUL: u32 = 0;
@@ -363,15 +373,18 @@ pub fn parse_wav(bytes: &[u8]) -> Result<(PcmSpec, Vec<u8>), String> {
 // ── impl Loader ───────────────────────────────────────────────────────────────
 
 impl super::Loader {
-    /// MDM ordinal 1: `mciSendCommand(usDeviceID, usMessage, ulParam1, ulParam2)`
+    /// MDM ordinal 1: `mciSendCommand(usDeviceID, usMessage, ulParam1,
+    /// pParam2, usUserParm)`
     ///
-    /// `ulParam2` is a guest pointer to the message-specific parameter block.
+    /// `pParam2` is a guest pointer to the message-specific parameter
+    /// block; `usUserParm` comes back in `MM_MCINOTIFY`.
     pub fn mci_send_command(
         &self,
         device_id: u32,
         message: u32,
         param1: u32,
         param2: u32,
+        user_parm: u32,
     ) -> u32 {
         let msg = message as u16;
         debug!(
@@ -382,7 +395,7 @@ impl super::Loader {
         match msg {
             MCI_OPEN   => self.mci_open(param1, param2),
             MCI_CLOSE  => self.mci_close(device_id),
-            MCI_PLAY   => self.mci_play(device_id, param1, param2),
+            MCI_PLAY   => self.mci_play(device_id, param1, param2, user_parm as u16),
             MCI_STOP   => self.mci_stop(device_id),
             MCI_SEEK   => self.mci_seek(device_id, param1, param2),
             MCI_RECORD => self.mci_record(device_id, param1, param2),
@@ -412,6 +425,7 @@ impl super::Loader {
         psz_ret: u32,
         cb_ret: u32,
         hwnd_callback: u32,
+        user_parm: u32,
     ) -> u32 {
         // cbReturnString is a USHORT: only the low half of its stack slot
         // is defined.
@@ -488,7 +502,7 @@ impl super::Loader {
                 if notify { flags |= MCI_NOTIFY; }
                 // Build a synthetic MCI_PLAY_PARMS on the host stack (no guest pointer needed
                 // for the string path — pass hwnd_callback as a special param via notify_hwnd).
-                self.mci_play_with_notify(dev_id as u32, flags, 0, hwnd_callback)
+                self.mci_play_with_notify(dev_id as u32, flags, user_parm as u16, hwnd_callback)
             }
 
             "stop" => {
@@ -664,7 +678,7 @@ impl super::Loader {
     ///
     /// Reads hwndCallback from MCI_PLAY_PARMS.hwndCallback at param2+0,
     /// and optional ulFrom at param2+4 when MCI_FROM flag is set.
-    fn mci_play(&self, device_id: u32, param1: u32, param2: u32) -> u32 {
+    fn mci_play(&self, device_id: u32, param1: u32, param2: u32, user_parm: u16) -> u32 {
         // MCI_PLAY_PARMS: +0 hwndCallback, +4 ulFrom, +8 ulTo
         let hwnd_callback = if param2 != 0 {
             self.guest_read::<u32>(param2).unwrap_or(0)
@@ -676,7 +690,7 @@ impl super::Loader {
             let from_ms = self.guest_read::<u32>(param2 + 4).unwrap_or(0);
             let _ = self.mci_seek_to(device_id, from_ms);
         }
-        self.mci_play_with_notify(device_id, param1, param2, hwnd_callback)
+        self.mci_play_with_notify(device_id, param1, user_parm, hwnd_callback)
     }
 
     /// Core play implementation; `hwnd_callback` is extracted by the caller.
@@ -689,7 +703,7 @@ impl super::Loader {
         &self,
         device_id: u32,
         param1: u32,
-        _param2: u32,
+        user_parm: u16,
         hwnd_callback: u32,
     ) -> u32 {
         let audio = &self.shared.audio;
@@ -740,8 +754,8 @@ impl super::Loader {
             }
             self.mci_stop(device_id);
             if param1 & MCI_NOTIFY != 0 && hwnd_callback != 0 {
-                post_pm_msg(&self.shared, hwnd_callback,
-                            MM_MCINOTIFY, MCI_NOTIFY_SUCCESSFUL, device_id);
+                post_pm_msg(&self.shared, hwnd_callback, MM_MCINOTIFY,
+                            notify_mp1(MCI_NOTIFY_SUCCESSFUL, user_parm), notify_mp2(device_id, MCI_PLAY));
             }
         } else if param1 & MCI_NOTIFY != 0 && hwnd_callback != 0 {
             let cancel = Arc::new(AtomicBool::new(false));
@@ -768,7 +782,7 @@ impl super::Loader {
                         MCI_NOTIFY_SUCCESSFUL
                     }
                 };
-                post_pm_msg(&shared, hwnd_callback, MM_MCINOTIFY, code, device_id);
+                post_pm_msg(&shared, hwnd_callback, MM_MCINOTIFY, notify_mp1(code, user_parm), notify_mp2(device_id, MCI_PLAY));
             });
         }
 
@@ -1079,6 +1093,12 @@ mod tests {
     }
 
     #[test]
+    fn mm_mcinotify_carries_the_user_parameter_and_the_message() {
+        assert_eq!(notify_mp1(MCI_NOTIFY_SUPERSEDED, 0xBEEF), 0xBEEF_0001);
+        assert_eq!(notify_mp2(7, MCI_PLAY), 0x0004_0007);
+    }
+
+    #[test]
     fn test_mm_mcinotify_value() {
         // <mcios2.h>
         assert_eq!(MM_MCINOTIFY, 0x0500);
@@ -1254,7 +1274,7 @@ mod tests {
             loader.guest_write_bytes(cmd, text.as_bytes()).unwrap();
             loader.guest_write::<u8>(cmd + text.len() as u32, 0).unwrap();
             // cbReturnString 16 with garbage in the high half of the slot.
-            loader.mci_send_string(cmd, ret, 0xABCD_0010, 0)
+            loader.mci_send_string(cmd, ret, 0xABCD_0010, 0, 0)
         };
         assert_eq!(send("open type waveaudio wait alias Chime"), MCIERR_SUCCESS);
         assert_eq!(send("status chime mode"), MCIERR_SUCCESS);
@@ -1275,7 +1295,7 @@ mod tests {
         loader.guest_write_bytes(alias, b"bell\0").unwrap();
         loader.guest_write::<u32>(open + OPEN_PARMS_TYPE, MCI_DEVTYPE_WAVEFORM_AUDIO).unwrap();
         loader.guest_write::<u32>(open + OPEN_PARMS_ALIAS, alias).unwrap();
-        assert_eq!(loader.mci_send_command(0, MCI_OPEN as u32, MCI_OPEN_TYPE_ID | MCI_OPEN_ALIAS | MCI_WAIT, open),
+        assert_eq!(loader.mci_send_command(0, MCI_OPEN as u32, MCI_OPEN_TYPE_ID | MCI_OPEN_ALIAS | MCI_WAIT, open, 0),
                    MCIERR_SUCCESS);
         let id = loader.guest_read::<u16>(open + OPEN_PARMS_DEVICE_ID).unwrap() as u32;
         assert_ne!(id, 0);
@@ -1283,14 +1303,14 @@ mod tests {
 
         loader.guest_write::<u32>(set + SET_PARMS_AUDIO, MCI_SET_AUDIO_ALL).unwrap();
         loader.guest_write::<u32>(set + SET_PARMS_LEVEL, 40).unwrap();
-        assert_eq!(loader.mci_send_command(id, MCI_SET as u32, MCI_SET_AUDIO | MCI_SET_VOLUME, set), MCIERR_SUCCESS);
+        assert_eq!(loader.mci_send_command(id, MCI_SET as u32, MCI_SET_AUDIO | MCI_SET_VOLUME, set, 0), MCIERR_SUCCESS);
         assert_eq!(loader.shared.mmpm_mgr.lock().unwrap().devices[&(id as u16)].volume, 40);
 
         loader.guest_write::<u32>(status + 8, MCI_STATUS_MODE).unwrap();
-        assert_eq!(loader.mci_send_command(id, MCI_STATUS as u32, 0, status), MCIERR_SUCCESS);
+        assert_eq!(loader.mci_send_command(id, MCI_STATUS as u32, 0, status, 0), MCIERR_SUCCESS);
         assert_eq!(loader.guest_read::<u32>(status + 4), Some(MCI_MODE_STOP));
-        assert_eq!(loader.mci_send_command(id, MCI_CLOSE as u32, 0, 0), MCIERR_SUCCESS);
-        assert_eq!(loader.mci_send_command(id, MCI_PLAY as u32, 0, 0), MCIERR_INVALID_DEVICE_ID);
+        assert_eq!(loader.mci_send_command(id, MCI_CLOSE as u32, 0, 0, 0), MCIERR_SUCCESS);
+        assert_eq!(loader.mci_send_command(id, MCI_PLAY as u32, 0, 0, 0), MCIERR_INVALID_DEVICE_ID);
     }
 
     /// `open waveaudio alias w` opens the device by name (no file); a word
@@ -1306,7 +1326,7 @@ mod tests {
         let send = |text: &str| {
             loader.guest_write_bytes(cmd, text.as_bytes()).unwrap();
             loader.guest_write::<u8>(cmd + text.len() as u32, 0).unwrap();
-            loader.mci_send_string(cmd, ret, 16, 0)
+            loader.mci_send_string(cmd, ret, 16, 0, 0)
         };
         assert_eq!(send("open waveaudio alias wtest"), MCIERR_SUCCESS);
         assert_eq!(send("close wtest"), MCIERR_SUCCESS);

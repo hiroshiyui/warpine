@@ -145,6 +145,9 @@ static BOOL write_wav( void )
     return written == sizeof( file );
 }
 
+/* Given with "play notify", returned in MM_MCINOTIFY. */
+#define USER_PARM 0x4321
+
 static ULONG mci( const char *cmd, char *ret, HWND hwnd )
 {
     static char scratch[64];
@@ -179,7 +182,8 @@ static void run_checks( HWND hwnd )
     check( "mode after play wait is stopped", strcmp( ret, "stopped" ), 0 );
     check( "set volume", mci( "set tone audio volume to 50", NULL, 0 ), MCIERR_SUCCESS );
 
-    check( "play notify returns at once", mci( "play tone notify", NULL, hwnd ), MCIERR_SUCCESS );
+    check( "play notify returns at once",
+           mciSendString( (PSZ)"play tone notify", NULL, 0, hwnd, USER_PARM ), MCIERR_SUCCESS );
     mci( "status tone mode", ret, 0 );
     check( "mode while playing", strcmp( ret, "playing" ), 0 );
     WinStartTimer( hab, hwnd, ID_TIMEOUT, TIMEOUT_MS );
@@ -234,6 +238,8 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
         return 0;
     case MM_MCINOTIFY:
         check( "MM_MCINOTIFY reports success", SHORT1FROMMP( mp1 ), MCI_NOTIFY_SUCCESSFUL );
+        check( "  with the user parameter", SHORT2FROMMP( mp1 ), USER_PARM );
+        check( "  for MCI_PLAY", SHORT2FROMMP( mp2 ), MCI_PLAY );
         finish( hwnd );
         return 0;
     case WM_TIMER:

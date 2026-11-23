@@ -535,10 +535,10 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_message_cp(a[0],a[1],a[2],a[3])) },
 
     // ── MDM — MMPM/2 Media Device Manager (base MDM_BASE = 10240) ────────
-    ApiEntry { ordinal: MDM_BASE + 1, module: "MDM", name: "mciSendCommand",   argc: 4,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_send_command(a[0],a[1],a[2],a[3])) },
-    ApiEntry { ordinal: MDM_BASE + 2, module: "MDM", name: "mciSendString",    argc: 4,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_send_string(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: MDM_BASE + 1, module: "MDM", name: "mciSendCommand",   argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_send_command(a[0],a[1],a[2],a[3],a[4])) },
+    ApiEntry { ordinal: MDM_BASE + 2, module: "MDM", name: "mciSendString",    argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_send_string(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: MDM_BASE + 3, module: "MDM", name: "mciFreeBlock",     argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.mci_free_block(a[0])) },
     ApiEntry { ordinal: MDM_BASE + 4, module: "MDM", name: "mciGetLastError",  argc: 3,
@@ -1186,7 +1186,7 @@ const VIOCALLS_ORDINALS: u32 = 22;
 /// KBDCALLS ordinals of `kbdcalls.rs`.
 const KBDCALLS_ORDINALS: u32 = 3;
 /// MOUCALLS ordinals of `moucalls.rs`.
-const MOUCALLS_ORDINALS: u32 = 20;
+const MOUCALLS_ORDINALS: u32 = 27;
 /// PMWIN ordinals dispatched by `pm_win.rs` and `pm_winutil.rs` (checked
 /// against their `N => { // WinName(` arms by a test).
 const PMWIN_ORDINALS: u32 = 218;

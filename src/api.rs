@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod doscalls {
-    /// Write `buf` to the host's standard output (`fd` 1) or error (2).
-    /// A failed write is an error: a reader that closed its pipe must
-    /// reach the program as a broken pipe, not as bytes written.
-    pub fn dos_write(fd: u32, buf: &[u8]) -> Result<u32, std::io::ErrorKind> {
+    /// Write `buf`, text in codepage `cp`, to the host's standard output
+    /// (`fd` 1) or error (2) as UTF-8. A failed write is an error: a reader
+    /// that closed its pipe must reach the program as a broken pipe, not as
+    /// bytes written. A double-byte character split across two writes is
+    /// decoded in two halves.
+    pub fn dos_write(fd: u32, buf: &[u8], cp: u32) -> Result<u32, std::io::ErrorKind> {
         if fd == 1 || fd == 2 {
             use std::io::Write;
-            // Convert CP437 bytes to UTF-8 for terminal output.
-            // ASCII bytes (0x00–0x7F) pass through unchanged.
-            // High bytes (0x80–0xFF) are CP437 glyphs (box-drawing, accented, etc.).
-            let mut out = String::with_capacity(buf.len());
-            for &b in buf {
-                out.push(crate::loader::console::cp437_to_char(b));
-            }
+            let out = utf8_of(buf, cp);
             let target: &mut dyn Write = if fd == 2 {
                 &mut std::io::stderr()
             } else {
@@ -22,6 +18,22 @@ pub mod doscalls {
             Ok(buf.len() as u32)
         } else {
             Err(std::io::ErrorKind::InvalidInput)
+        }
+    }
+
+    /// `buf`, text in codepage `cp`, as UTF-8 for the host: ASCII as it is,
+    /// the other bytes as that codepage's characters.
+    pub fn utf8_of(buf: &[u8], cp: u32) -> String {
+        crate::loader::codepage::cp_decode(buf, cp)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn host_output_follows_the_process_codepage() {
+            assert_eq!(super::utf8_of(b"a\x82", 437), "aé");
+            assert_eq!(super::utf8_of(b"\x9b", 437), "¢");
+            assert_eq!(super::utf8_of(b"\x9b", 850), "ø", "not CP437's");
         }
     }
 }

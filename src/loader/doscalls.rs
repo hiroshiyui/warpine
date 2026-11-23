@@ -401,7 +401,7 @@ impl super::Loader {
                 // The bytes go to the host pipe or file as they are; the VIO
                 // screen still follows them.
                 self.shared.console_mgr.lock_or_recover().track_tty(data, cp);
-                crate::api::doscalls::dos_write(stream, data).map_err(|kind| match kind {
+                crate::api::doscalls::dos_write(stream, data, cp).map_err(|kind| match kind {
                     std::io::ErrorKind::BrokenPipe => ERROR_BROKEN_PIPE,
                     std::io::ErrorKind::InvalidInput => ERROR_INVALID_HANDLE,
                     _ => ERROR_ACCESS_DENIED,

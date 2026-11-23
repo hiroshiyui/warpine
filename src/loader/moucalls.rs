@@ -37,7 +37,22 @@
 // - the default text pointer is AND 0xFFFF / XOR 0x7700 (attribute inverted);
 //   only the attribute byte of the masks is applied when the pointer is
 //   drawn in the full-screen text window; in a PM window the PM pointer is
-//   shown and the text pointer is never drawn.
+//   shown and the text pointer is never drawn;
+// - the hot key is a set of button bits (1, 2, 4 for buttons 1–3; none at
+//   first); other bits are `ERROR_MOUSE_INV_PARMS`;
+// - `MouGetThreshold` / `MouSetThreshold` take the device handle the
+//   reference reserves as 0, or the open handle; a `THRESHOLD` whose
+//   `usLength` is below its size is `ERROR_MOUSE_INV_PARMS`; the defaults
+//   are Warpine's (`MOU_DEFAULT_THRESHOLD`), and the levels change nothing,
+//   as the host does the pointer's acceleration;
+// - `MouRegister` checks its names' lengths (9 and 33 bytes with the NUL,
+//   `ERROR_MOUSE_INVALID_ASCIIZ`) and the mask (bits for function codes 0
+//   to 14H, `ERROR_MOUSE_INVALID_MASK`), and refuses a second registration
+//   (`ERROR_MOUSE_REGISTER`); the registration is per process, and calls
+//   are not passed to the registered entry point (not implemented);
+//   `MouDeRegister` without one is `ERROR_MOUSE_DEREGISTER`;
+// - `MouInitReal`, for the Base Video Subsystem at system initialisation,
+//   is `ERROR_MOUSE_SMG_ONLY` for programs.
 
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
@@ -58,6 +73,18 @@ pub const MOU_QUEUE_MAX: usize = 64;
 pub const MOU_NUM_BUTTONS: u16 = 3;
 /// Mickeys per centimetre reported by `MouGetNumMickeys` (≈ 200 per inch).
 pub const MOU_MICKEYS_PER_CM: u16 = 79;
+/// `THRESHOLD`: usLength, then level 1, its multiplier, level 2, its
+/// multiplier (USHORTs).
+pub const THRESHOLD_SIZE: u16 = 10;
+/// The thresholds before `MouSetThreshold` (Warpine's own).
+pub const MOU_DEFAULT_THRESHOLD: [u16; 4] = [4, 2, 12, 4];
+/// The hot key's possible button bits.
+const MOU_HOTKEY_BUTTONS: u16 = 0x0007;
+/// `MouRegister`'s longest module and entry names, NUL included.
+const MOU_MODULE_NAME_MAX: u32 = 9;
+const MOU_ENTRY_NAME_MAX: u32 = 33;
+/// `MouRegister`'s mask: one bit per function code, 00H to 14H.
+const MOU_REGISTER_MASK: u32 = (1 << 0x15) - 1;
 /// Default scale factors after `MouOpen`: row, column (mickeys per 8 pels).
 pub const MOU_DEFAULT_SCALE: (u16, u16) = (16, 8);
 /// Largest valid scale factor (32K − 1).
@@ -159,6 +186,11 @@ pub struct MouManager {
     collision: Option<CellRect>,
     /// Threads blocked in `MouReadEventQue`.
     readers: u32,
+    /// `MouSetHotKey`'s buttons; `MouSetThreshold`'s levels; whether a
+    /// subsystem is registered (`MouRegister`). They outlast `MouOpen`.
+    hot_key: u16,
+    threshold: [u16; 4],
+    registered: bool,
 }
 
 impl Default for MouManager {
@@ -180,7 +212,36 @@ impl MouManager {
             hot: (0, 0),
             collision: None,
             readers: 0,
+            hot_key: 0,
+            threshold: MOU_DEFAULT_THRESHOLD,
+            registered: false,
         }
+    }
+
+    pub fn hot_key(&self) -> u16 { self.hot_key }
+
+    /// `MouSetHotKey`: buttons 1–3 only.
+    pub fn set_hot_key(&mut self, buttons: u16) -> Result<(), u32> {
+        if buttons & !MOU_HOTKEY_BUTTONS != 0 { return Err(ERROR_MOUSE_INV_PARMS); }
+        self.hot_key = buttons;
+        Ok(())
+    }
+
+    pub fn threshold(&self) -> [u16; 4] { self.threshold }
+    pub fn set_threshold(&mut self, t: [u16; 4]) { self.threshold = t; }
+
+    /// `MouRegister` with mask `mask`: one at a time.
+    pub fn register(&mut self, mask: u32) -> Result<(), u32> {
+        if mask == 0 || mask & !MOU_REGISTER_MASK != 0 { return Err(ERROR_MOUSE_INVALID_MASK); }
+        if self.registered { return Err(ERROR_MOUSE_REGISTER); }
+        self.registered = true;
+        Ok(())
+    }
+
+    /// `MouDeRegister`.
+    pub fn deregister(&mut self) -> Result<(), u32> {
+        if !std::mem::take(&mut self.registered) { return Err(ERROR_MOUSE_DEREGISTER); }
+        Ok(())
     }
 
     /// `MouOpen` on a `cols × rows` screen: the first open sets the state
@@ -189,9 +250,9 @@ impl MouManager {
     /// clear, scale 16/8, default shape). Returns the handle.
     pub fn open(&mut self, rows: u16, cols: u16) -> u16 {
         if !self.open {
-            let buttons = self.buttons;
+            let (buttons, hot_key, threshold, registered) = (self.buttons, self.hot_key, self.threshold, self.registered);
             *self = MouManager::new();
-            self.buttons = buttons;
+            (self.buttons, self.hot_key, self.threshold, self.registered) = (buttons, hot_key, threshold, registered);
             self.open = true;
             self.row = rows / 2;
             self.col = cols / 2;
@@ -404,6 +465,18 @@ impl super::Loader {
             22 => self.mou_write_u16(arg(2), h(1), MouManager::dev_status),
             // MouSynch(fWait): nothing to synchronise with.
             23 => NO_ERROR,
+            // MouGetHotKey(pfsButtons, hmou) / MouSetHotKey(pfsButtons, hmou)
+            4  => self.mou_write_u16(arg(2), h(1), MouManager::hot_key),
+            10 => self.mou_set_u16(arg(2), h(1), MouManager::set_hot_key),
+            // MouDeRegister()
+            14 => self.shared.mou_mgr.lock_or_recover().deregister().err().unwrap_or(NO_ERROR),
+            // MouRegister(pszModName, pszEntryName, flFuncs)
+            24 => self.mou_register(arg(3), arg(2), arg(1)),
+            // MouInitReal(pszDriver): the Base Video Subsystem's alone.
+            27 => ERROR_MOUSE_SMG_ONLY,
+            // MouGetThreshold(pThreshold, hmou) / MouSetThreshold(pThreshold, hmou)
+            29 => self.mou_threshold(arg(2), h(1), false),
+            30 => self.mou_threshold(arg(2), h(1), true),
             // MouSetDevStatus(pStatus, hmou)
             25 => self.mou_set_u16(arg(2), h(1), MouManager::set_dev_status),
             // MouDrawPtr(hmou)
@@ -420,10 +493,44 @@ impl super::Loader {
     pub(crate) fn moucalls_arg_bytes(&self, ordinal: u32) -> u64 {
         match ordinal {
             1 | 2 | 20 | 24 => 12,
-            3 | 6 | 8 | 11 | 13 | 15 | 16 | 17 | 18 | 19 | 21 | 22 | 25 => 8,
+            3 | 4 | 6 | 8 | 10 | 11 | 13 | 15 | 16 | 17 | 18 | 19 | 21 | 22 | 25 | 29 | 30 => 8,
             7 | 9 | 23 | 26 | 27 => 4,
             _ => 0,
         }
+    }
+
+    /// `MouRegister`: the names must fit (NUL included), the mask name
+    /// functions that exist.
+    fn mou_register(&self, module: u32, entry: u32, mask: u32) -> u32 {
+        let fits = |p: u32, max: u32| p != 0
+            && (0..max).any(|i| self.guest_read::<u8>(p.wrapping_add(i)) == Some(0));
+        if !fits(module, MOU_MODULE_NAME_MAX) || !fits(entry, MOU_ENTRY_NAME_MAX) {
+            return ERROR_MOUSE_INVALID_ASCIIZ;
+        }
+        self.shared.mou_mgr.lock_or_recover().register(mask).err().unwrap_or(NO_ERROR)
+    }
+
+    /// `MouGetThreshold` (`set` false) / `MouSetThreshold` with the
+    /// `THRESHOLD` at `ptr`; `hmou` 0 (reserved) or the open handle.
+    fn mou_threshold(&self, ptr: u32, hmou: u16, set: bool) -> u32 {
+        let mut mou = self.shared.mou_mgr.lock_or_recover();
+        if hmou != 0 && let Err(e) = mou.check(hmou) { return e; }
+        let len = (ptr != 0).then(|| self.guest_read::<u16>(ptr)).flatten();
+        if len.is_none_or(|l| l < THRESHOLD_SIZE) { return ERROR_MOUSE_INV_PARMS; }
+        let field = |i: u32| ptr.wrapping_add(2 + 2 * i);
+        if set {
+            let mut t = [0u16; 4];
+            for (i, v) in t.iter_mut().enumerate() {
+                let Some(x) = self.guest_read::<u16>(field(i as u32)) else { return ERROR_MOUSE_INV_PARMS };
+                *v = x;
+            }
+            mou.set_threshold(t);
+        } else {
+            for (i, v) in mou.threshold().iter().enumerate() {
+                if self.guest_write::<u16>(field(i as u32), *v).is_none() { return ERROR_MOUSE_INV_PARMS; }
+            }
+        }
+        NO_ERROR
     }
 
     /// The VIO screen size: rows, columns.
@@ -967,7 +1074,59 @@ mod tests {
         assert_eq!(loader.moucalls_arg_bytes(20), 12);
         assert_eq!(loader.moucalls_arg_bytes(17), 8);
         assert_eq!(loader.moucalls_arg_bytes(9), 4);
-        assert_eq!(loader.moucalls_arg_bytes(14), 0);
-        assert_eq!(call(&loader, 14, &[]), ERROR_INVALID_FUNCTION);
+        assert_eq!(loader.moucalls_arg_bytes(14), 0, "MouDeRegister(VOID)");
+        assert_eq!(loader.moucalls_arg_bytes(29), 8);
+        assert_eq!(loader.moucalls_arg_bytes(5), 0);
+        assert_eq!(call(&loader, 5, &[]), ERROR_INVALID_FUNCTION);
+    }
+
+    #[test]
+    fn the_hot_key_takes_buttons_only() {
+        let loader = opened();
+        const P: u32 = 0x3000;
+        loader.guest_write::<u16>(P, 0x0005).unwrap();
+        assert_eq!(call(&loader, 10, &[P, MOU_HANDLE as u32]), NO_ERROR, "buttons 1 and 3");
+        loader.guest_write::<u16>(P, 0).unwrap();
+        assert_eq!(call(&loader, 4, &[P, MOU_HANDLE as u32]), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(P), Some(5));
+        loader.guest_write::<u16>(P, 0x0008).unwrap();
+        assert_eq!(call(&loader, 10, &[P, MOU_HANDLE as u32]), ERROR_MOUSE_INV_PARMS, "no fourth button");
+        assert_eq!(call(&loader, 4, &[P, 9]), ERROR_MOUSE_INV_HANDLE);
+    }
+
+    #[test]
+    fn thresholds_are_kept_and_checked_for_size() {
+        let loader = opened();
+        const T: u32 = 0x3000;
+        loader.guest_write::<u16>(T, THRESHOLD_SIZE).unwrap();
+        assert_eq!(call(&loader, 29, &[T, 0]), NO_ERROR, "handle 0, as reserved");
+        let read = |l: &Loader| (0..4).map(|i| l.guest_read::<u16>(T + 2 + 2 * i).unwrap()).collect::<Vec<_>>();
+        assert_eq!(read(&loader), MOU_DEFAULT_THRESHOLD.to_vec());
+        for (i, v) in [3u16, 2, 9, 5].iter().enumerate() {
+            loader.guest_write::<u16>(T + 2 + 2 * i as u32, *v).unwrap();
+        }
+        assert_eq!(call(&loader, 30, &[T, MOU_HANDLE as u32]), NO_ERROR, "or the open handle");
+        assert_eq!(loader.shared.mou_mgr.lock_or_recover().threshold(), [3, 2, 9, 5]);
+        loader.guest_write::<u16>(T, 4).unwrap();
+        assert_eq!(call(&loader, 29, &[T, 0]), ERROR_MOUSE_INV_PARMS, "too short");
+        assert_eq!(call(&loader, 29, &[0, 0]), ERROR_MOUSE_INV_PARMS);
+    }
+
+    #[test]
+    fn one_subsystem_registers_at_a_time() {
+        let loader = Loader::new_mock();
+        const MODULE: u32 = 0x3000;
+        const ENTRY: u32 = 0x3100;
+        loader.guest_write_bytes(MODULE, b"MOUSUB\0");
+        loader.guest_write_bytes(ENTRY, b"MouRouter\0");
+        assert_eq!(call(&loader, 14, &[]), ERROR_MOUSE_DEREGISTER, "nothing registered");
+        assert_eq!(call(&loader, 24, &[MODULE, ENTRY, 0x0000_0003]), NO_ERROR);
+        assert_eq!(call(&loader, 24, &[MODULE, ENTRY, 0x0000_0003]), ERROR_MOUSE_REGISTER, "one at a time");
+        assert_eq!(call(&loader, 14, &[]), NO_ERROR);
+        assert_eq!(call(&loader, 24, &[MODULE, ENTRY, 1 << 0x15]), ERROR_MOUSE_INVALID_MASK, "no function 15H");
+        assert_eq!(call(&loader, 24, &[MODULE, ENTRY, 0]), ERROR_MOUSE_INVALID_MASK);
+        loader.guest_write_bytes(MODULE, b"TOOLONGNAME\0");
+        assert_eq!(call(&loader, 24, &[MODULE, ENTRY, 1]), ERROR_MOUSE_INVALID_ASCIIZ, "9 bytes at most");
+        assert_eq!(call(&loader, 27, &[MODULE]), ERROR_MOUSE_SMG_ONLY, "MouInitReal");
     }
 }

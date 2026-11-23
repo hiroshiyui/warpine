@@ -7,7 +7,8 @@
  * sample writes sequences through both calls and reads the screen back with
  * VioReadCellStr / VioGetCurPos: cursor movement (CUP/HVP, CUU/CUD/CUF/CUB,
  * clamped at the edges), save / restore, ED (ESC[2J), EL (ESC[K), SGR
- * colours, wrap off (ESC[=7l), a sequence split across two writes, and
+ * colours, wrap off (ESC[=7l), the text display modes (ESC[=1h, ESC[=3h),
+ * a sequence split across two writes, and
  * VioSetAnsi(ANSI_OFF) showing the sequence as characters.
  *
  * The results are collected while the screen is in use and written at the
@@ -176,6 +177,15 @@ int main(void) {
     tty(ESC "[=7h" ESC "[9;1H" ESC "[999C" "PQ");
     check("ESC[=7h: wrap again", cursor_at(9, 1) && cell_is(9, 0, 'Q', 0x07));
 
+    /* Display modes: 1 = 40 x 25 text, 3 = 80 x 25 text, both cleared. */
+    tty(ESC "[=1h");
+    mode.cb = sizeof(mode);
+    VioGetMode(&mode, 0);
+    check("ESC[=1h: 40 x 25", mode.col == 40 && mode.row == 25 && cursor_at(0, 0));
+    tty(ESC "[=3h");
+    VioGetMode(&mode, 0);
+    check("ESC[=3h: 80 x 25 again", mode.col == 80 && mode.row == 25);
+
     /* TAB: to the next multiple of 8. */
     tty(ESC "[11;3H\tT");
     check("TAB to column 8", cell_is(10, 8, 'T', 0x07));
@@ -198,6 +208,9 @@ int main(void) {
 
     /* Leave a clean screen for the result lines. */
     tty(ESC "[2J");
+    /* A byte above 0x7F: a host pipe gets it in the process codepage
+       (CP437 0x9B is a cent sign, CP850 0x9B an o with a stroke). */
+    dos_write("high byte: \x9b\r\n");
 
     add("done: ");
     add_num((ULONG)failed);

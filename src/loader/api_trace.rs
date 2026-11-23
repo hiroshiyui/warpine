@@ -342,12 +342,15 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             1  => "MouGetPtrShape",
             2  => "MouSetPtrShape",
             3  => "MouGetNumMickeys",
+            4  => "MouGetHotKey",
             6  => "MouGetScaleFact",
             7  => "MouFlushQue",
             8  => "MouGetNumButtons",
             9  => "MouClose",
+            10 => "MouSetHotKey",
             11 => "MouSetScaleFact",
             13 => "MouGetNumQueEl",
+            14 => "MouDeRegister",
             15 => "MouGetEventMask",
             16 => "MouSetEventMask",
             17 => "MouOpen",
@@ -357,8 +360,12 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             21 => "MouSetPtrPos",
             22 => "MouGetDevStatus",
             23 => "MouSynch",
+            24 => "MouRegister",
             25 => "MouSetDevStatus",
             26 => "MouDrawPtr",
+            27 => "MouInitReal",
+            29 => "MouGetThreshold",
+            30 => "MouSetThreshold",
             _  => "?",
         },
 
@@ -934,6 +941,29 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             _ => &[],
         },
 
+        // ── MOUCALLS (declaration order; the call is Pascal, see
+        //    `pascal_order`) ─────────────────────────────────────────────
+        o if (MOUCALLS_BASE..PMSHAPI_BASE).contains(&o) => match o - MOUCALLS_BASE {
+            1 | 2 => &["pBuf", "pShape", "hmou"],
+            3  => &["pcMickeys", "hmou"],
+            4 | 10 => &["pfsButtons", "hmou"],
+            6 | 11 => &["pScale", "hmou"],
+            7 | 9 | 26 => &["hmou"],
+            8  => &["pcButtons", "hmou"],
+            13 => &["pQueInfo", "hmou"],
+            15 | 16 => &["pfsMask", "hmou"],
+            17 => &["pszDriver", "phmou"],
+            18 => &["pRect", "hmou"],
+            19 | 21 => &["pPos", "hmou"],
+            20 => &["pEvent", "pfWait", "hmou"],
+            22 | 25 => &["pfsStatus", "hmou"],
+            23 => &["fWait"],
+            24 => &["pszModName", "pszEntryName", "flFuncs"],
+            27 => &["pszDriver"],
+            29 | 30 => &["pThreshold", "hmou"],
+            _ => &[],
+        },
+
         // ── PMSHAPI ───────────────────────────────────────────────────────
         o if (PMSHAPI_BASE..HELPMGR_BASE).contains(&o) => match o - PMSHAPI_BASE {
             101 => &["hini", "pszApp", "pszKey", "pulSize"],
@@ -1044,6 +1074,12 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
     }
 }
 
+/// Whether `ordinal`'s module passes its arguments in Pascal order (VIO,
+/// KBD and MOU calls, `OS2_PASCAL_API`): the last argument at ESP+4.
+pub fn pascal_order(ordinal: u32) -> bool {
+    matches!(module_for_ordinal(ordinal), "VIOCALLS" | "KBDCALLS" | "MOUCALLS")
+}
+
 // ── Call formatter ────────────────────────────────────────────────────────────
 
 /// Format an API call as a strace-style string, e.g.:
@@ -1067,8 +1103,12 @@ pub fn format_call(
     if arg_names.is_empty() {
         return format!("{}(…)", name);
     }
+    // `args` are the stack words from ESP+4 up; a Pascal call pushed its
+    // first argument first, so it lies highest.
+    let n = arg_names.len();
+    let pascal = pascal_order(ordinal);
     let parts: Vec<String> = arg_names.iter().enumerate().map(|(i, &aname)| {
-        let val = args[i];
+        let val = args[if pascal { n - 1 - i } else { i }];
         if aname.starts_with("psz") && val != 0 {
             format!("{}={:?}", aname, read_guest_str(val))
         } else if aname.starts_with('h') && !aname.starts_with("hw") {
@@ -1088,6 +1128,21 @@ mod tests {
     use super::*;
 
     // ── arg_names_for_ordinal ─────────────────────────────────────────────
+
+    #[test]
+    fn pascal_calls_name_their_arguments_in_declaration_order() {
+        // MouGetPtrPos(pPos, hmou): hmou at ESP+4, pPos above it.
+        let mut args = [0u32; 10];
+        args[0] = 1;
+        args[1] = 0x2000;
+        assert!(pascal_order(MOUCALLS_BASE + 19));
+        assert!(!pascal_order(8));
+        assert_eq!(format_call("MouGetPtrPos", MOUCALLS_BASE + 19, &args, &|_| String::new()),
+                   "MouGetPtrPos(pPos=0x2000, hmou=1)");
+        assert_eq!(arg_names_for_ordinal(MOUCALLS_BASE + 24), &["pszModName", "pszEntryName", "flFuncs"]);
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 30), "MouSetThreshold");
+    }
+
 
     #[test]
     fn test_arg_names_dos_write() {
@@ -1344,7 +1399,8 @@ mod tests {
         assert_eq!(ordinal_to_name(MOUCALLS_BASE + 17), "MouOpen");
         assert_eq!(ordinal_to_name(MOUCALLS_BASE + 20), "MouReadEventQue");
         assert_eq!(ordinal_to_name(MOUCALLS_BASE + 26), "MouDrawPtr");
-        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 14), "?");
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 14), "MouDeRegister");
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 5), "?");
         // TCP32DLL ends where MOUCALLS begins.
         assert_eq!(ordinal_to_name(TCP32DLL_BASE + 19), "socket");
     }

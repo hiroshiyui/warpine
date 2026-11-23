@@ -11,6 +11,10 @@ use super::ansi::{AnsiParser, Csi, Feed, Rendition, DEFAULT_ATTR, ESC};
 const TAB_WIDTH: u16 = 8;
 /// ANSI `ESC[=7h` / `ESC[=7l`: wrap at the end of a line on / off.
 const ANSI_MODE_WRAP: u16 = 7;
+/// ANSI `ESC[=nh` display modes 0–3: 40 × 25 (0, 1) and 80 × 25 (2, 3) text.
+const ANSI_MODE_LAST_TEXT: u16 = 3;
+const ANSI_MODE_FIRST_80_COLS: u16 = 2;
+const ANSI_MODE_ROWS: u16 = 25;
 /// ANSI `ESC[2J`: clear the screen.
 const ANSI_ED_SCREEN: u16 = 2;
 /// Glyph shown on a terminal for an ESC written as a character (CP437 0x1B).
@@ -410,9 +414,23 @@ impl VioManager {
                 self.rendition.apply_sgr(&csi.params);
                 return;
             }
+            // Display modes: 0–3 are the 40 / 80 × 25 text modes (mono or
+            // colour: the same here), set like VioSetMode and cleared; the
+            // graphics modes 4–6 are not supported (a text-only console).
+            (Some(_), b'h') if csi.param(0, 0) <= ANSI_MODE_LAST_TEXT => {
+                let cols = if csi.param(0, 0) < ANSI_MODE_FIRST_80_COLS { 40 } else { 80 };
+                self.resize(ANSI_MODE_ROWS, cols);
+                let attr = self.tty_attr();
+                self.buffer.fill((' ', attr));
+                self.raw_bytes.fill(b' ');
+                self.cursor_row = 0;
+                self.cursor_col = 0;
+                out.clear_screen(attr);
+                return;
+            }
             (Some(_), b'h') if csi.param(0, 0) == ANSI_MODE_WRAP => { self.wrap = true; return; }
             (Some(_), b'l') if csi.param(0, 0) == ANSI_MODE_WRAP => { self.wrap = false; return; }
-            // Display modes 0–6, the cursor position report (ESC[6n) and
+            // Graphics display modes 4–6, the cursor position report (ESC[6n) and
             // keyboard reassignment (ESC[...p) are not supported; other
             // sequences are dropped.
             _ => {
@@ -1202,6 +1220,20 @@ mod tests {
         assert_eq!(m.buffer[23 * 80 + 79].0, 'X');
         assert_eq!(m.buffer[24 * 80].0, 'Y');
         assert_eq!((m.cursor_row, m.cursor_col), (24, 1));
+    }
+
+    #[test]
+    fn test_tty_display_modes_set_the_text_size() {
+        let mut m = screen();
+        m.write_tty(b"\x1b[5;5Hold\x1b[=1h", 437);
+        assert_eq!((m.rows, m.cols), (25, 40), "mode 1: 40 x 25");
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 0), "cleared, home");
+        assert!(m.buffer.iter().all(|c| c.0 == ' '));
+        m.write_tty(b"\x1b[=3hX", 437);
+        assert_eq!((m.rows, m.cols), (25, 80), "mode 3: 80 x 25");
+        assert_eq!(m.buffer[0].0, 'X');
+        m.write_tty(b"\x1b[=6h", 437);
+        assert_eq!((m.rows, m.cols, m.buffer[0].0), (25, 80, 'X'), "a graphics mode changes nothing");
     }
 
     #[test]

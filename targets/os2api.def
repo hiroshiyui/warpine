@@ -686,12 +686,15 @@ TCP32DLL.45   getprotobynumber
 MOUCALLS.1    MouGetPtrShape
 MOUCALLS.2    MouSetPtrShape
 MOUCALLS.3    MouGetNumMickeys
+MOUCALLS.4    MouGetHotKey
 MOUCALLS.6    MouGetScaleFact
 MOUCALLS.7    MouFlushQue
 MOUCALLS.8    MouGetNumButtons
 MOUCALLS.9    MouClose
+MOUCALLS.10   MouSetHotKey
 MOUCALLS.11   MouSetScaleFact
 MOUCALLS.13   MouGetNumQueEl
+MOUCALLS.14   MouDeRegister
 MOUCALLS.15   MouGetEventMask
 MOUCALLS.16   MouSetEventMask
 MOUCALLS.17   MouOpen
@@ -701,8 +704,12 @@ MOUCALLS.20   MouReadEventQue
 MOUCALLS.21   MouSetPtrPos
 MOUCALLS.22   MouGetDevStatus
 MOUCALLS.23   MouSynch
+MOUCALLS.24   MouRegister
 MOUCALLS.25   MouSetDevStatus
 MOUCALLS.26   MouDrawPtr
+MOUCALLS.27   MouInitReal
+MOUCALLS.29   MouGetThreshold
+MOUCALLS.30   MouSetThreshold
 
 # ── PMSHAPI (profiles, applications, switch list; ordinals from Open Watcom os2386.lib) ──
 PMSHAPI.101   PrfQueryProfileSize

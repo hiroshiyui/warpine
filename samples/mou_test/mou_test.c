@@ -28,6 +28,30 @@
 #define ERROR_MOUSE_INV_HANDLE 386
 #define ERROR_MOUSE_INV_PARMS  387
 #define ERROR_MOUSE_INV_MASK   392
+#define ERROR_MOUSE_SMG_ONLY       412
+#define ERROR_MOUSE_INVALID_ASCIIZ 413
+#define ERROR_MOUSE_INVALID_MASK   414
+#define ERROR_MOUSE_REGISTER       415
+#define ERROR_MOUSE_DEREGISTER     416
+
+#ifdef __WATCOMC__
+/* In os2386.lib (MOUCALLS.4, 10, 29, 30) but not in Open Watcom's bsesub.h. */
+typedef struct _THRESHOLD {
+    USHORT usLength;
+    USHORT usLevel1;
+    USHORT usLev1Mult;
+    USHORT usLevel2;
+    USHORT usLev2Mult;
+} THRESHOLD, *PTHRESHOLD;
+USHORT _Pascal MOU16GETHOTKEY(PUSHORT, HMOU);
+USHORT _Pascal MOU16SETHOTKEY(PUSHORT, HMOU);
+USHORT _Pascal MOU16GETTHRESHOLD(PTHRESHOLD, HMOU);
+USHORT _Pascal MOU16SETTHRESHOLD(PTHRESHOLD, HMOU);
+#define MouGetHotKey    MOU16GETHOTKEY
+#define MouSetHotKey    MOU16SETHOTKEY
+#define MouGetThreshold MOU16GETTHRESHOLD
+#define MouSetThreshold MOU16SETTHRESHOLD
+#endif
 
 static HFILE out_file = 0;
 static int failed = 0;
@@ -93,6 +117,7 @@ int main(void)
     USHORT rc, v, wait;
     PTRLOC pos;
     SCALEFACT scale;
+    THRESHOLD th;
     MOUQUEINFO qi;
     PTRSHAPE shape;
     BYTE image[16];
@@ -174,6 +199,43 @@ int main(void)
     check("MouReadEventQue no wait: null record", rc == 0 && ev.time == 0 && ev.fs == 0, rc);
     rc = MouGetNumButtons(&v, (HMOU)(hmou + 1));
     check("bad handle", rc == ERROR_MOUSE_INV_HANDLE, rc);
+
+    /* The hot key, thresholds and subsystem registration. */
+    v = 0x0003;
+    rc = MouSetHotKey(&v, hmou);
+    check("MouSetHotKey buttons 1 and 2", rc == 0, rc);
+    v = 0;
+    rc = MouGetHotKey(&v, hmou);
+    check("MouGetHotKey", rc == 0 && v == 3, rc ? rc : v);
+    v = 0x0010;
+    rc = MouSetHotKey(&v, hmou);
+    check("MouSetHotKey with no such button", rc == ERROR_MOUSE_INV_PARMS, rc);
+    th.usLength = sizeof(THRESHOLD);
+    rc = MouGetThreshold(&th, 0);
+    check("MouGetThreshold", rc == 0 && th.usLev1Mult > 0, rc);
+    th.usLevel1 = 3; th.usLev1Mult = 2; th.usLevel2 = 9; th.usLev2Mult = 5;
+    rc = MouSetThreshold(&th, 0);
+    check("MouSetThreshold", rc == 0, rc);
+    th.usLevel2 = 0;
+    rc = MouGetThreshold(&th, 0);
+    check("  read back", rc == 0 && th.usLevel2 == 9 && th.usLev2Mult == 5, rc ? rc : th.usLevel2);
+    th.usLength = 4;
+    rc = MouGetThreshold(&th, 0);
+    check("MouGetThreshold short structure", rc == ERROR_MOUSE_INV_PARMS, rc);
+    rc = MouDeRegister();
+    check("MouDeRegister with none", rc == ERROR_MOUSE_DEREGISTER, rc);
+    rc = MouRegister("MOUSUB", "MouRouter", 0x00000003UL);
+    check("MouRegister", rc == 0, rc);
+    rc = MouRegister("MOUSUB", "MouRouter", 0x00000003UL);
+    check("MouRegister twice", rc == ERROR_MOUSE_REGISTER, rc);
+    rc = MouDeRegister();
+    check("MouDeRegister", rc == 0, rc);
+    rc = MouRegister("A_LONG_MODULE", "MouRouter", 1UL);
+    check("MouRegister long module name", rc == ERROR_MOUSE_INVALID_ASCIIZ, rc);
+    rc = MouRegister("MOUSUB", "MouRouter", 0x00400000UL);
+    check("MouRegister unknown function", rc == ERROR_MOUSE_INVALID_MASK, rc);
+    rc = MouInitReal("POINTDD");
+    check("MouInitReal (the Base Video Subsystem's)", rc == ERROR_MOUSE_SMG_ONLY, rc);
 
     put("ready: waiting for mouse events\r\n");
 

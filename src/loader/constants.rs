@@ -1112,6 +1112,11 @@ pub const ERROR_MOUSE_NO_DEVICE: u32 = 385;
 pub const ERROR_MOUSE_INV_HANDLE: u32 = 386;
 pub const ERROR_MOUSE_INV_PARMS: u32 = 387;
 pub const ERROR_MOUSE_INV_MASK: u32 = 392;
+pub const ERROR_MOUSE_SMG_ONLY: u32 = 412;
+pub const ERROR_MOUSE_INVALID_ASCIIZ: u32 = 413;
+pub const ERROR_MOUSE_INVALID_MASK: u32 = 414;
+pub const ERROR_MOUSE_REGISTER: u32 = 415;
+pub const ERROR_MOUSE_DEREGISTER: u32 = 416;
 
 // ── MOUCALLS flags (<bsesub.h>, INCL_MOU) ────────────────────────────────────
 /// `MouReadEventQue` read types.

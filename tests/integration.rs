@@ -437,6 +437,18 @@ fn test_ansi_escape_sequences_headless() {
     assert_eq!(code, 0);
 }
 
+/// Console output to a host pipe is text in the process codepage: CP850's
+/// 0x9B reaches the pipe as "ø", CP437's as "¢".
+#[test]
+fn console_output_to_a_pipe_follows_the_codepage() {
+    let sample = "samples/ansi_test/ansi_test.exe";
+    if !kvm_available() || !sample_exists(sample) { return; }
+    let (out, _) = run_sample_env(sample, 15, &[("WARPINE_CODEPAGE", "850")]);
+    assert!(out.contains("high byte: ø"), "CP850:\n{out}");
+    let (out, _) = run_sample(sample, 15);
+    assert!(out.contains("high byte: ¢"), "CP437:\n{out}");
+}
+
 /// ansi_test in a VIO window (a pseudo-terminal; WARPINE_GUI_SCRIPT only
 /// ends the session): the same checks on the screen the window shows. The
 /// results are read from C:\ANSI_TEST.OUT.
@@ -4758,7 +4770,7 @@ fn gui_pm_codepage_test_follows_the_queue_codepage() {
 /// mciSendCommand parameter blocks follow the toolkit headers.
 #[test]
 fn gui_pm_audio_test_plays_through_the_audio_service() {
-    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 17);
+    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 19);
 }
 
 // Colours the compositor draws with (`src/gui/sdl_renderer.rs`).

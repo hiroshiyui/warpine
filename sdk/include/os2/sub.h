@@ -242,6 +242,15 @@ typedef struct _NOPTRRECT {
     USHORT cCol;
 } NOPTRRECT, *PNOPTRRECT;
 
+/* MouGetThreshold / MouSetThreshold: usLength = sizeof(THRESHOLD). */
+typedef struct _THRESHOLD {
+    USHORT usLength;
+    USHORT usLevel1;
+    USHORT usLev1Mult;
+    USHORT usLevel2;
+    USHORT usLev2Mult;
+} THRESHOLD, *PTHRESHOLD;
+
 typedef struct _PTRSHAPE {
     USHORT cb;
     USHORT col;
@@ -267,6 +276,26 @@ OS2_PASCAL_API(APIRET16, MouDrawPtr, (HMOU hmou),
 
 OS2_PASCAL_API(APIRET16, MouSynch, (USHORT fWait),
                (ULONG fWait), (fWait))
+
+OS2_PASCAL_API(APIRET16, MouGetHotKey, (PUSHORT pfsButtons, HMOU hmou),
+               (ULONG hmou, PUSHORT pfsButtons), (hmou, pfsButtons))
+
+OS2_PASCAL_API(APIRET16, MouSetHotKey, (PUSHORT pfsButtons, HMOU hmou),
+               (ULONG hmou, PUSHORT pfsButtons), (hmou, pfsButtons))
+
+OS2_PASCAL_API(APIRET16, MouGetThreshold, (PTHRESHOLD pthreshold, HMOU hmou),
+               (ULONG hmou, PTHRESHOLD pthreshold), (hmou, pthreshold))
+
+OS2_PASCAL_API(APIRET16, MouSetThreshold, (PTHRESHOLD pthreshold, HMOU hmou),
+               (ULONG hmou, PTHRESHOLD pthreshold), (hmou, pthreshold))
+
+OS2_PASCAL_API(APIRET16, MouRegister, (PCSZ pszModName, PCSZ pszEntryName, ULONG flFuncs),
+               (ULONG flFuncs, PCSZ pszEntryName, PCSZ pszModName), (flFuncs, pszEntryName, pszModName))
+
+OS2_PASCAL_API(APIRET16, MouDeRegister, (VOID), (VOID), ())
+
+OS2_PASCAL_API(APIRET16, MouInitReal, (PCSZ pszDvrName),
+               (PCSZ pszDvrName), (pszDvrName))
 
 OS2_PASCAL_API(APIRET16, MouRemovePtr, (PNOPTRRECT pmourtRect, HMOU hmou),
                (ULONG hmou, PNOPTRRECT pmourtRect), (hmou, pmourtRect))

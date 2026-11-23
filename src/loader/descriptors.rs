@@ -105,12 +105,15 @@ impl super::Loader {
             ("MouGetPtrShape",    1),
             ("MouSetPtrShape",    2),
             ("MouGetNumMickeys",  3),
+            ("MouGetHotKey",      4),
             ("MouGetScaleFact",   6),
             ("MouFlushQue",       7),
             ("MouGetNumButtons",  8),
             ("MouClose",          9),
+            ("MouSetHotKey",     10),
             ("MouSetScaleFact",  11),
             ("MouGetNumQueEl",   13),
+            ("MouDeRegister",    14),
             ("MouGetEventMask",  15),
             ("MouSetEventMask",  16),
             ("MouOpen",          17),
@@ -120,8 +123,12 @@ impl super::Loader {
             ("MouSetPtrPos",     21),
             ("MouGetDevStatus",  22),
             ("MouSynch",         23),
+            ("MouRegister",      24),
             ("MouSetDevStatus",  25),
             ("MouDrawPtr",       26),
+            ("MouInitReal",      27),
+            ("MouGetThreshold",  29),
+            ("MouSetThreshold",  30),
         ];
 
         let ordinal = match module {
