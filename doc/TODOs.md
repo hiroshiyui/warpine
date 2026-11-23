@@ -53,7 +53,6 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 
 ## Presentation Manager
 
-- [ ] **The modern theme** (ADR-0118; experimental, opt-in with `WARPINE_THEME=modern`; frames, controls, menus, pop-ups, scroll bars and sliders are done): the missing PM widgets first, then drawn in it; focus rings on list boxes, check boxes and radio buttons; then `modern` as the default.
 
 ### Controls
 

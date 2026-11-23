@@ -1,6 +1,6 @@
 # ADR-0118: Themes, and rounded frames shaped where frames are composited
 
-- **Status:** Accepted
+- **Status:** Withdrawn (2026-11-23, ADR-0121): removed from `main`; the code and its golden pictures live on the branch `feature/modern-theme`
 - **Date:** 2026-11-23
 
 ## Context

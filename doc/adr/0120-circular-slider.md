@@ -22,5 +22,4 @@
 ## Consequences
 
 - Programs using a circular slider run, and their dials can be turned; a program that relies on PM's exact layout or on undocumented notification details may differ.
-- The modern theme draws it too (a light dial, the accent edge when focused and the accent knob, flat buttons).
 - Tested by unit tests (geometry, steps, angles), `pm_circslider_test` (30 checks, scripted keys, clicks and a drag) and golden pictures in both themes.
