@@ -52,14 +52,11 @@ The WPS is a PM application on the session desktop, built on SOM. The SOM kernel
 IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30`) is gone and was never archived; the 3.0 books above are a separate copy.
 
 - [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
-- [ ] **Missing, documented by the Reference**:
-  - environments: `somEnvironmentEnd`, `somMainProgram` (the exception calls came with ADR-0122's stage S4); TypeCodes (`any` carries an opaque one);
-  - the `somRenew` family (`somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero`): objects in the caller's memory;
-  - introspection: `somGetParents`, `_get_somInstanceDataOffsets`, `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetNthMethodData`, `somGetMethodData`, `somGetMethodDescriptor`;
-  - the class manager: `somGetInitFunction`, `somGetRelatedClasses`, `somSubstituteClass`, `somMergeInto`;
-  - `somCastObj` / `somResetObj` (a derived "Class->Ancestor" class; `somResetObj` always returns TRUE);
-  - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods;
-  - the SDK's SOM headers (ADR-0122) lack the `SOM_*` macros `SOM_MainProgram`, `SOM_Expect`, `SOM_WarnMsg`, ….
+- [ ] **Missing, documented by the Reference** (the rest came 2026-11-24):
+  - methods returning a sequence by value (`somGetParents`, `_get_somInstanceDataOffsets`, `somGetRelatedClasses`): the i386 convention for a returned struct (a hidden pointer the callee pops) needs the thunks to return differently;
+  - the class manager's `somSubstituteClass` and `somMergeInto`;
+  - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods: they need method descriptors (argument types), which the kernel does not keep;
+  - TypeCodes (`any` carries an opaque one).
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
   - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; asking the rights holders is the route left;
   - IBM-built class libraries also need IBM's initializer / destructor / assignment control blocks, whose layout no public source gives; code rebuilt with `somidl` uses Warpine's own protocol instead (ADR-0122). Still unused by `somBuildClass` (ADR-0073): DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`;

@@ -896,6 +896,8 @@ SOM.3096   somSetException
 SOM.3097   somExceptionId
 SOM.3098   somExceptionValue
 SOM.3099   somExceptionFree
+SOM.3100   somMainProgram
+SOM.3101   somEnvironmentEnd
 SOM.3198   WrpSomMethodNotImplemented
 SOM.3199   WrpSomMethodError
 SOM.3200   WrpSOMObject_somInit
@@ -920,6 +922,8 @@ SOM.3218   WrpSOMObject_somDefaultAssign
 SOM.3219   WrpSOMObject_somDefaultConstAssign
 SOM.3220   WrpSOMObject_somDefaultVAssign
 SOM.3221   WrpSOMObject_somDefaultConstVAssign
+SOM.3222   WrpSOMObject_somCastObj
+SOM.3223   WrpSOMObject_somResetObj
 SOM.3300   WrpSOMClass_somNew
 SOM.3301   WrpSOMClass_somNewNoInit
 SOM.3302   WrpSOMClass_somGetName
@@ -948,6 +952,16 @@ SOM.3324   WrpSOMClass_somFindSMethodOk
 SOM.3325   WrpSOMClass_somLookupMethod
 SOM.3326   WrpSOMClass_somAllocate
 SOM.3327   WrpSOMClass_somDeallocate
+SOM.3328   WrpSOMClass_somRenew
+SOM.3329   WrpSOMClass_somRenewNoInit
+SOM.3330   WrpSOMClass_somRenewNoZero
+SOM.3331   WrpSOMClass_somRenewNoInitNoZero
+SOM.3332   WrpSOMClass_somGetMemberToken
+SOM.3333   WrpSOMClass_somGetMethodIndex
+SOM.3334   WrpSOMClass_somGetNthMethodInfo
+SOM.3335   WrpSOMClass_somGetMethodData
+SOM.3336   WrpSOMClass_somGetNthMethodData
+SOM.3337   WrpSOMClass_somGetMethodDescriptor
 SOM.3400   WrpSOMClassMgr_somFindClass
 SOM.3401   WrpSOMClassMgr_somClassFromId
 SOM.3402   WrpSOMClassMgr_somRegisterClass
@@ -956,6 +970,7 @@ SOM.3404   WrpSOMClassMgr_somLocateClassFile
 SOM.3405   WrpSOMClassMgr_somLoadClassFile
 SOM.3406   WrpSOMClassMgr_somUnregisterClass
 SOM.3407   WrpSOMClassMgr_somUnloadClassFile
+SOM.3408   WrpSOMClassMgr_somGetInitFunction
 
 # ── REXX ─────────────────────────────────────────────────────────────────────
 REXX.1      RexxStart

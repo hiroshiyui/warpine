@@ -166,7 +166,7 @@ int main( void )
 
     /* A method Warpine lacks: SOMERROR_NotImplementedYet with the Ignore severity. */
     SOMError = catch_error;
-    lacking = (lacking_proc *)somResolve( mgr, SOMObjectClassData.somResetObj );
+    lacking = (lacking_proc *)somResolve( mgr, SOMObjectClassData.somDispatch );
     check( "a lacking method returns 0", lacking( mgr, 0, mgr ), 0 );
     check( "... after SOMError 20171", last_error, 20171 );
 

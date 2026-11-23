@@ -2366,7 +2366,7 @@ fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
             .output().expect("run warpine");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
-        assert!(text.contains("c_som_test: done 10/10"), "{compiler}:\n{text}");
+        assert!(text.contains("c_som_test: done 20/20"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
     }
 }

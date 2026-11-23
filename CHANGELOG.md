@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **The SOM entries IBM's Reference documents that the kernel lacked**: `SOMClass`'s `somRenew`, `somRenewNoInit`, `somRenewNoZero` and `somRenewNoInitNoZero` (objects in the caller's memory), `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetMethodData`, `somGetNthMethodData` and `somGetMethodDescriptor`; `SOMObject`'s `somCastObj` / `somResetObj`; `SOMClassMgr`'s `somGetInitFunction`; `somMainProgram` and `somEnvironmentEnd`. The SDK declares them, with the `SOM_MainProgram`, `SOM_Test`, `SOM_TestC`, `SOM_Expect`, `SOM_Assert` and `SOM_WarnMsg` macros; `c_som_test` grows to 20 checks.
+
 ### Fixed
 - **The rest of the SOM kernel follows IBM's SOM Programming Reference** (ADR-0062 addendum):
   - `somFindClass` goes through a program's class manager's own `somLocateClassFile`, `somFindClsInFile` and `somLoadClassFile` when it overrides them;

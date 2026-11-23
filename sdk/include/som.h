@@ -123,6 +123,11 @@ typedef void       SOMLINK somTP_SOMObject_somDefaultCopyInit( SOMObject *, somI
 typedef SOMObject *SOMLINK somTP_SOMObject_somDefaultAssign( SOMObject *, somAssignCtrl *, SOMObject * );
 typedef somTP_SOMObject_somDefaultCopyInit *somTD_SOMObject_somDefaultCopyInit;
 typedef somTP_SOMObject_somDefaultAssign   *somTD_SOMObject_somDefaultAssign;
+/* somCastObj: the object answers as an ancestor until somResetObj. */
+typedef boolean    SOMLINK somTP_SOMObject_somCastObj( SOMObject *, SOMClass * );
+typedef boolean    SOMLINK somTP_SOMObject_somResetObj( SOMObject * );
+typedef somTP_SOMObject_somCastObj  *somTD_SOMObject_somCastObj;
+typedef somTP_SOMObject_somResetObj *somTD_SOMObject_somResetObj;
 
 #define _somInit( o )           SOM_Resolve( o, SOMObject, somInit )( (SOMObject *)(o) )
 #define _somUninit( o )         SOM_Resolve( o, SOMObject, somUninit )( (SOMObject *)(o) )
@@ -138,6 +143,8 @@ typedef somTP_SOMObject_somDefaultAssign   *somTD_SOMObject_somDefaultAssign;
 #define _somDumpSelfInt( o, l ) SOM_Resolve( o, SOMObject, somDumpSelfInt )( (SOMObject *)(o), (l) )
 #define _somDefaultInit( o, c ) SOM_Resolve( o, SOMObject, somDefaultInit )( (SOMObject *)(o), (c) )
 #define _somDestruct( o, f, c ) SOM_Resolve( o, SOMObject, somDestruct )( (SOMObject *)(o), (f), (c) )
+#define _somCastObj( o, c )     SOM_Resolve( o, SOMObject, somCastObj )( (SOMObject *)(o), (SOMClass *)(c) )
+#define _somResetObj( o )       SOM_Resolve( o, SOMObject, somResetObj )( (SOMObject *)(o) )
 #define _somDefaultCopyInit( o, c, from ) \
     SOM_Resolve( o, SOMObject, somDefaultCopyInit )( (SOMObject *)(o), (c), (SOMObject *)(from) )
 #define _somDefaultAssign( o, c, from ) \
@@ -169,6 +176,13 @@ typedef void       SOMLINK somTP_SOMClass_somOverrideSMethod( SOMClass *, somId,
 typedef void       SOMLINK somTP_SOMClass_somClassReady( SOMClass * );
 typedef void       SOMLINK somTP_SOMClass_somDeallocate( SOMClass *, string );
 typedef boolean    SOMLINK somTP_SOMClass_somCheckVersion( SOMClass *, long, long );
+/* Objects in the caller's memory, and introspection. */
+typedef SOMObject *SOMLINK somTP_SOMClass_somRenew( SOMClass *, somToken );
+typedef somDToken  SOMLINK somTP_SOMClass_somGetMemberToken( SOMClass *, long, somDToken );
+typedef long       SOMLINK somTP_SOMClass_somGetMethodIndex( SOMClass *, somId );
+typedef somId      SOMLINK somTP_SOMClass_somGetNthMethodInfo( SOMClass *, long, somId * );
+typedef boolean    SOMLINK somTP_SOMClass_somGetMethodData( SOMClass *, somId, somMethodData * );
+typedef boolean    SOMLINK somTP_SOMClass_somGetNthMethodData( SOMClass *, long, somMethodData * );
 typedef void       SOMLINK somTP_SOMClass_somInitMIClass( SOMClass *, long, zString, SOMClassSequence, long, long,
                                                           long, long, long );
 typedef somTP_SOMClass_somNew              *somTD_SOMClass_somNew;
@@ -184,6 +198,15 @@ typedef somTP_SOMClass_somOverrideSMethod  *somTD_SOMClass_somOverrideSMethod;
 typedef somTP_SOMClass_somClassReady       *somTD_SOMClass_somClassReady;
 typedef somTP_SOMClass_somDeallocate       *somTD_SOMClass_somDeallocate;
 typedef somTP_SOMClass_somCheckVersion     *somTD_SOMClass_somCheckVersion;
+typedef somTP_SOMClass_somRenew            *somTD_SOMClass_somRenew;
+typedef somTP_SOMClass_somRenew            *somTD_SOMClass_somRenewNoInit;
+typedef somTP_SOMClass_somRenew            *somTD_SOMClass_somRenewNoZero;
+typedef somTP_SOMClass_somRenew            *somTD_SOMClass_somRenewNoInitNoZero;
+typedef somTP_SOMClass_somGetMemberToken   *somTD_SOMClass_somGetMemberToken;
+typedef somTP_SOMClass_somGetMethodIndex   *somTD_SOMClass_somGetMethodIndex;
+typedef somTP_SOMClass_somGetNthMethodInfo *somTD_SOMClass_somGetNthMethodInfo;
+typedef somTP_SOMClass_somGetMethodData    *somTD_SOMClass_somGetMethodData;
+typedef somTP_SOMClass_somGetNthMethodData *somTD_SOMClass_somGetNthMethodData;
 typedef somTP_SOMClass_somInitMIClass      *somTD_SOMClass_somInitMIClass;
 
 #define _somNew( c )              SOM_Resolve( c, SOMClass, somNew )( (SOMClass *)(c) )
@@ -202,6 +225,15 @@ typedef somTP_SOMClass_somInitMIClass      *somTD_SOMClass_somInitMIClass;
 #define _somClassReady( c )       SOM_Resolve( c, SOMClass, somClassReady )( (SOMClass *)(c) )
 #define _somInitMIClass( c, iv, n, ps, sz, al, mx, ma, mi ) \
     SOM_Resolve( c, SOMClass, somInitMIClass )( (SOMClass *)(c), (iv), (n), (ps), (sz), (al), (mx), (ma), (mi) )
+#define _somRenew( c, p )             SOM_Resolve( c, SOMClass, somRenew )( (SOMClass *)(c), (somToken)(p) )
+#define _somRenewNoInit( c, p )       SOM_Resolve( c, SOMClass, somRenewNoInit )( (SOMClass *)(c), (somToken)(p) )
+#define _somRenewNoZero( c, p )       SOM_Resolve( c, SOMClass, somRenewNoZero )( (SOMClass *)(c), (somToken)(p) )
+#define _somRenewNoInitNoZero( c, p ) SOM_Resolve( c, SOMClass, somRenewNoInitNoZero )( (SOMClass *)(c), (somToken)(p) )
+#define _somGetMemberToken( c, off, t ) SOM_Resolve( c, SOMClass, somGetMemberToken )( (SOMClass *)(c), (off), (t) )
+#define _somGetMethodIndex( c, id )   SOM_Resolve( c, SOMClass, somGetMethodIndex )( (SOMClass *)(c), (id) )
+#define _somGetNthMethodInfo( c, n, d ) SOM_Resolve( c, SOMClass, somGetNthMethodInfo )( (SOMClass *)(c), (n), (d) )
+#define _somGetMethodData( c, id, md ) SOM_Resolve( c, SOMClass, somGetMethodData )( (SOMClass *)(c), (id), (md) )
+#define _somGetNthMethodData( c, n, md ) SOM_Resolve( c, SOMClass, somGetNthMethodData )( (SOMClass *)(c), (n), (md) )
 #define _somCheckVersion( c, ma, mi ) SOM_Resolve( c, SOMClass, somCheckVersion )( (SOMClass *)(c), (ma), (mi) )
 #define _somDeallocate( c, p )    SOM_Resolve( c, SOMClass, somDeallocate )( (SOMClass *)(c), (string)(p) )
 
@@ -224,6 +256,9 @@ typedef somTP_SOMClassMgr_somUnloadClassFile *somTD_SOMClassMgr_somUnloadClassFi
     SOM_Resolve( m, SOMClassMgr, somUnregisterClass )( (SOMClassMgr *)(m), (SOMClass *)(c) )
 #define _somUnloadClassFile( m, c ) \
     SOM_Resolve( m, SOMClassMgr, somUnloadClassFile )( (SOMClassMgr *)(m), (SOMClass *)(c) )
+typedef zString SOMLINK somTP_SOMClassMgr_somGetInitFunction( SOMClassMgr * );
+typedef somTP_SOMClassMgr_somGetInitFunction *somTD_SOMClassMgr_somGetInitFunction;
+#define _somGetInitFunction( m ) SOM_Resolve( m, SOMClassMgr, somGetInitFunction )( (SOMClassMgr *)(m) )
 #define _somFindClass( m, id, ma, mi ) \
     SOM_Resolve( m, SOMClassMgr, somFindClass )( (SOMClassMgr *)(m), (id), (ma), (mi) )
 #define _somFindClsInFile( m, id, ma, mi, f ) \

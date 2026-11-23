@@ -13,6 +13,10 @@
  *     to the root;
  *   - Combo, from Plain and Mixin, gets Mixin's by the merge rule: the
  *     root's walk still gives SOMObject's somInit its turn.
+ * Then the entries the SOM Programming Reference documents: somRenew in
+ * the caller's memory, somGetMethodIndex / somGetMethodData /
+ * somGetMemberToken, somCastObj / somResetObj, somGetInitFunction,
+ * somMainProgram and the SOM_Test / SOM_Assert macros.
  * Each check is written as "c_som_test: <name>: ok" or "... FAIL", then
  * "c_som_test: done <passed>/<total>".
  */
@@ -115,6 +119,43 @@ int main( void )
     check( "Heir: Left's inherited one hands over to the root", strcmp( run( Heir ), "BL|lb" ) == 0 );
     check( "Combo: Mixin's by the merge rule, the root walks", strcmp( run( Combo ), "X|x" ) == 0 );
     check( "Plain: nothing of its own, nothing to run", strcmp( run( Plain ), "|" ) == 0 );
+
+    /* The Reference's other entries. */
+    {
+        static long   buffer[4];
+        SOMObject    *made, *cast;
+        somMethodData md;
+        somId         id = somIdFromString( "somInit" );
+        long          index;
+
+        trail[0] = '\0';
+        made = _somRenew( Base, buffer );
+        check( "somRenew: in the caller's memory, initialized",
+               made == (SOMObject *)buffer && strcmp( trail, "B" ) == 0 && somIsObj( made ) );
+        check( "somRenewNoInit: no initializer",
+               _somRenewNoInit( Base, buffer ) == (SOMObject *)buffer && strcmp( trail, "B" ) == 0 );
+        index = _somGetMethodIndex( Base, id );
+        check( "somGetMethodIndex / somGetNthMethodInfo",
+               index >= 0 && strcmp( somStringFromId( _somGetNthMethodInfo( Base, index, 0 ) ), "somInit" ) == 0 );
+        check( "somGetMethodData: the token and procedure",
+               _somGetMethodData( Base, id, &md ) && md.mToken == SOMObjectClassData.somInit
+               && md.method == somResolve( made, SOMObjectClassData.somInit ) );
+        check( "somGetMemberToken: Base's first word",
+               somDataResolve( made, _somGetMemberToken( Base, 0, _somGetInstanceToken( Base ) ) )
+               == somDataResolve( made, _somGetInstanceToken( Base ) ) );
+        cast = _somNew( Bottom );
+        check( "somCastObj: the object answers as Left",
+               _somCastObj( cast, Left ) && _somGetClass( cast ) == Left );
+        check( "somResetObj: as Bottom again", _somResetObj( cast ) && _somGetClass( cast ) == Bottom );
+        _somFree( cast );
+        check( "somGetInitFunction", strcmp( _somGetInitFunction( SOMClassMgrObject ), "SOMInitModule" ) == 0 );
+        check( "somMainProgram", SOM_MainProgram() == SOMClassMgrObject );
+        SOM_Test( total > 0 );
+        SOM_TestC( 0 );
+        SOM_Assert( 1, 20012 );
+        check( "SOM_Test / SOM_TestC / SOM_Assert: quiet at the default levels", 1 );
+        somEnvironmentEnd();
+    }
 
     printf( "c_som_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );

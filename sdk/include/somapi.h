@@ -278,4 +278,31 @@ SOMEXTERN void SOMLINK somSetOutChar( somTD_SOMOutCharRoutine *routine );
 #define SOM_Fatal   9
 #define SOM_Error( code ) SOMError( (code), __FILE__, __LINE__ )
 
+/* The runtime for a program, and its end (nothing to release: the
+ * runtime lives as long as the process). */
+SOMEXTERN SOMClassMgr * SOMLINK somMainProgram( void );
+SOMEXTERN void          SOMLINK somEnvironmentEnd( void );
+#define SOM_MainProgram() somMainProgram()
+
+/* Tests and assertions (SOM Programming Reference): SOM_Test is fatal
+ * when it fails, SOM_TestC and SOM_Expect warn (above SOM_WarnLevel 0);
+ * a passed one is noted above SOM_AssertLevel 0. */
+#define SOM_Test( b )        somTest( (b), SOM_Fatal, __FILE__, __LINE__, #b )
+#define SOM_TestC( b )       somTest( (b), SOM_Warn, __FILE__, __LINE__, #b )
+#define SOM_Expect( b )      somTest( (b), SOM_Warn, __FILE__, __LINE__, #b )
+#define SOM_Assert( b, ec )  somAssert( (b), (ec), __FILE__, __LINE__, #b )
+#define SOM_WarnMsg( m ) \
+    ( SOM_WarnLevel > 0 ? somPrintf( "\"%s\": %d:\tWarning: %s\n", __FILE__, __LINE__, (m) ) : 0 )
+
+/* What somGetMethodData gives: the method's id, type (0: static),
+ * descriptor (none kept: 0), token, procedure and shared data (0). */
+typedef struct somMethodData {
+    somId          id;
+    long           type;
+    somId          descriptor;
+    somMToken      mToken;
+    somMethodPtr   method;
+    void          *shared;
+} somMethodData;
+
 #endif
