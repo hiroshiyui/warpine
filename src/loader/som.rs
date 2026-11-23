@@ -75,8 +75,8 @@ use super::{ApiResult, Loader, MutexExt};
 
 // SOM.DLL's ordinals 1–47 are IBM's SOM 1.0 exports as osFree lists them:
 // the `EXPORTS` of `SOM/som/makefile` in osfree-project/osfree
-// (https://github.com/osfree-project/osfree, BSD-3-Clause), the same
-// numbers as Free Pascal's `som.pas` (ADR-0070). They are not verified
+// (https://github.com/osfree-project/osfree, BSD-3-Clause; ADR-0070).
+// They are not verified
 // against IBM's `som.lib`. Ordinals 48–3071 are left to IBM's later
 // exports, which are not known yet; Warpine's own exports use 3072–4095
 // (the SOM module is SOM_ORDINALS wide).

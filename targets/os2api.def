@@ -817,7 +817,7 @@ PMDRAG.74     DrgReallocDraginfo
 # ── SOM (the SOM runtime kernel; som.rs, ADR-0059, ADR-0070).
 # Ordinals 1–47: IBM's SOM 1.0 exports as osFree lists them, from the EXPORTS
 # of SOM/som/makefile in osfree-project/osfree (https://github.com/osfree-project/osfree,
-# BSD-3-Clause); the same numbers as Free Pascal's som.pas, not verified against
+# BSD-3-Clause), not verified against
 # IBM's som.lib. 48–3071: IBM's later exports, not known yet. 3072–4095: Warpine's
 # own (SOM 2.x functions whose IBM numbers are unknown, imported by name; Wrp*);
 # the SOM module is 4096 ordinals wide (SOM_ORDINALS).

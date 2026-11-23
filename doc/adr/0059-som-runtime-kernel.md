@@ -20,7 +20,7 @@ Classes live in DLLs that export their `ClassData` and a `<Class>NewClass` funct
 
 Three constraints shaped the work:
 
-- **Clean room.** IBM's `som.dll`, its SOM compiler (`sc`) and the DLLs `sc` needs are off limits (clean-room policy), and the user chose not to use somFree. The test programs are Open Watcom's SOM samples, their C sources unchanged. The bindings `sc` would generate from their `.idl` / `.csc` files are written by hand from the documented conventions.
+- **Clean room.** IBM's `som.dll`, its SOM compiler (`sc`) and the DLLs `sc` needs are off limits (clean-room policy). The test programs are Open Watcom's SOM samples, their C sources unchanged. The bindings `sc` would generate from their `.idl` / `.csc` files are written by hand from the documented conventions.
 - **Loader gaps.** Running them exposed four gaps in Warpine's LX loading:
   - imports by name never resolved: the parser bounded the import procedure name table by the loader section, though it ends the fixup section;
   - an import with an additive value (`ClassData.field`) lost the offset;

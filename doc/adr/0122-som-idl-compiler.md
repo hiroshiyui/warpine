@@ -12,7 +12,7 @@
     - the OS/2 *System Object Model Programming Reference* (`somBuildClass`, the `SOMObject` / `SOMClass` / `SOMClassMgr` methods, the runtime functions);
     - the layouts already taken from the Toolkit headers (ADR-0072, ADR-0073).
   - **Test inputs:** the `.idl` files of Open Watcom's SOM samples (`vendor/watcom/samples/os2/som`), read in place as inputs, never copied.
-  - **Not used:** IBM's SOM compiler `sc` and its emitter DLLs (IBM binaries); the Toolkit's emitter templates (`*.efw`) and generated headers; somFree (excluded by decision).
+  - **Not used:** IBM's SOM compiler `sc` and its emitter DLLs (IBM binaries); the Toolkit's emitter templates (`*.efw`) and generated headers.
 
 ## Context
 
@@ -71,7 +71,6 @@ A program rebuilt from source with bindings Warpine generates does not depend on
 
 - **Keep hand-written bindings** (today's `samples/som_test/include/som.h`): enough for tests, but every class needs pages of declarations, and no existing SOM source compiles against them.
 - **Use IBM's `sc` and emitters:** they are IBM binaries, excluded by the clean-room policy, and their output would need IBM's unknown initializer protocol.
-- **Use somFree's compiler:** excluded by decision.
 - **Bindings that call `somInitClass` / `somAddStaticMethod` instead of `somBuildClass`:** simpler, but they would leave `somBuildClass`, the path IBM-built libraries take, without a second user, and make generated code differ more from what SOM programmers know.
 - **Drop SOM for XPCOM** (`doc/TODOs.md`, "Object model options"): a separate decision. This proposal assumes the current course, SOM.
 

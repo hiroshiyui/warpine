@@ -8,14 +8,14 @@
     - `src/loader/api_registry.rs` (the SOM entries, `STUB_ORDINALS`);
     - `targets/os2api.def`, `src/loader/api_trace.rs`.
   - Sample: `samples/som_ordinal_test`.
-  - **osFree**: the `EXPORTS` of `SOM/som/makefile` in [osfree-project/osfree](https://github.com/osfree-project/osfree), `master` branch. The repository is BSD-3-Clause; the file has no header of its own. Only this list of names and numbers is used. osFree's SOM headers, IDL and kernel come from somFree, which the project does not use.
+  - **osFree**: the `EXPORTS` of `SOM/som/makefile` in [osfree-project/osfree](https://github.com/osfree-project/osfree), `master` branch. The repository is BSD-3-Clause; the file has no header of its own. Only this list of names and numbers is used; osFree's SOM headers, IDL and kernel are not.
   - IBM *SOM Programming Reference* and *SOM Programming Guide* (OS/2 Warp 4 Toolkit, as mirrored on EDM/2 and komh.github.io): `somCheckId`, `somRegisterId`, `somUniqueKey`, `somTotalRegIds`, `somSetExpectedIds`, `somBeginPersistentIds`, `somEndPersistentIds`, `somPrefixLevel`, `somLPrintf`, `somVprintf`, `somParentResolve`, `SOMClassInitFuncName`, "Using `<className>NewClass`", the `SOM_Test` and `SOM_Assert` macros.
 
 ## Context
 
 ADR-0059 gave `SOM.DLL` Warpine's own ordinals, and programs imported it by name. A program linked against IBM's `som.lib` imports it by IBM's numbers instead. Real Workplace Shell classes and SOM programs built with IBM's toolkit are such programs, so they could not load.
 
-Open Watcom ships no SOM import library. osFree's SOM makefile exports 47 names with ordinals: the SOM 1.0 set. Its numbers match Free Pascal's `som.pas`, an independent list, which makes them very likely IBM's. Nothing public lists ordinals 48 and above except Free Pascal's LGPL `som.pas`, which the project chose not to use.
+Open Watcom ships no SOM import library. osFree's SOM makefile exports 47 names with ordinals: the SOM 1.0 set, taken as IBM's. No permissive source lists ordinals 48 and above.
 
 Warpine's own exports (the `Wrp*` functions and the root classes' method thunks) sat at numbers IBM uses. A built-in module has 1024 ordinals (`SOM_BASE + 1024 <= STUB_AREA_SIZE`).
 
@@ -60,7 +60,7 @@ osFree is credited in the README's sources, in this record, and in source commen
 
 ### Warpine's choices (unverified)
 
-- **The ordinals.** osFree's numbers are IBM's. Free Pascal's list agrees, but nothing has been checked against IBM's `som.lib`.
+- **The ordinals.** osFree's numbers are IBM's; nothing has been checked against IBM's `som.lib`.
 - **The entries' shapes.** Ordinals 1–19 being data and 20–47 functions, as the names and the reference suggest.
 - **`CClassData`.** The instance-data token as its second word.
 - **`<Class>NewClass`.** Accepting every version for the root classes.
