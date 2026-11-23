@@ -8,16 +8,21 @@
 // `_method` macros, `<Class>GetData`, `<Class>MethodDebug`, `SOM_Scope`,
 // `somSelf`, `somThis`); the text is Warpine's own.
 //
+// An interface in a module has the scoped C name `Module_Interface` and
+// the SOM class name "Module::Interface". Attributes are `_get_` / `_set_`
+// methods over an instance variable of the same name (unless `nodata`),
+// implemented by the bindings unless `noget` / `noset`. Sequences are
+// `_IDL_SEQUENCE_<element>` structs (`sequence(T)` in som.h).
+//
 // `<Class>NewClass` builds the class through `somBuildClass` from a
 // `somStaticClassInfo` (layout version 1: static methods and overrides),
-// after its parents' and explicit metaclass's `NewClass`. Stage S1 covers
-// single inheritance, introduced methods, overrides of an ancestor's
-// methods, instance variables, typedefs, structs, enums and constants;
-// attributes, sequences, `any` and multiple inheritance are refused for
-// now (they come with the next batches).
+// after its parent's and explicit metaclass's `NewClass`. Multiple
+// inheritance, `init` methods and `any` are refused for now (stages S3
+// and S4).
 
 use super::ast::*;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 /// The root classes: their bindings are in the SDK's som.h, and their
@@ -30,18 +35,28 @@ pub struct Output {
     pub text: String,
 }
 
-/// An interface and the callstyle it declares methods in.
+/// An interface, as the bindings name it, with its methods (operations
+/// and attribute accessors).
 struct Known<'a> {
     iface: &'a Interface,
     /// `callstyle = oidl`: no `Environment *` argument.
     oidl: bool,
+    /// The C name: the module scope and the name, joined by `_`.
+    cname: String,
+    /// The SOM class name: the module scope and the name, joined by `::`.
+    som_name: String,
+    ops: Vec<Operation>,
 }
 
-fn collect<'a>(defs: &'a [Definition], out: &mut Vec<&'a Interface>) {
+fn collect<'a>(defs: &'a [Definition], scope: &mut Vec<String>, out: &mut Vec<(&'a Interface, Vec<String>)>) {
     for d in defs {
         match d {
-            Definition::Module { defs, .. } => collect(defs, out),
-            Definition::Interface(i) => out.push(i),
+            Definition::Module { name, defs } => {
+                scope.push(name.clone());
+                collect(defs, scope, out);
+                scope.pop();
+            }
+            Definition::Interface(i) => out.push((i, scope.clone())),
             _ => {}
         }
     }
@@ -66,10 +81,6 @@ fn modifier_text(v: &ModValue) -> String {
     }
 }
 
-fn operations(i: &Interface) -> impl Iterator<Item = &Operation> {
-    i.items.iter().filter_map(|it| if let InterfaceItem::Operation(o) = it { Some(o) } else { None })
-}
-
 /// The member modifiers given for `member`.
 fn member_modifiers<'a>(i: &'a Interface, member: &str) -> Vec<&'a str> {
     impl_items(i).filter_map(|it| match it {
@@ -86,10 +97,36 @@ fn overrides(i: &Interface) -> Vec<&str> {
     }).collect()
 }
 
+fn attributes(i: &Interface) -> impl Iterator<Item = (&Attribute, &String)> {
+    i.items.iter().filter_map(|it| if let InterfaceItem::Attribute(a) = it { Some(a) } else { None })
+        .flat_map(|a| a.names.iter().map(move |n| (a, n)))
+}
+
+fn accessor(name: String, ret: Type, params: Vec<Param>) -> Operation {
+    Operation { oneway: false, ret, name, params, raises: Vec::new(), context: Vec::new() }
+}
+
+/// The methods `i` introduces: its operations, then its attributes'
+/// `_get_` and (unless readonly) `_set_` methods.
+fn methods_of(i: &Interface) -> Vec<Operation> {
+    let mut ops: Vec<Operation> = i.items.iter()
+        .filter_map(|it| if let InterfaceItem::Operation(o) = it { Some(o.clone()) } else { None }).collect();
+    for (a, n) in attributes(i) {
+        ops.push(accessor(format!("_get_{n}"), a.ty.clone(), Vec::new()));
+        if !a.readonly {
+            ops.push(accessor(format!("_set_{n}"), Type::Void, vec![Param { dir: Direction::In, ty: a.ty.clone(), name: n.clone() }]));
+        }
+    }
+    ops
+}
+
 struct Emitter<'a> {
+    /// Every interface, by its simple name.
     known: HashMap<&'a str, Known<'a>>,
-    /// Typedef, struct and enum names the files declare (not interfaces).
-    types: HashMap<&'a str, &'a Type>,
+    /// Interface-level types: simple name to C name (`Class_name`).
+    type_names: HashMap<String, String>,
+    /// The sequence types used: struct name to element C type.
+    sequences: RefCell<BTreeMap<String, String>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -97,36 +134,29 @@ type Res<T> = Result<T, String>;
 impl<'a> Emitter<'a> {
     fn new(defs: &'a [Definition]) -> Self {
         let mut all = Vec::new();
-        collect(defs, &mut all);
-        let known = all.iter().map(|i| {
+        collect(defs, &mut Vec::new(), &mut all);
+        let mut type_names = HashMap::new();
+        let known = all.iter().map(|(i, scope)| {
             let oidl = class_modifier(i, "callstyle").is_some_and(|v| modifier_text(v) == "oidl");
-            (i.name.as_str(), Known { iface: i, oidl })
-        }).collect();
-        let mut types = HashMap::new();
-        fn walk<'a>(defs: &'a [Definition], types: &mut HashMap<&'a str, &'a Type>) {
-            for d in defs {
-                match d {
-                    Definition::Module { defs, .. } => walk(defs, types),
-                    Definition::Type(TypeDecl::Typedef(m), _) => {
-                        for n in &m.names { types.insert(n.name.as_str(), &m.ty); }
-                    }
-                    Definition::Interface(i) => {
-                        for it in &i.items {
-                            if let InterfaceItem::Type(TypeDecl::Typedef(m)) = it {
-                                for n in &m.names { types.insert(n.name.as_str(), &m.ty); }
-                            }
-                        }
-                    }
-                    _ => {}
+            let path: Vec<&str> = scope.iter().map(String::as_str).chain([i.name.as_str()]).collect();
+            let cname = path.join("_");
+            for it in &i.items {
+                if let InterfaceItem::Type(t) = it {
+                    for n in type_decl_names(t) { type_names.insert(n.to_string(), format!("{cname}_{n}")); }
                 }
             }
-        }
-        walk(defs, &mut types);
-        Emitter { known, types }
+            (i.name.as_str(), Known { iface: i, oidl, som_name: path.join("::"), cname, ops: methods_of(i) })
+        }).collect();
+        Emitter { known, type_names, sequences: RefCell::new(BTreeMap::new()) }
     }
 
-    fn is_interface(&self, n: &ScopedName) -> bool {
-        n.parts.last().is_some_and(|l| self.known.contains_key(l.as_str()))
+    /// The C name of class `name` (a root class keeps its own).
+    fn cname(&self, name: &str) -> String {
+        self.known.get(name).map_or_else(|| name.to_string(), |k| k.cname.clone())
+    }
+
+    fn som_name(&self, name: &str) -> String {
+        self.known.get(name).map_or_else(|| name.to_string(), |k| k.som_name.clone())
     }
 
     /// The C type of `t` as written in a declaration.
@@ -144,10 +174,19 @@ impl<'a> Emitter<'a> {
             Type::Octet => "octet".into(),
             Type::String(_) => "string".into(),
             Type::Any => return Err("`any` is not supported yet (ADR-0122, stage S4)".into()),
-            Type::Sequence(..) => return Err("sequences are not supported yet (ADR-0122, batch 5b)".into()),
+            Type::Sequence(elem, _) => {
+                let elem = self.c_type(elem)?;
+                let tag: String = elem.trim_end_matches(['*', ' ']).chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+                let name = format!("_IDL_SEQUENCE_{tag}");
+                self.sequences.borrow_mut().entry(name.clone()).or_insert(elem);
+                name
+            }
             Type::Named(n) => {
                 let last = n.parts.last().cloned().unwrap_or_default();
-                if self.is_interface(n) { format!("{last} *") } else { last }
+                if let Some(k) = self.known.get(last.as_str()) { format!("{} *", k.cname) }
+                else if ROOT_CLASSES.contains(&last.as_str()) { format!("{last} *") }
+                else { self.type_names.get(&last).cloned().unwrap_or(last) }
             }
         })
     }
@@ -167,39 +206,41 @@ impl<'a> Emitter<'a> {
     }
 
     /// Where method `name` is declared: the interface among `cls`'s
-    /// ancestors (first parents first) and the operation.
-    fn find_method(&self, cls: &Interface, name: &str) -> Option<(&Known<'a>, &'a Operation)> {
+    /// ancestors (first parents first) and the method.
+    fn find_method(&self, cls: &Interface, name: &str) -> Option<(&Known<'a>, &Operation)> {
         let mut todo: Vec<&str> = cls.parents.iter().rev().filter_map(|p| p.parts.last().map(String::as_str)).collect();
         let mut seen = 0;
         while let Some(n) = todo.pop() {
             seen += 1;
             if seen > 256 { break; }
             let Some(k) = self.known.get(n) else { continue };
-            if let Some(op) = operations(k.iface).find(|o| o.name == name) { return Some((k, op)); }
+            if let Some(op) = k.ops.iter().find(|o| o.name == name) { return Some((k, op)); }
             todo.extend(k.iface.parents.iter().rev().filter_map(|p| p.parts.last().map(String::as_str)));
         }
         None
     }
 
+    /// A typedef, struct, enum or constant; interface-level ones (`prefix`
+    /// the class's C name and `_`) are named after the class.
     fn type_decl(&self, out: &mut String, prefix: &str, d: &TypeDecl) -> Res<()> {
         match d {
             TypeDecl::Typedef(m) => {
                 for n in &m.names {
-                    let _ = writeln!(out, "typedef {}{}{};", spaced(&self.c_type(&m.ty)?), n.name, dims(&n.dims));
+                    let _ = writeln!(out, "typedef {}{prefix}{}{};", spaced(&self.c_type(&m.ty)?), n.name, dims(&n.dims));
                 }
             }
             TypeDecl::Struct { name, members } => {
-                let _ = writeln!(out, "typedef struct {name} {{");
+                let _ = writeln!(out, "typedef struct {prefix}{name} {{");
                 for m in members {
                     for n in &m.names {
                         let _ = writeln!(out, "    {}{}{};", spaced(&self.c_type(&m.ty)?), n.name, dims(&n.dims));
                     }
                 }
-                let _ = writeln!(out, "}} {name};");
+                let _ = writeln!(out, "}} {prefix}{name};");
             }
             TypeDecl::Enum { name, items } => {
                 // CORBA's C mapping: an unsigned long, the values from 1.
-                let _ = writeln!(out, "typedef unsigned long {name};");
+                let _ = writeln!(out, "typedef unsigned long {prefix}{name};");
                 for (k, it) in items.iter().enumerate() {
                     let _ = writeln!(out, "#define {prefix}{it} {}UL", k + 1);
                 }
@@ -210,6 +251,14 @@ impl<'a> Emitter<'a> {
             }
         }
         Ok(())
+    }
+}
+
+fn type_decl_names(t: &TypeDecl) -> Vec<&str> {
+    match t {
+        TypeDecl::Typedef(m) => m.names.iter().map(|d| d.name.as_str()).collect(),
+        TypeDecl::Struct { name, .. } | TypeDecl::Enum { name, .. } => vec![name.as_str()],
+        TypeDecl::Const { .. } => Vec::new(),
     }
 }
 
@@ -226,20 +275,30 @@ fn guard(stem: &str) -> String {
     stem.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
 }
 
-/// A class's view for emitting: what S1 needs, checked.
+/// An accessor the bindings implement: the method and its attribute.
+struct AutoAccessor {
+    op: Operation,
+    attr: String,
+    get: bool,
+}
+
+/// A class's view for emitting, checked against what the stage covers.
 struct Class<'a> {
     i: &'a Interface,
-    name: &'a str,
+    /// Its C name, and its parent's and metaclass's (simple) names.
+    name: String,
     parent: String,
+    meta: Option<String>,
     oidl: bool,
     prefix: String,
     major: i64,
     minor: i64,
-    meta: Option<String>,
     /// Introduced methods in release order (then any not in it).
-    methods: Vec<&'a Operation>,
+    methods: Vec<Operation>,
     overrides: Vec<&'a str>,
-    data: Vec<&'a Member>,
+    /// Instance variables, attributes' data included.
+    data: Vec<Member>,
+    auto: Vec<AutoAccessor>,
 }
 
 impl<'a> Emitter<'a> {
@@ -248,27 +307,27 @@ impl<'a> Emitter<'a> {
         if i.parents.len() > 1 {
             return Err(ctx("multiple inheritance is not supported yet (ADR-0122, stage S3)"));
         }
-        if i.items.iter().any(|it| matches!(it, InterfaceItem::Attribute(_))) {
-            return Err(ctx("attributes are not supported yet (ADR-0122, batch 5b)"));
-        }
         let parent = i.parents.first().and_then(|p| p.parts.last().cloned()).unwrap_or_else(|| "SOMObject".into());
         if !ROOT_CLASSES.contains(&parent.as_str()) && !self.known.contains_key(parent.as_str()) {
             return Err(ctx(&format!("parent {parent} is not declared (#include its IDL)")));
         }
-        let oidl = self.known.get(i.name.as_str()).is_some_and(|k| k.oidl);
+        let meta = class_modifier(i, "metaclass").map(modifier_text);
+        if let Some(m) = &meta && !ROOT_CLASSES.contains(&m.as_str()) && !self.known.contains_key(m.as_str()) {
+            return Err(ctx(&format!("metaclass {m} is not declared")));
+        }
+        let known = self.known.get(i.name.as_str()).ok_or_else(|| ctx("not collected"))?;
         let int = |m: &str| class_modifier(i, m).and_then(|v| if let ModValue::Int(n) = v { Some(*n) } else { None }).unwrap_or(0);
-        let ops: Vec<&Operation> = operations(i).collect();
         let order: Vec<&str> = impl_items(i).filter_map(|it| if let ImplItem::ReleaseOrder(v) = it { Some(v) } else { None })
             .flatten().map(String::as_str).collect();
         let mut methods = Vec::new();
         for n in &order {
-            match ops.iter().find(|o| o.name == *n) {
-                Some(o) => methods.push(*o),
+            match known.ops.iter().find(|o| o.name == *n) {
+                Some(o) => methods.push(o.clone()),
                 None => return Err(ctx(&format!("releaseorder names {n}, which it does not declare"))),
             }
         }
-        for o in &ops {
-            if !methods.iter().any(|m| m.name == o.name) { methods.push(*o); }
+        for o in &known.ops {
+            if !methods.iter().any(|m: &Operation| m.name == o.name) { methods.push(o.clone()); }
         }
         for o in &methods {
             if member_modifiers(i, &o.name).contains(&"init") {
@@ -281,29 +340,47 @@ impl<'a> Emitter<'a> {
                 return Err(ctx(&format!("{o} overrides no method of its ancestors (#include their IDL)")));
             }
         }
-        let data = impl_items(i).filter_map(|it| if let ImplItem::InstanceVar(m) = it { Some(m) } else { None }).collect();
+        let mut data: Vec<Member> = impl_items(i).filter_map(|it| if let ImplItem::InstanceVar(m) = it { Some(m.clone()) } else { None }).collect();
+        let mut auto = Vec::new();
+        for (a, n) in attributes(i) {
+            let mods = member_modifiers(i, n);
+            if mods.contains(&"nodata") { continue; }
+            data.push(Member { ty: a.ty.clone(), names: vec![Declarator { name: n.clone(), dims: Vec::new() }] });
+            let find = |m: String| known.ops.iter().find(|o| o.name == m).cloned();
+            if !mods.contains(&"noget") && let Some(op) = find(format!("_get_{n}")) {
+                auto.push(AutoAccessor { op, attr: n.clone(), get: true });
+            }
+            if !a.readonly && !mods.contains(&"noset") && let Some(op) = find(format!("_set_{n}")) {
+                auto.push(AutoAccessor { op, attr: n.clone(), get: false });
+            }
+        }
         Ok(Class {
-            i, name: &i.name, parent, oidl,
+            i, name: known.cname.clone(), parent, meta, oidl: known.oidl,
             prefix: class_modifier(i, "functionprefix").map(modifier_text).unwrap_or_default(),
             major: int("majorversion"), minor: int("minorversion"),
-            meta: class_modifier(i, "metaclass").map(modifier_text),
-            methods, overrides, data,
+            methods, overrides, data, auto,
         })
     }
 
     /// The `NewClass` call that makes class `name` (parents, metaclass).
-    fn new_class_call(name: &str) -> String {
-        if ROOT_CLASSES.contains(&name) { format!("{name}NewClass( 0, 0 )") }
-        else { format!("{name}NewClass( {name}_MajorVersion, {name}_MinorVersion )") }
+    fn new_class_call(&self, name: &str) -> String {
+        if ROOT_CLASSES.contains(&name) { return format!("{name}NewClass( 0, 0 )"); }
+        let c = self.cname(name);
+        format!("{c}NewClass( {c}_MajorVersion, {c}_MinorVersion )")
+    }
+
+    fn proto(&self, c: &Class, op: &Operation, oidl: bool) -> Res<String> {
+        let params = self.params(op, oidl)?;
+        Ok(format!("{}SOMLINK {}{}( {} *somSelf{} )", spaced(&self.c_type(&op.ret)?), c.prefix, op.name, c.name,
+                   params.iter().map(|p| format!(", {p}")).collect::<String>()))
     }
 
     // ─── h ───────────────────────────────────────────────────────────────
 
     fn usage(&self, c: &Class, out: &mut String) -> Res<()> {
-        let n = c.name;
+        let n = &c.name;
         let _ = writeln!(out, "/* ---- {n} ---- */");
         let _ = writeln!(out, "#define {n}_MajorVersion {}\n#define {n}_MinorVersion {}", c.major, c.minor);
-        let _ = writeln!(out, "#ifndef {n}_defined\n#define {n}_defined\ntypedef SOMObject {n};\n#endif");
         for it in &c.i.items {
             if let InterfaceItem::Type(t) = it { self.type_decl(out, &format!("{n}_"), t)?; }
         }
@@ -319,7 +396,7 @@ impl<'a> Emitter<'a> {
         for m in &c.methods { let _ = writeln!(out, "    somMToken {};", m.name); }
         let _ = writeln!(out, "}} SOMDLINK {n}ClassData;");
         let _ = writeln!(out, "SOMEXTERN struct {n}CClassDataStructure {{\n    somMethodTabs parentMtab;\n    somDToken instanceDataToken;\n}} SOMDLINK {n}CClassData;");
-        let _ = writeln!(out, "#define _{n} ({n}ClassData.classObject ? {n}ClassData.classObject : {})", Self::new_class_call(n));
+        let _ = writeln!(out, "#define _{n} ({n}ClassData.classObject ? {n}ClassData.classObject : {})", self.new_class_call(&c.i.name));
         let _ = writeln!(out, "#define {n}New() (({n} *)_somNew( _{n} ))");
         for m in &c.methods {
             let mut args: Vec<String> = Vec::new();
@@ -337,8 +414,8 @@ impl<'a> Emitter<'a> {
     // ─── ih ──────────────────────────────────────────────────────────────
 
     fn implementation(&self, c: &Class, out: &mut String) -> Res<()> {
-        let n = c.name;
-        let p = &c.parent;
+        let n = &c.name;
+        let p = self.cname(&c.parent);
         let _ = writeln!(out, "/* ---- {n} ---- */");
         let _ = writeln!(out, "typedef struct {n}Data_struct {{");
         if c.data.is_empty() { let _ = writeln!(out, "    char somEmpty_;"); }
@@ -361,32 +438,36 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(out, "#ifndef {n}MethodDebug\n#define {n}MethodDebug( c, m ) SOMMethodDebug( c, m )\n#endif");
         // The implementations' prototypes.
         for m in &c.methods {
-            let params = self.params(m, c.oidl)?;
-            let _ = writeln!(out, "SOM_Scope {}SOMLINK {}{}( {n} *somSelf{} );", spaced(&self.c_type(&m.ret)?), c.prefix, m.name,
-                             params.iter().map(|p| format!(", {p}")).collect::<String>());
+            let _ = writeln!(out, "SOM_Scope {};", self.proto(c, m, c.oidl)?);
         }
         for o in &c.overrides {
             let (k, op) = self.find_method(c.i, o).ok_or_else(|| format!("{o}: not found"))?;
-            let params = self.params(op, k.oidl)?;
-            let _ = writeln!(out, "SOM_Scope {}SOMLINK {}{o}( {n} *somSelf{} );", spaced(&self.c_type(&op.ret)?), c.prefix,
-                             params.iter().map(|p| format!(", {p}")).collect::<String>());
+            let _ = writeln!(out, "SOM_Scope {};", self.proto(c, op, k.oidl)?);
             // The parent's implementation.
             let mut args: Vec<String> = Vec::new();
             if !k.oidl { args.push("ev".into()); }
             args.extend(op.params.iter().map(|q| q.name.clone()));
             let formal: String = args.iter().map(|a| format!(", {a}")).collect();
             let actual: String = args.iter().map(|a| format!(", ({a})")).collect();
-            let intro = &k.iface.name;
+            let intro = &k.cname;
             for macro_name in [format!("{n}_parent_{p}_{o}"), format!("{n}_parent_{o}")] {
                 let _ = writeln!(out, "#define {macro_name}( somSelf{formal} ) \\\n    SOM_ParentNumResolve( {intro}, 1, {n}CClassData.parentMtab, {o} )( ({intro} *)(somSelf){actual} )");
             }
         }
+        // The accessors the bindings implement.
+        for a in &c.auto {
+            let _ = writeln!(out, "SOM_Scope {}\n{{\n    {n}Data *somThis = {n}GetData( somSelf );", self.proto(c, &a.op, c.oidl)?);
+            if !c.oidl { out.push_str("    (void)ev;\n"); }
+            if a.get { let _ = writeln!(out, "    return( somThis->{} );\n}}", a.attr); }
+            else { let _ = writeln!(out, "    somThis->{0} = {0};\n}}", a.attr); }
+        }
         // ClassData and the class's static information.
         let _ = writeln!(out, "struct {n}ClassDataStructure SOMDLINK {n}ClassData;");
         let _ = writeln!(out, "struct {n}CClassDataStructure SOMDLINK {n}CClassData;");
-        let _ = writeln!(out, "static char *somCN_{n}_s = \"{n}\";\nstatic char *somPN_{n}_s = \"{p}\";");
+        let _ = writeln!(out, "static char *somCN_{n}_s = \"{}\";\nstatic char *somPN_{n}_s = \"{}\";",
+                         self.som_name(&c.i.name), self.som_name(&c.parent));
         let _ = writeln!(out, "static somId somPN_{n}[1] = {{ &somPN_{n}_s }};");
-        if let Some(meta) = &c.meta { let _ = writeln!(out, "static char *somMC_{n}_s = \"{meta}\";"); }
+        if let Some(meta) = &c.meta { let _ = writeln!(out, "static char *somMC_{n}_s = \"{}\";", self.som_name(meta)); }
         for m in &c.methods {
             let _ = writeln!(out, "static char *somMN_{n}_{0}_s = \"{0}\";\nstatic somId somMN_{n}_{0} = &somMN_{n}_{0}_s;", m.name);
         }
@@ -408,8 +489,8 @@ impl<'a> Emitter<'a> {
             c.methods.len(), c.overrides.len(), c.major, c.minor, c.methods.len());
         let _ = writeln!(out, "SOMClass * SOMLINK {n}NewClass( integer4 majorVersion, integer4 minorVersion )\n{{");
         let _ = writeln!(out, "    if( {n}ClassData.classObject ) return( {n}ClassData.classObject );\n    somEnvironmentNew();");
-        let _ = writeln!(out, "    {};", Self::new_class_call(p));
-        if let Some(meta) = &c.meta { let _ = writeln!(out, "    {};", Self::new_class_call(meta)); }
+        let _ = writeln!(out, "    {};", self.new_class_call(&c.parent));
+        if let Some(meta) = &c.meta { let _ = writeln!(out, "    {};", self.new_class_call(meta)); }
         let _ = writeln!(out, "    return( somBuildClass( 1, &somSCI_{n}, majorVersion, minorVersion ) );\n}}\n");
         Ok(())
     }
@@ -417,7 +498,7 @@ impl<'a> Emitter<'a> {
     // ─── c (template) ────────────────────────────────────────────────────
 
     fn template(&self, c: &Class, out: &mut String) -> Res<()> {
-        let n = c.name;
+        let n = &c.name;
         let body = |out: &mut String, name: &str, ret: &Type, parent_call: Option<String>| -> Res<()> {
             let _ = writeln!(out, "{{\n    {n}Data *somThis = {n}GetData( somSelf );\n    (void)somThis;\n    {n}MethodDebug( \"{n}\", \"{name}\" );");
             if let Some(call) = parent_call {
@@ -431,16 +512,13 @@ impl<'a> Emitter<'a> {
             Ok(())
         };
         for m in &c.methods {
-            let params = self.params(m, c.oidl)?;
-            let _ = writeln!(out, "SOM_Scope {}SOMLINK {}{}( {n} *somSelf{} )", spaced(&self.c_type(&m.ret)?), c.prefix, m.name,
-                             params.iter().map(|p| format!(", {p}")).collect::<String>());
+            if c.auto.iter().any(|a| a.op.name == m.name) { continue; }
+            let _ = writeln!(out, "SOM_Scope {}", self.proto(c, m, c.oidl)?);
             body(out, &m.name, &m.ret, None)?;
         }
         for o in &c.overrides {
             let (k, op) = self.find_method(c.i, o).ok_or_else(|| format!("{o}: not found"))?;
-            let params = self.params(op, k.oidl)?;
-            let _ = writeln!(out, "SOM_Scope {}SOMLINK {}{o}( {n} *somSelf{} )", spaced(&self.c_type(&op.ret)?), c.prefix,
-                             params.iter().map(|p| format!(", {p}")).collect::<String>());
+            let _ = writeln!(out, "SOM_Scope {}", self.proto(c, op, k.oidl)?);
             let mut args = vec!["somSelf".to_string()];
             if !k.oidl { args.push("ev".into()); }
             args.extend(op.params.iter().map(|q| q.name.clone()));
@@ -454,9 +532,9 @@ impl<'a> Emitter<'a> {
 /// main file of `defs`, whose stem is `stem`.
 pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Output>, String> {
     let e = Emitter::new(defs);
-    let mut main = Vec::new();
-    collect(defs, &mut main);
-    let main: Vec<&Interface> = main.into_iter().filter(|i| i.file == 0).collect();
+    let mut all = Vec::new();
+    collect(defs, &mut Vec::new(), &mut all);
+    let main: Vec<&Interface> = all.into_iter().map(|(i, _)| i).filter(|i| i.file == 0).collect();
     let classes = main.iter().map(|i| e.class(i)).collect::<Res<Vec<_>>>()?;
     let g = guard(stem);
     let head = |kind: &str| format!("/* {stem}.{kind}: generated by somidl from {stem}.idl (ADR-0122); do not edit. */\n");
@@ -466,10 +544,22 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
         match kind {
             "h" => {
                 let _ = writeln!(out, "#ifndef SOM_{g}_h\n#define SOM_{g}_h\n\n#include <som.h>\n#include <somapi.h>\n");
-                for d in defs {
-                    if let Definition::Type(t, 0) = d { e.type_decl(&mut out, "", t)?; }
+                // Every class's object type first: they name one another.
+                for c in &classes {
+                    let _ = writeln!(out, "#ifndef {0}_defined\n#define {0}_defined\ntypedef SOMObject {0};\n#endif", c.name);
                 }
-                for c in &classes { e.usage(c, &mut out)?; }
+                let mut body = String::new();
+                for d in defs {
+                    if let Definition::Type(t, 0) = d { e.type_decl(&mut body, "", t)?; }
+                }
+                for c in &classes { e.usage(c, &mut body)?; }
+                // The sequence types the declarations use, before them.
+                for (name, elem) in e.sequences.borrow().iter() {
+                    let _ = writeln!(out, "#ifndef {name}_defined\n#define {name}_defined\ntypedef struct {{\n    unsigned long _maximum;\n    unsigned long _length;\n    {}*_buffer;\n}} {name};\n#endif",
+                                     spaced(elem));
+                }
+                out.push('\n');
+                out.push_str(&body);
                 out.push_str("#endif\n");
             }
             "ih" => {

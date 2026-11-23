@@ -14,6 +14,8 @@
 #define WARPINE_SOM_H
 
 #include <somapi.h>
+/* SOM sources expect som.h to bring in the string functions. */
+#include <string.h>
 
 /* ---- IDL sequences: sequence(T) is a struct of _maximum, _length and a
  * buffer of T. ---- */

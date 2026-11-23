@@ -318,15 +318,60 @@ mod tests {
     fn what_s1_does_not_cover_is_refused() {
         let err = |text: &str| emit(text, &["h"]).err().unwrap_or_default();
         let base = "#include <somcls.idl>\n";
-        assert!(err(&format!("{base}interface A : SOMObject {{ attribute long x; }};")).contains("attributes"));
         assert!(err(&format!("{base}interface A : SOMObject, SOMClass {{ }};")).contains("multiple inheritance"));
         assert!(err(&format!("{base}interface A : SOMObject {{ void f(in any x); }};")).contains("any"));
-        assert!(err(&format!("{base}interface A : SOMObject {{ void f(in sequence<long> x); }};")).contains("sequences"));
+        assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ metaclass = Nowhere; }}; }};")).contains("metaclass Nowhere"));
         assert!(err(&format!("{base}interface A : SOMObject {{ void f(); implementation {{ f: init; }}; }};")).contains("init methods"));
         assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ g: override; }}; }};")).contains("overrides no method"));
         assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ releaseorder: g; }}; }};")).contains("does not declare"));
         assert!(err("interface A : Nowhere { };").contains("not declared"));
         assert!(emit("interface A { };", &["xh"]).err().unwrap_or_default().contains("stage S2"));
+    }
+
+    /// Batch 5b: module-scoped names, attributes (accessors, their data,
+    /// implementations unless noget / noset, none with nodata), sequences
+    /// and an explicit metaclass, made before the class.
+    #[test]
+    fn modules_attributes_sequences_and_metaclasses() {
+        let text = "#include <somcls.idl>\n\
+            module Zoo {\n\
+            \x20 interface Keeper;\n\
+            \x20 interface Pet : SOMObject {\n\
+            \x20   attribute string name;\n\
+            \x20   readonly attribute long legs;\n\
+            \x20   attribute sequence<Pet> friends;\n\
+            \x20   attribute long age;\n\
+            \x20   implementation { releaseorder: _get_name, _set_name, _get_legs, _get_friends, _set_friends, _get_age, _set_age;\n\
+            \x20     metaclass = Keeper; functionprefix = p_; legs: nodata; age: noset; };\n\
+            \x20 };\n\
+            \x20 interface Keeper : SOMClass { Pet adopt(in string name); };\n\
+            \x20 interface Cat : Pet { implementation { _get_legs: override; }; };\n\
+            };\n";
+        let h = emitted(text, "h");
+        for want in ["typedef SOMObject Zoo_Pet;", "typedef SOMObject Zoo_Keeper;",
+                     "typedef struct {\n    unsigned long _maximum;\n    unsigned long _length;\n    Zoo_Pet **_buffer;\n} _IDL_SEQUENCE_Zoo_Pet;",
+                     "typedef string SOMLINK somTP_Zoo_Pet__get_name( Zoo_Pet *somSelf, Environment *ev );",
+                     "typedef void SOMLINK somTP_Zoo_Pet__set_name( Zoo_Pet *somSelf, Environment *ev, string name );",
+                     "typedef _IDL_SEQUENCE_Zoo_Pet SOMLINK somTP_Zoo_Pet__get_friends(",
+                     "#define __get_name Zoo_Pet__get_name",
+                     "typedef Zoo_Pet *SOMLINK somTP_Zoo_Keeper_adopt( Zoo_Keeper *somSelf, Environment *ev, string name );"] {
+            assert!(h.contains(want), "{want:?} missing in\n{h}");
+        }
+        assert!(!h.contains("_set_legs"), "readonly: no setter");
+        let ih = emitted(text, "ih");
+        for want in ["typedef struct Zoo_PetData_struct {\n    string name;\n    _IDL_SEQUENCE_Zoo_Pet friends;\n    long age;\n} Zoo_PetData;",
+                     "SOM_Scope string SOMLINK p__get_name( Zoo_Pet *somSelf, Environment *ev )\n{",
+                     "    return( somThis->name );", "    somThis->name = name;",
+                     "static char *somCN_Zoo_Pet_s = \"Zoo::Pet\";", "static char *somMC_Zoo_Pet_s = \"Zoo::Keeper\";",
+                     "    SOMObjectNewClass( 0, 0 );\n    Zoo_KeeperNewClass( Zoo_Keeper_MajorVersion, Zoo_Keeper_MinorVersion );",
+                     "SOM_Scope long SOMLINK _get_legs( Zoo_Cat *somSelf, Environment *ev );",
+                     "#define Zoo_Cat_parent_Zoo_Pet__get_legs( somSelf, ev ) \\\n    SOM_ParentNumResolve( Zoo_Pet, 1, Zoo_CatCClassData.parentMtab, _get_legs )"] {
+            assert!(ih.contains(want), "{want:?} missing in\n{ih}");
+        }
+        assert!(!ih.contains("return( somThis->legs )"), "nodata: the user implements it");
+        assert!(!ih.contains("somThis->age = age;"), "noset: the user implements it");
+        let c = emitted(text, "c");
+        assert!(c.contains("p__get_legs(") && c.contains("p__set_age(") && !c.contains("p__get_name("), "{c}");
     }
 
     /// The C template is written only when its file is not there.
