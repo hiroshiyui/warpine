@@ -20,6 +20,13 @@
  * WM_MENUEND each time menu mode ends. The View pull-down holds an
  * owner-drawn item: opened with F10, Left, Down, it is measured first
  * (WM_MEASUREITEM, answered 28) and then drawn 28 pels high (WM_DRAWITEM).
+ * Its Zoom item has a submenu, which opens as a cascade:
+ *
+ *   F10, Left, Down, Down, Right, Down, Enter -> View / Zoom / Zoom out
+ *                                      (WM_COMMAND 404, WM_INITMENU for
+ *                                      Zoom before its cascade opened)
+ *   click View, click Zoom, click Zoom in    -> WM_COMMAND 403, by the
+ *                                      pointer
  *
  * Before that, main() works on the menu with the MM_* item messages and
  * their macros: WinCheckMenuItem (Copy stays checked, so the golden
@@ -50,6 +57,7 @@ static int   menu_sources = 0;     /* WM_COMMANDs with CMDSRC_MENU, fPointer FAL
 static int   helps = 0;
 static int   measured = 0, drawn = 0, drawn_h = 0;
 static int   init_bar = 0, init_edit = 0, chosen_paste = 0, chosen_open = 0, ends = 0;
+static int   init_zoom = 0, pointer_sources = 0;
 static char  chars[MAX_LOG + 1];
 static int   n_chars = 0;
 
@@ -156,10 +164,13 @@ static MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM 
             commands[n_commands++] = SHORT1FROMMP( mp1 );
         if( SHORT1FROMMP( mp2 ) == CMDSRC_MENU && SHORT2FROMMP( mp2 ) == FALSE )
             menu_sources++;
+        if( SHORT1FROMMP( mp2 ) == CMDSRC_MENU && SHORT2FROMMP( mp2 ) == TRUE )
+            pointer_sources++;
         return 0;
     case WM_INITMENU:
         if( SHORT1FROMMP( mp1 ) == FID_MENU ) init_bar++;
         if( SHORT1FROMMP( mp1 ) == IDM_EDIT ) init_edit++;
+        if( SHORT1FROMMP( mp1 ) == IDM_ZOOM ) init_zoom++;
         break;
     case WM_MENUSELECT:
         if( SHORT2FROMMP( mp1 ) && SHORT1FROMMP( mp1 ) == IDM_PASTE ) chosen_paste++;
@@ -226,10 +237,14 @@ int main( void )
         WinDispatchMsg( hab, &qmsg );
 
     chars[n_chars] = '\0';
-    check( "two commands chosen", n_commands, 2 );
+    check( "four commands chosen", n_commands, 4 );
     check( "  Edit / Paste", commands[0], IDM_PASTE );
     check( "  File / Open (the separator and disabled item skipped)", commands[1], IDM_OPEN );
-    check( "  both from the menu, by keyboard", menu_sources, 2 );
+    check( "  three from the menu by keyboard", menu_sources, 3 );
+    check( "  View / Zoom / Zoom out from the cascade", commands[2], IDM_ZOOMOUT );
+    check( "  Zoom in from the cascade, by the pointer", commands[3], IDM_ZOOMIN );
+    check( "  one by the pointer", pointer_sources, 1 );
+    check( "WM_INITMENU for Zoom before each cascade opened", init_zoom, 2 );
     check( "F1 posts WM_HELP", helps, 1 );
     check( "WM_INITMENU for the menu bar", init_bar >= 3, TRUE );
     check( "WM_INITMENU for Edit before it dropped", init_edit, 1 );

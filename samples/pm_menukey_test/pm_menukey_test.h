@@ -10,3 +10,6 @@
 #define IDM_PASTE    202
 #define IDM_VIEW     400
 #define IDM_SWATCH   401
+#define IDM_ZOOM     402
+#define IDM_ZOOMIN   403
+#define IDM_ZOOMOUT  404

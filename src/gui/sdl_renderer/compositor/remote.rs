@@ -44,6 +44,8 @@ struct FrameLayer {
     parts: Vec<Rect>,
     /// The open pull-down's picture and its height.
     pulldown: Option<(Shared, i32)>,
+    /// The open cascade's picture and its height.
+    cascade: Option<(Shared, i32)>,
 }
 
 /// The process's side of the shared desktop.
@@ -102,6 +104,7 @@ impl RemoteDesktop {
         for h in gone {
             if let Some(l) = self.frames.remove(&h) {
                 if let Some((pd, _)) = l.pulldown { self.drop_pixmap(pd); }
+                if let Some((c, _)) = l.cascade { self.drop_pixmap(c); }
                 self.drop_pixmap(l.pixmap);
             }
         }
@@ -173,8 +176,8 @@ impl RemoteDesktop {
             let (generation, fb_size) = (fb.generation(), (fb.width, fb.height));
             drop(fb);
             let old = self.frames.remove(&p.hwnd);
-            let (pixmap, pulldown) = match old {
-                Some(l) if l.size == (w, h) => (l.pixmap, l.pulldown),
+            let (pixmap, pulldown, cascade) = match old {
+                Some(l) if l.size == (w, h) => (l.pixmap, l.pulldown, l.cascade),
                 other => {
                     let Some(s) = self.new_pixmap(w, h) else {
                         if let Some(l) = other { self.drop_pixmap(l.pixmap); }
@@ -182,45 +185,53 @@ impl RemoteDesktop {
                     };
                     if let Some(l) = other {
                         self.drop_pixmap(l.pixmap);
-                        (s, l.pulldown)
+                        (s, l.pulldown, l.cascade)
                     } else {
-                        (s, None)
+                        (s, None, None)
                     }
                 }
             };
             write_rect(&pixmap.pix, Rect::at(0, 0, w, h), &self.scratch);
             damage.push((pixmap.id, Area::new(0, 0, w, h)));
             self.frames.insert(p.hwnd, FrameLayer { pixmap, size: (w, h), fb_size, generation,
-                                                    cursor: f.cursor, parts, pulldown });
+                                                    cursor: f.cursor, parts, pulldown, cascade });
         }
         let layer = self.frames.get(&p.hwnd).expect("present");
         items.push(Item { frame: p.hwnd, pixmap: layer.pixmap.id, x: p.frame.x0, y: p.frame.y0,
                           parts: layer.parts.iter().map(|r| area(*r)).collect(), rounded: p.rounded });
 
-        // The open pull-down follows the chrome.
-        let pd = f.chrome.menu.as_ref().and_then(|m| m.pulldown.as_ref());
+        // The open pull-down and its cascade follow the chrome.
+        let menu = f.chrome.menu.as_ref();
         let mut layer = self.frames.remove(&p.hwnd).expect("present");
-        match pd {
-            None => {
-                if let Some((s, _)) = layer.pulldown.take() { self.drop_pixmap(s); }
-            }
-            Some(pd) => {
-                let stale = !reusable || layer.pulldown.as_ref().is_none_or(|(_, h)| *h != pd.h);
-                if stale {
-                    if let Some((s, _)) = layer.pulldown.take() { self.drop_pixmap(s); }
-                    if pd.h > 0 && let Some(s) = self.new_pixmap(MENU_DROPDOWN_W, pd.h) {
-                        write_rect(&s.pix, Rect::at(0, 0, MENU_DROPDOWN_W, pd.h), &pd.pixels);
-                        damage.push((s.id, Area::new(0, 0, MENU_DROPDOWN_W, pd.h)));
-                        layer.pulldown = Some((s, pd.h));
-                    }
-                }
-                if let Some((s, h)) = &layer.pulldown && !p.pulldown.is_empty() {
-                    items.push(Item { frame: p.hwnd, pixmap: s.id, x: p.pulldown.x0, y: p.pulldown.y0,
-                                      parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)], rounded: p.rounded });
-                }
+        let pd = menu.and_then(|m| m.pulldown.as_ref());
+        self.sync_menu_picture(&mut layer.pulldown, pd, reusable, p.pulldown, (p.hwnd, p.rounded), items, damage);
+        let cd = menu.and_then(|m| m.cascade_pd.as_ref()).map(|(_, c)| c);
+        self.sync_menu_picture(&mut layer.cascade, cd, reusable, p.cascade, (p.hwnd, p.rounded), items, damage);
+        self.frames.insert(p.hwnd, layer);
+    }
+
+    /// Bring a pull-down's or cascade's picture in `slot` up to date with
+    /// `pd`, and add its item at `rect` (of frame `hwnd`, rounded or not).
+    #[allow(clippy::too_many_arguments)]
+    fn sync_menu_picture(&mut self, slot: &mut Option<(Shared, i32)>, pd: Option<&super::super::Pulldown>,
+                         reusable: bool, rect: Rect, (hwnd, rounded): (u32, bool), items: &mut Vec<Item>,
+                         damage: &mut Vec<(u32, Area)>) {
+        let Some(pd) = pd else {
+            if let Some((s, _)) = slot.take() { self.drop_pixmap(s); }
+            return;
+        };
+        if !reusable || slot.as_ref().is_none_or(|(_, h)| *h != pd.h) {
+            if let Some((s, _)) = slot.take() { self.drop_pixmap(s); }
+            if pd.h > 0 && let Some(s) = self.new_pixmap(MENU_DROPDOWN_W, pd.h) {
+                write_rect(&s.pix, Rect::at(0, 0, MENU_DROPDOWN_W, pd.h), &pd.pixels);
+                damage.push((s.id, Area::new(0, 0, MENU_DROPDOWN_W, pd.h)));
+                *slot = Some((s, pd.h));
             }
         }
-        self.frames.insert(p.hwnd, layer);
+        if let Some((s, h)) = slot.as_ref() && !rect.is_empty() {
+            items.push(Item { frame: hwnd, pixmap: s.id, x: rect.x0, y: rect.y0,
+                              parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)], rounded });
+        }
     }
 
     /// Bring the pop-up menu's picture up to date; its item, if one is open.

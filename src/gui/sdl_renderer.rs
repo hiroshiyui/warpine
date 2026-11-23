@@ -505,9 +505,26 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
             if child.attr & MIA_CHECKED != 0 {
                 super::popup_menu::draw_check(buf, buf_w, dx1 - PULLDOWN_CHECK_X, row_top + row_h / 2, color);
             }
+            if !child.children.is_empty() {
+                draw_submenu_arrow(buf, buf_w, dx1 - SUBMENU_ARROW_X, row_top + row_h / 2, color);
+            }
             draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top + text_dy, &menu_label(&child.text),
                              color, FontSpec { cjk, ..FontSpec::SYSTEM });
         }
+    }
+}
+
+/// Room at the right of a pull-down row for a submenu's arrow, and the
+/// arrow's half height.
+const SUBMENU_ARROW_X: i32 = 10;
+const SUBMENU_ARROW_HALF: i32 = 3;
+
+/// A small triangle pointing right, its tip's row at `mid_y`, its base at
+/// `x`: the row's item opens a cascade.
+fn draw_submenu_arrow(buf: &mut [u32], buf_w: usize, x: i32, mid_y: i32, color: u32) {
+    for k in -SUBMENU_ARROW_HALF..=SUBMENU_ARROW_HALF {
+        let w = SUBMENU_ARROW_HALF + 1 - k.abs();
+        draw_filled_rect(buf, buf_w, x, mid_y + k, x + w, mid_y + k + 1, color);
     }
 }
 
@@ -540,6 +557,10 @@ struct MenuChrome {
     /// `bar_w` × `MENU_BAR_HEIGHT`.
     bar_px: Vec<u32>,
     pulldown: Option<Pulldown>,
+    /// The open cascade (`pm_menubar::Cascade`, encoded; 0 = none).
+    cascade: u32,
+    /// Its picture, with the pull-down row it opens from (`dx` unused).
+    cascade_pd: Option<(usize, Pulldown)>,
 }
 
 /// Pre-rendered chrome of one frame: title bar, menu bar and open pull-down.
@@ -578,7 +599,7 @@ impl ChromeCache {
     /// was never rendered), in which case the frame's chrome must be redrawn.
     #[allow(clippy::too_many_arguments)]
     fn sync(&mut self, title: &str, cx: i32, frame_flags: u32, state: u32, focused: bool,
-            menu: Option<(&[MenuItem], u32)>, bar_w: i32) -> bool {
+            menu: Option<(&[MenuItem], u32, u32)>, bar_w: i32) -> bool {
         let mut changed = self.stale;
         if self.title != title {
             self.title.clear();
@@ -591,11 +612,12 @@ impl ChromeCache {
         }
         match (menu, &self.menu) {
             (None, None) => {}
-            (Some((items, open)), Some(m))
-                if m.open_item == open && m.bar_w == bar_w && m.items == items => {}
+            (Some((items, open, cascade)), Some(m))
+                if m.open_item == open && m.cascade == cascade && m.bar_w == bar_w && m.items == items => {}
             (menu, _) => {
-                self.menu = menu.map(|(items, open_item)| MenuChrome {
+                self.menu = menu.map(|(items, open_item, cascade)| MenuChrome {
                     items: items.to_vec(), open_item, bar_w, bar_px: Vec::new(), pulldown: None,
+                    cascade, cascade_pd: None,
                 });
                 changed = true;
             }
@@ -649,6 +671,15 @@ impl ChromeCache {
             }
             _ => None,
         };
+        // The cascade of one of its rows (pm_menubar.rs).
+        let parent = menubar::drawn_pulldown(m.open_item).and_then(|i| m.items.get(i)).filter(|_| m.pulldown.is_some());
+        m.cascade_pd = menubar::Cascade::decode(m.cascade).and_then(|c| {
+            let sub = parent?.children.get(c.row).filter(|s| pulldown_h(s) > 0)?;
+            let h = pulldown_h(sub);
+            let mut pixels = vec![0; MENU_DROPDOWN_W as usize * h as usize];
+            draw_menu_pulldown(&mut pixels, MENU_DROPDOWN_W as usize, 0, 0, sub, c.hilite, self.cjk);
+            Some((c.row, Pulldown { dx: 0, h, pixels }))
+        });
     }
 }
 
@@ -665,6 +696,8 @@ struct FramePlacement {
     menu_bar: Rect,
     /// Open pull-down (empty when none is open); may extend past the frame.
     pulldown: Rect,
+    /// The open cascade of one of its rows (empty when none is open).
+    cascade: Rect,
     /// Client area, where the frame buffer is drawn (clamped to its size).
     client: Rect,
     /// The frame buffer fills `client`, so every pixel of `frame` is painted
@@ -678,10 +711,11 @@ impl FramePlacement {
     /// Everything the frame paints: the frame plus an open pull-down, and
     /// its shadow when rounded.
     fn extent(&self) -> Rect {
-        let e = self.frame.union(&self.pulldown);
+        let e = self.frame.union(&self.pulldown).union(&self.cascade);
         if !self.rounded { return e; }
-        let e = e.union(&super::frame_shape::shadow_extent(self.frame));
-        if self.pulldown.is_empty() { e } else { e.union(&super::frame_shape::shadow_extent(self.pulldown)) }
+        [self.pulldown, self.cascade].iter().filter(|r| !r.is_empty())
+            .fold(e.union(&super::frame_shape::shadow_extent(self.frame)),
+                  |e, r| e.union(&super::frame_shape::shadow_extent(*r)))
     }
 }
 
@@ -706,10 +740,22 @@ fn place_frame(hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, ha
         pulldown: pulldown
             .map(|(dx, h)| Rect::at(x + bw + dx, top + th + mh, MENU_DROPDOWN_W, h))
             .unwrap_or(Rect::EMPTY),
+        cascade: Rect::EMPTY,
         client,
         opaque: fb.0 as i32 >= client.width() && fb.1 as i32 >= client.height(),
         rounded: false,
     }
+}
+
+/// Where the open cascade of `menu` lands with the frame at `p`
+/// (`pm_menubar::cascade_offset`); empty without one.
+fn cascade_rect(p: &FramePlacement, menu: Option<&MenuChrome>) -> Rect {
+    let Some(m) = menu else { return Rect::EMPTY };
+    let (Some((row, pd)), false) = (&m.cascade_pd, p.pulldown.is_empty()) else { return Rect::EMPTY };
+    let Some(parent) = menubar::drawn_pulldown(m.open_item).and_then(|i| m.items.get(i)) else { return Rect::EMPTY };
+    let at = (p.pulldown.x0 - p.frame.x0, p.pulldown.y0 - p.frame.y0);
+    let (dx, dy) = menubar::cascade_offset(at, parent, *row, (p.frame.width(), p.frame.height()));
+    Rect::at(p.pulldown.x0 + dx, p.pulldown.y0 + dy, MENU_DROPDOWN_W, pd.h)
 }
 
 /// Draw one frame — client content, title bar, border, menu bar and
@@ -733,6 +779,9 @@ fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
         blit(buf, &m.bar_px, m.bar_w, p.menu_bar);
         if let Some(pd) = &m.pulldown {
             blit(buf, &pd.pixels, MENU_DROPDOWN_W, p.pulldown);
+        }
+        if let Some((_, c)) = &m.cascade_pd && !p.cascade.is_empty() {
+            blit(buf, &c.pixels, MENU_DROPDOWN_W, p.cascade);
         }
     }
 }
@@ -1610,7 +1659,8 @@ impl SdlRenderer {
                 let frame_flags = display_flags(w.frame_flags, state);
                 let menu = wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0 && state & WS_MINIMIZED == 0).map(|m| {
                     let ul = |k| m.window_ulong.get(&k).copied().unwrap_or(0);
-                    (m.menu_items.as_slice(), menubar::draw_state(ul(menubar::OPEN_ITEM_KEY), ul(menubar::MENU_MODE_KEY)))
+                    (m.menu_items.as_slice(), menubar::draw_state(ul(menubar::OPEN_ITEM_KEY), ul(menubar::MENU_MODE_KEY)),
+                     ul(menubar::CASCADE_KEY))
                 });
                 let bar_w = w.cx - 2 * frame_border_px(frame_flags);
                 // Title and menu text follow the frame's queue codepage.
@@ -1644,6 +1694,7 @@ impl SdlRenderer {
             let mut p = place_frame(s.hwnd, s.x, s.y, s.cx, s.cy, s.frame_flags, s.has_menu, pulldown,
                                     fb, dh);
             p.rounded = s.rounded;
+            p.cascade = cascade_rect(&p, self.chrome[&s.hwnd].menu.as_ref());
             p
         }).collect();
 
@@ -4046,14 +4097,14 @@ mod compositor_tests {
     fn chrome_cache_reports_only_real_changes() {
         let mut c = ChromeCache::new();
         let items = items();
-        assert!(c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196), "first sync renders");
+        assert!(c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 196), "first sync renders");
         c.render();
-        assert!(!c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196), "unchanged");
+        assert!(!c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 196), "unchanged");
         for changed in [
-            c.sync("App 2", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196),
-            c.sync("App 2", 220, FCF_TITLEBAR, 0, true, Some((&items, 0)), 216),
-            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, Some((&items, 0)), 216),
-            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, Some((&items, 1)), 216),
+            c.sync("App 2", 200, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 196),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, Some((&items, 0, 0)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, Some((&items, 1, 0)), 216),
             c.sync("App 2", 220, FCF_TITLEBAR, 0, false, None, 216),
         ] {
             assert!(changed);
@@ -4071,11 +4122,11 @@ mod compositor_tests {
         let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![], image: None, row_h: 0 }];
         assert!(!c.set_cjk(CjkRegion::Auto), "unchanged");
         c.set_cjk(CjkRegion::Japanese);
-        c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196);
+        c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 196);
         c.render();
         let (title, bar) = (c.title_px.clone(), c.menu.as_ref().unwrap().bar_px.clone());
         assert!(c.set_cjk(CjkRegion::SimplifiedChinese), "a new face");
-        assert!(!c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196) || c.stale);
+        assert!(!c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 196) || c.stale);
         c.render();
         assert_ne!(c.title_px, title, "title redrawn in the Chinese face");
         assert_ne!(c.menu.as_ref().unwrap().bar_px, bar, "menu bar redrawn in the Chinese face");
@@ -4107,7 +4158,7 @@ mod compositor_tests {
     fn chrome_cache_renders_title_menu_and_open_pulldown() {
         let mut c = ChromeCache::new();
         let items = items();
-        c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 1)), 196);
+        c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 1, 0)), 196);
         c.render();
         assert_eq!(c.title_px.len(), 200 * CHROME_TITLE_H as usize);
         assert_eq!(c.title_px[200 * 5 + 100], CHROME_TITLE_ACTIVE, "title bar background");
@@ -4117,9 +4168,36 @@ mod compositor_tests {
         assert_eq!((pd.dx, pd.h), (MENU_BAR_ITEM_INSET, 2 * MENU_DROPDOWN_ITEM_H));
         assert_eq!(pd.pixels.len(), (MENU_DROPDOWN_W * pd.h) as usize);
         // Closing the menu drops the pull-down.
-        c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196);
+        c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0, 0)), 196);
         c.render();
         assert!(c.menu.as_ref().unwrap().pulldown.is_none());
+    }
+
+    /// A pull-down row with a submenu: its cascade is rendered beside the
+    /// pull-down, at its row, inside the frame.
+    #[test]
+    fn chrome_cache_renders_an_open_cascade_beside_its_row() {
+        let mut items = items();
+        let leaf = |id| MenuItem { id, style: crate::loader::constants::MIS_TEXT, attr: 0, text: "Leaf".into(), children: vec![], image: None, row_h: 0 };
+        let row = items[0].children.len() - 1;
+        items[0].children[row].style |= crate::loader::constants::MIS_SUBMENU;
+        items[0].children[row].children = vec![leaf(901), leaf(902), leaf(903)];
+        let mut c = ChromeCache::new();
+        let open = menubar::Cascade { row, hilite: Some(1) }.encode();
+        assert!(c.sync("App", 400, FCF_TITLEBAR, 0, true, Some((&items, 1, open)), 396));
+        c.render();
+        let m = c.menu.as_ref().unwrap();
+        let (r, cd) = m.cascade_pd.as_ref().expect("the cascade is drawn");
+        assert_eq!((*r, cd.h), (row, 3 * MENU_DROPDOWN_ITEM_H));
+        let p = place_frame(1, 0, 0, 400, 300, FCF_TITLEBAR, true, Some((m.pulldown.as_ref().unwrap().dx, m.pulldown.as_ref().unwrap().h)), (400, 300), 300);
+        let r = cascade_rect(&p, c.menu.as_ref());
+        assert_eq!((r.x0, r.y0), (p.pulldown.x0 + MENU_DROPDOWN_W - menubar::CASCADE_OVERLAP,
+                                  p.pulldown.y0 + row as i32 * MENU_DROPDOWN_ITEM_H));
+        assert!(p.frame.contains(&r), "inside the frame");
+        assert!(!c.sync("App", 400, FCF_TITLEBAR, 0, true, Some((&items, 1, open)), 396), "unchanged");
+        assert!(c.sync("App", 400, FCF_TITLEBAR, 0, true, Some((&items, 1, 0)), 396), "closing it is a change");
+        c.render();
+        assert!(c.menu.as_ref().unwrap().cascade_pd.is_none());
     }
 
     #[test]

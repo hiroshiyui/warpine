@@ -351,6 +351,14 @@ impl Compositor for SoftwareCompositor {
                                          p.pulldown.width(), p.pulldown.height(), r);
                         });
                     }
+                    // Its cascade, over the pull-down's side.
+                    if let Some((_, c)) = f.chrome.menu.as_ref().and_then(|m| m.cascade_pd.as_ref())
+                        && !p.cascade.is_empty() {
+                        shaped(&mut self.buffer, dw, p.cascade, r, |buf| {
+                            blit_clipped(buf, dw, &c.pixels, MENU_DROPDOWN_W as usize, p.cascade.x0, p.cascade.y0,
+                                         p.cascade.width(), p.cascade.height(), r);
+                        });
+                    }
                 } else {
                     draw_placed_frame(&mut self.buffer, dw, p, &fb, f.chrome, r);
                 }
@@ -489,6 +497,8 @@ struct Layer {
     parts: Vec<Rect>,
     /// The open pull-down's texture and height.
     pulldown: Option<(Texture<'static>, i32)>,
+    /// The open cascade's texture and height.
+    cascade: Option<(Texture<'static>, i32)>,
     /// The cursor laid over the texture's client pels.
     cursor: Option<CursorMark>,
     /// Drawn with rounded corners (alpha) and a shadow.
@@ -501,6 +511,7 @@ struct DrawItem {
     hwnd: u32,
     origin: (i32, i32),
     pulldown: Rect,
+    cascade: Rect,
 }
 
 /// One texture per frame, drawn as quads by the SDL renderer.
@@ -569,6 +580,7 @@ impl FramePlacement {
             title: self.title.offset(dx, dy),
             menu_bar: self.menu_bar.offset(dx, dy),
             pulldown: Rect::EMPTY,
+            cascade: Rect::EMPTY,
             client: self.client.offset(dx, dy),
             opaque: self.opaque,
             rounded: self.rounded,
@@ -670,7 +682,7 @@ impl LayeredCompositor {
                 warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
             }
             self.layers.insert(p.hwnd, Layer { texture, size: (w, h), generation, fb_size,
-                                               parts, pulldown: None, cursor: f.cursor, rounded: p.rounded });
+                                               parts, pulldown: None, cascade: None, cursor: f.cursor, rounded: p.rounded });
             if p.rounded { self.ensure_shadow(); }
         }
         let stale = !reusable;
@@ -686,6 +698,19 @@ impl LayeredCompositor {
                     .map_err(|e| warn!("[GUI] pull-down texture failed: {e}"))
                     .ok()
                     .map(|t| (t, pd.h));
+            }
+            Some(_) => {}
+        }
+        // So does its cascade's.
+        let cd = f.chrome.menu.as_ref().and_then(|m| m.cascade_pd.as_ref()).map(|(_, c)| c);
+        match cd {
+            None => layer.cascade = None,
+            Some(c) if stale || layer.cascade.as_ref().is_none_or(|(_, h)| *h != c.h) => {
+                let rounded = layer.rounded;
+                layer.cascade = shaped_texture(self.creator, &c.pixels, (MENU_DROPDOWN_W, c.h), rounded)
+                    .map_err(|e| warn!("[GUI] cascade texture failed: {e}"))
+                    .ok()
+                    .map(|t| (t, c.h));
             }
             Some(_) => {}
         }
@@ -709,9 +734,11 @@ impl LayeredCompositor {
                     warn!("[GUI] drawing frame {:#x} failed: {e}", item.hwnd);
                 }
             }
-            if let Some((pd, _)) = &layer.pulldown && !item.pulldown.is_empty() {
-                if layer.rounded { draw_shadow(&mut self.canvas, self.shadow.as_ref(), item.pulldown); }
-                if let Err(e) = self.canvas.copy(pd, None::<FRect>, frect(item.pulldown)) {
+            for (t, rect) in [(&layer.pulldown, item.pulldown), (&layer.cascade, item.cascade)] {
+                let Some((t, _)) = t else { continue };
+                if rect.is_empty() { continue; }
+                if layer.rounded { draw_shadow(&mut self.canvas, self.shadow.as_ref(), rect); }
+                if let Err(e) = self.canvas.copy(t, None::<FRect>, frect(rect)) {
                     warn!("[GUI] drawing a pull-down failed: {e}");
                 }
             }
@@ -784,7 +811,7 @@ impl Compositor for LayeredCompositor {
             let p = f.placement;
             if self.update_layer(f, scene.full, scene.chrome_changed.contains(&p.hwnd)) {
                 draw_list.push(DrawItem { hwnd: p.hwnd, origin: (p.frame.x0, p.frame.y0),
-                                          pulldown: p.pulldown });
+                                          pulldown: p.pulldown, cascade: p.cascade });
             }
         }
         self.layers.retain(|h, _| scene.frames.iter().any(|f| f.placement.hwnd == *h));

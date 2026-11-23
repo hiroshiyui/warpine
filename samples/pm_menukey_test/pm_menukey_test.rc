@@ -21,5 +21,10 @@ BEGIN
     SUBMENU "~View", IDM_VIEW
     BEGIN
         MENUITEM "Swatch", IDM_SWATCH, MIS_OWNERDRAW
+        SUBMENU "~Zoom", IDM_ZOOM
+        BEGIN
+            MENUITEM "Zoom ~in", IDM_ZOOMIN
+            MENUITEM "Zoom ~out", IDM_ZOOMOUT
+        END
     END
 END

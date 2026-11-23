@@ -54,26 +54,78 @@ pub const OPEN_ITEM_KEY: i32 = -1;
 /// `window_ulong` key of the keyboard menu mode ([`MenuMode::encode`]).
 pub const MENU_MODE_KEY: i32 = -2;
 
-/// Keyboard menu mode: the highlighted bar item and, while its pull-down
-/// is dropped, the highlighted row.
+/// `window_ulong` key of the open cascade ([`Cascade::encode`]).
+pub const CASCADE_KEY: i32 = -3;
+/// How far a cascade overlaps the pull-down it opens from (pels).
+pub const CASCADE_OVERLAP: i32 = 2;
+
+/// Keyboard menu mode: the highlighted bar item; while its pull-down is
+/// dropped, the highlighted row; while that row's cascade is open, the
+/// highlighted row in it (`sub`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuMode {
     pub item: usize,
     pub row: Option<usize>,
+    pub sub: Option<usize>,
 }
 
+/// Bits of each 1-based field of [`MenuMode::encode`].
+const ITEM_BITS: u32 = 10;
+const ROW_BITS: u32 = 11;
+
 impl MenuMode {
-    /// As stored: the 1-based item in the low word, the 1-based row (0 = no
-    /// pull-down) in the high word; 0 = not in menu mode.
+    /// As stored: the 1-based item in the low 10 bits, the 1-based row (0 =
+    /// no pull-down) in the next 11, the 1-based cascade row (0 = no
+    /// cascade) in the top 11; 0 = not in menu mode.
     pub fn encode(self) -> u32 {
-        (self.item as u32 + 1) & 0xFFFF | (self.row.map_or(0, |r| r as u32 + 1) << 16)
+        let field = |v: Option<usize>, bits: u32| v.map_or(0, |v| (v as u32 + 1) & ((1 << bits) - 1));
+        field(Some(self.item), ITEM_BITS) | field(self.row, ROW_BITS) << ITEM_BITS
+            | field(self.sub, ROW_BITS) << (ITEM_BITS + ROW_BITS)
     }
 
     pub fn decode(v: u32) -> Option<MenuMode> {
-        let item = (v & 0xFFFF).checked_sub(1)? as usize;
-        let row = (v >> 16).checked_sub(1).map(|r| r as usize);
-        Some(MenuMode { item, row })
+        let field = |shift: u32, bits: u32| ((v >> shift) & ((1 << bits) - 1)).checked_sub(1).map(|x| x as usize);
+        let item = field(0, ITEM_BITS)?;
+        Some(MenuMode { item, row: field(ITEM_BITS, ROW_BITS), sub: field(ITEM_BITS + ROW_BITS, ROW_BITS) })
     }
+}
+
+/// An open cascade: the pull-down row it opens from and its highlighted
+/// row, if any (keyboard menu mode highlights one, a click none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cascade {
+    pub row: usize,
+    pub hilite: Option<usize>,
+}
+
+impl Cascade {
+    /// As stored: the 1-based row in the low word, the 1-based highlighted
+    /// row (0 = none) in the high word; 0 = no cascade.
+    pub fn encode(self) -> u32 {
+        (self.row as u32 + 1) & 0xFFFF | (self.hilite.map_or(0, |h| h as u32 + 1) & 0xFFFF) << 16
+    }
+
+    pub fn decode(v: u32) -> Option<Cascade> {
+        let row = (v & 0xFFFF).checked_sub(1)? as usize;
+        Some(Cascade { row, hilite: (v >> 16).checked_sub(1).map(|h| h as usize) })
+    }
+}
+
+/// Where the cascade of `parent`'s row `row` goes, from the pull-down's
+/// top-left corner `at` in its frame (pels, y down) in a frame `frame`
+/// (width, height): `(dx, dy)` from that corner. It opens to the right of
+/// the pull-down, overlapping it by [`CASCADE_OVERLAP`], or to its left
+/// when the frame has no room on the right, level with its row, moved up
+/// when it would leave the frame at the bottom (never above the
+/// pull-down's top): the frame takes the clicks on it. TODO(unverified): where PM puts a cascade.
+pub fn cascade_offset(at: (i32, i32), parent: &MenuItem, row: usize, frame: (i32, i32)) -> (i32, i32) {
+    let Some(sub) = parent.children.get(row) else { return (0, 0) };
+    let w = MENU_DROPDOWN_W - CASCADE_OVERLAP;
+    let dx = if at.0 + w + MENU_DROPDOWN_W <= frame.0 || at.0 < w { w } else { -w };
+    let h = sub.children.len() as i32 * sub.row_h();
+    let top = at.1 + row as i32 * parent.row_h();
+    let dy = top.min(frame.1 - h).max(at.1) - at.1;
+    (dx, dy)
 }
 
 /// Flag of [`draw_state`]: the bar item is highlighted, its pull-down not
@@ -86,7 +138,7 @@ const DRAW_BAR_ONLY: u32 = 0x8000_0000;
 /// (1-based) above it, and [`DRAW_BAR_ONLY`] when no pull-down shows.
 pub fn draw_state(open: u32, mode: u32) -> u32 {
     match MenuMode::decode(mode) {
-        Some(MenuMode { item, row: None }) => (item as u32 + 1) & 0xFFFF | DRAW_BAR_ONLY,
+        Some(MenuMode { item, row: None, .. }) => (item as u32 + 1) & 0xFFFF | DRAW_BAR_ONLY,
         Some(MenuMode { row: Some(r), .. }) => open & 0xFFFF | ((r as u32 + 1) & 0x7FFF) << 16,
         None => open & 0xFFFF,
     }
@@ -154,7 +206,7 @@ fn enter_item(items: &[MenuItem], item: usize) -> MenuKey {
     if it.children.is_empty() {
         return MenuKey::Choose(MenuItemRef { id: it.id, style: it.style });
     }
-    MenuKey::Stay(MenuMode { item, row: first_selectable(&it.children) })
+    MenuKey::Stay(MenuMode { item, row: first_selectable(&it.children), sub: None })
 }
 
 /// The effect of virtual key `vk` (0 for a character) or character `ch`
@@ -165,12 +217,19 @@ pub fn menu_key(items: &[MenuItem], mode: MenuMode, vk: u32, ch: Option<char>) -
     let along = |step| {
         let item = step_in(items, mode.item, step);
         match mode.row {
-            Some(_) => MenuKey::Stay(MenuMode { item, row: first_selectable(&items[item].children) }),
-            None => MenuKey::Stay(MenuMode { item, row: None }),
+            Some(_) => MenuKey::Stay(MenuMode { item, row: first_selectable(&items[item].children), sub: None }),
+            None => MenuKey::Stay(MenuMode { item, row: None, sub: None }),
         }
     };
+    if let (Some(row), Some(sub)) = (mode.row, mode.sub) {
+        return cascade_key(bar, mode, row, sub, vk, ch, along);
+    }
+    // A row with a cascade opens it (Right, Enter, its mnemonic).
+    let open = |row: usize| MenuKey::Stay(MenuMode { row: Some(row), sub: first_selectable(&bar.children[row].children), ..mode });
+    let has_cascade = |row: usize| bar.children.get(row).is_some_and(|c| !c.children.is_empty() && selectable(c));
     match (mode.row, vk) {
         (_, VK_F10) => MenuKey::Leave,
+        (Some(row), VK_RIGHT) if has_cascade(row) => open(row),
         (_, VK_LEFT) => along(-1),
         (_, VK_RIGHT) => along(1),
         (None, VK_ESC) => MenuKey::Leave,
@@ -184,6 +243,7 @@ pub fn menu_key(items: &[MenuItem], mode: MenuMode, vk: u32, ch: Option<char>) -
         (Some(_), VK_END) => MenuKey::Stay(MenuMode {
             row: bar.children.iter().rposition(selectable).or(mode.row), ..mode
         }),
+        (Some(row), VK_ENTER | VK_NEWLINE) if has_cascade(row) => open(row),
         (Some(row), VK_ENTER | VK_NEWLINE) => match bar.children.get(row) {
             Some(c) if selectable(c) => MenuKey::Choose(MenuItemRef { id: c.id, style: c.style }),
             _ => MenuKey::Stay(mode),
@@ -194,10 +254,37 @@ pub fn menu_key(items: &[MenuItem], mode: MenuMode, vk: u32, ch: Option<char>) -
                 None => mnemonic_of(items, ch).map_or(MenuKey::Stay(mode), |i| enter_item(items, i)),
                 Some(_) => mnemonic_of(&bar.children, ch).map_or(MenuKey::Stay(mode), |r| {
                     let c = &bar.children[r];
-                    MenuKey::Choose(MenuItemRef { id: c.id, style: c.style })
+                    if has_cascade(r) { open(r) } else { MenuKey::Choose(MenuItemRef { id: c.id, style: c.style }) }
                 }),
             }
         }
+    }
+}
+
+/// A key in the open cascade of pull-down row `row` (highlighting `sub`):
+/// Up / Down / Home / End move in it, Enter or a mnemonic chooses, Left or
+/// Esc closes it, Right moves on along the bar (`along`). A cascade's own
+/// submenus do not open: Warpine shows one level.
+fn cascade_key(bar: &MenuItem, mode: MenuMode, row: usize, sub: usize, vk: u32, ch: Option<char>,
+               along: impl Fn(isize) -> MenuKey) -> MenuKey {
+    let Some(items) = bar.children.get(row).map(|c| &c.children) else { return MenuKey::Stay(MenuMode { sub: None, ..mode }) };
+    let stay = |sub: Option<usize>| MenuKey::Stay(MenuMode { sub, ..mode });
+    let choose = |i: usize| match items.get(i) {
+        Some(c) if selectable(c) && c.children.is_empty() => MenuKey::Choose(MenuItemRef { id: c.id, style: c.style }),
+        _ => stay(Some(sub)),
+    };
+    match vk {
+        VK_F10 => MenuKey::Leave,
+        VK_LEFT | VK_ESC => stay(None),
+        VK_RIGHT => along(1),
+        VK_DOWN | VK_UP => stay(Some(step_in(items, sub, if vk == VK_DOWN { 1 } else { -1 }))),
+        VK_HOME => stay(first_selectable(items).or(Some(sub))),
+        VK_END => stay(items.iter().rposition(selectable).or(Some(sub))),
+        VK_ENTER | VK_NEWLINE => choose(sub),
+        _ => match ch.and_then(|ch| mnemonic_of(items, ch)) {
+            Some(i) => choose(i),
+            None => stay(Some(sub)),
+        },
     }
 }
 
@@ -217,7 +304,16 @@ pub fn chosen_message(item: MenuItemRef) -> (u32, u32, u32) {
 /// pull-down, else the bar item.
 fn highlighted(items: &[MenuItem], mode: MenuMode) -> Option<&MenuItem> {
     let bar = items.get(mode.item)?;
-    match mode.row { Some(r) => bar.children.get(r), None => Some(bar) }
+    match (mode.row, mode.sub) {
+        (Some(r), Some(s)) => bar.children.get(r)?.children.get(s),
+        (Some(r), None) => bar.children.get(r),
+        _ => Some(bar),
+    }
+}
+
+/// The cascade of `mode`'s row, open from the keyboard.
+fn keyboard_cascade(mode: MenuMode) -> Option<(usize, usize)> {
+    Some((mode.row?, mode.sub?))
 }
 
 /// The owner calls the pull-down of `parent` makes when it drops: its
@@ -244,9 +340,17 @@ pub fn transition_calls(items: &[MenuItem], menu_id: u16, old: Option<MenuMode>,
         calls.push(OwnerCallKind::MenuInit { id: bar.id });
         calls.extend(pulldown_owner_calls(bar));
     }
+    // A cascade opening: WM_INITMENU for its row's item, then its
+    // owner-drawn items.
+    if let Some(n) = new && let Some((row, _)) = keyboard_cascade(n)
+        && old.is_none_or(|o| o.item != n.item || keyboard_cascade(o).is_none_or(|(r, _)| r != row))
+        && let Some(sub) = items.get(n.item).and_then(|b| b.children.get(row)) {
+        calls.push(OwnerCallKind::MenuInit { id: sub.id });
+        calls.extend(pulldown_owner_calls(sub));
+    }
     let before = old.and_then(|m| highlighted(items, m));
     let after = new.and_then(|m| highlighted(items, m));
-    if before.map(|i| i.id) != after.map(|i| i.id) || old.map(|m| (m.item, m.row)) != new.map(|m| (m.item, m.row)) {
+    if before.map(|i| i.id) != after.map(|i| i.id) || old.map(|m| (m.item, m.row, m.sub)) != new.map(|m| (m.item, m.row, m.sub)) {
         let owner_drawn = |i: &&MenuItem| i.style & MIS_OWNERDRAW != 0;
         if let Some(i) = before.filter(owner_drawn).filter(|_| old.is_some_and(|m| m.row.is_some())) {
             calls.push(OwnerCallKind::DrawMenuItem { id: i.id, hilite: Some(false) });
@@ -328,6 +432,48 @@ impl Loader {
                                          OwnerCallKind::MenuEnd { id: menu_id }]);
     }
 
+    /// Close `menu`'s pull-down and its cascade (the mouse's state).
+    pub(super) fn close_pulldown(&self, menu: u32) {
+        if let Some(w) = self.shared.window_mgr.lock_or_recover().get_window_mut(menu) {
+            w.window_ulong.remove(&OPEN_ITEM_KEY);
+            w.window_ulong.remove(&CASCADE_KEY);
+        }
+    }
+
+    /// A click on pull-down row `row` of `parent`, an item with a cascade:
+    /// open it (`WM_INITMENU`, then its owner-drawn items), or close it if
+    /// it is the one open.
+    pub(super) fn mouse_cascade(&self, menu: u32, parent: &MenuItem, row: usize) {
+        let Some(sub) = parent.children.get(row) else { return };
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let Some(w) = wm.get_window_mut(menu) else { return };
+        let open = w.window_ulong.get(&CASCADE_KEY).copied().and_then(Cascade::decode);
+        if open.is_some_and(|c| c.row == row) {
+            w.window_ulong.remove(&CASCADE_KEY);
+        } else {
+            w.window_ulong.insert(CASCADE_KEY, Cascade { row, hilite: None }.encode());
+            for kind in std::iter::once(OwnerCallKind::MenuInit { id: sub.id }).chain(pulldown_owner_calls(sub)) {
+                wm.queue_owner_call(OwnerCall { control: menu, kind });
+            }
+        }
+    }
+
+    /// The open cascade of `menu`, whose pull-down of `parent` has its
+    /// top-left corner at `(drop_x, drop_top)` (frame coordinates, y up):
+    /// its left edge, its top (y up) and its item.
+    pub(super) fn open_cascade<'a>(&self, menu: u32, parent: &'a MenuItem, drop_x: i32, drop_top: i32)
+            -> Option<(i32, i32, &'a MenuItem)> {
+        let (cascade, frame) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let c = wm.get_window(menu)?.window_ulong.get(&CASCADE_KEY).copied().and_then(Cascade::decode)?;
+            let f = wm.get_window(wm.find_frame_for_hwnd(menu))?;
+            (c, (f.cx, f.cy))
+        };
+        let sub = parent.children.get(cascade.row)?;
+        let (dx, dy) = cascade_offset((drop_x, frame.1 - drop_top), parent, cascade.row, frame);
+        Some((drop_x + dx, drop_top - dy, sub))
+    }
+
     /// Queue the owner calls of `kinds` for menu `menu`.
     fn queue_menu_calls(&self, menu: u32, kinds: Vec<OwnerCallKind>) {
         let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -364,6 +510,10 @@ impl Loader {
             match mode {
                 Some(m) => {
                     w.window_ulong.insert(MENU_MODE_KEY, m.encode());
+                    match keyboard_cascade(m) {
+                        Some((row, sub)) => { w.window_ulong.insert(CASCADE_KEY, Cascade { row, hilite: Some(sub) }.encode()); }
+                        None => { w.window_ulong.remove(&CASCADE_KEY); }
+                    }
                     match m.row {
                         Some(_) => { w.window_ulong.insert(OPEN_ITEM_KEY, m.item as u32 + 1); }
                         None => { w.window_ulong.remove(&OPEN_ITEM_KEY); }
@@ -372,6 +522,7 @@ impl Loader {
                 None => {
                     w.window_ulong.remove(&MENU_MODE_KEY);
                     w.window_ulong.remove(&OPEN_ITEM_KEY);
+                    w.window_ulong.remove(&CASCADE_KEY);
                 }
             }
             let frame = wm.find_frame_for_hwnd(menu);
@@ -388,7 +539,7 @@ impl Loader {
         };
         let Some(item) = first_selectable(&items) else { return false };
         let row = if show { first_selectable(&items[item].children) } else { None };
-        self.set_menu_mode(menu, Some(MenuMode { item, row }));
+        self.set_menu_mode(menu, Some(MenuMode { item, row, sub: None }));
         true
     }
 
@@ -505,7 +656,7 @@ mod tests {
         ]
     }
 
-    fn at(item: usize, row: Option<usize>) -> MenuMode { MenuMode { item, row } }
+    fn at(item: usize, row: Option<usize>) -> MenuMode { MenuMode { item, row, sub: None } }
 
     #[test]
     fn the_drawn_state_shows_the_highlight_and_the_pull_down() {
@@ -516,6 +667,67 @@ mod tests {
         let s = draw_state(1, at(0, Some(3)).encode());
         assert_eq!((drawn_item(s), drawn_pulldown(s), drawn_row(s)), (Some(0), Some(0), Some(3)));
         assert_eq!(drawn_item(draw_state(0, 0)), None);
+    }
+
+    /// A bar whose View pull-down has a row (Zoom) with a cascade.
+    fn cascading() -> Vec<MenuItem> {
+        vec![item(1, "~File", vec![item(11, "~Open", vec![])]),
+             item(4, "~View", vec![item(41, "~Plain", vec![]),
+                                   item(42, "~Zoom", vec![item(43, "Zoom ~in", vec![]), item(44, "Zoom ~out", vec![])])])]
+    }
+
+    fn sub(item: usize, row: usize, sub: usize) -> MenuMode { MenuMode { item, row: Some(row), sub: Some(sub) } }
+
+    #[test]
+    fn cascades_open_move_choose_and_close() {
+        let b = cascading();
+        let chose = |id| MenuKey::Choose(MenuItemRef { id, style: MIS_TEXT });
+        assert_eq!(menu_key(&b, at(1, Some(0)), VK_RIGHT, None), MenuKey::Stay(at(0, Some(0))),
+                   "Right on a row without a cascade moves along the bar");
+        assert_eq!(menu_key(&b, at(1, Some(1)), VK_RIGHT, None), MenuKey::Stay(sub(1, 1, 0)), "Right opens it");
+        assert_eq!(menu_key(&b, at(1, Some(1)), VK_ENTER, None), MenuKey::Stay(sub(1, 1, 0)), "so does Enter");
+        assert_eq!(menu_key(&b, at(1, Some(0)), 0, Some('z')), MenuKey::Stay(sub(1, 1, 0)), "and its mnemonic");
+        assert_eq!(menu_key(&b, sub(1, 1, 0), VK_DOWN, None), MenuKey::Stay(sub(1, 1, 1)));
+        assert_eq!(menu_key(&b, sub(1, 1, 1), VK_DOWN, None), MenuKey::Stay(sub(1, 1, 0)), "wraps");
+        assert_eq!(menu_key(&b, sub(1, 1, 0), VK_END, None), MenuKey::Stay(sub(1, 1, 1)));
+        assert_eq!(menu_key(&b, sub(1, 1, 1), VK_ENTER, None), chose(44));
+        assert_eq!(menu_key(&b, sub(1, 1, 1), 0, Some('i')), chose(43));
+        assert_eq!(menu_key(&b, sub(1, 1, 1), VK_LEFT, None), MenuKey::Stay(at(1, Some(1))), "Left closes it");
+        assert_eq!(menu_key(&b, sub(1, 1, 1), VK_ESC, None), MenuKey::Stay(at(1, Some(1))), "so does Esc");
+        assert_eq!(menu_key(&b, sub(1, 1, 0), VK_RIGHT, None), MenuKey::Stay(at(0, Some(0))),
+                   "Right in it moves on along the bar");
+    }
+
+    #[test]
+    fn a_cascade_opening_asks_its_owner_first() {
+        let b = cascading();
+        let calls = transition_calls(&b, 9, Some(at(1, Some(1))), Some(sub(1, 1, 0)));
+        assert_eq!(calls, vec![OwnerCallKind::MenuInit { id: 42 }, OwnerCallKind::MenuSelect { id: 43, post: None }]);
+        let calls = transition_calls(&b, 9, Some(sub(1, 1, 0)), Some(sub(1, 1, 1)));
+        assert_eq!(calls, vec![OwnerCallKind::MenuSelect { id: 44, post: None }], "moving in it does not");
+    }
+
+    #[test]
+    fn a_cascade_opens_beside_its_row_inside_the_frame() {
+        let b = cascading();
+        let view = &b[1];
+        let (w, rh) = (MENU_DROPDOWN_W - CASCADE_OVERLAP, view.row_h());
+        assert_eq!(cascade_offset((50, 40), view, 1, (640, 480)), (w, rh), "right, level with its row");
+        assert_eq!(cascade_offset((500, 40), view, 1, (640, 480)), (-w, rh), "left without room on the right");
+        let h = 2 * view.children[1].row_h();
+        assert_eq!(cascade_offset((50, 40), view, 1, (640, 40 + rh + h - 5)), (w, rh - 5),
+                   "moved up to stay inside the frame");
+        assert_eq!(cascade_offset((50, 40), view, 1, (640, 41)), (w, 0), "but never above the pull-down");
+    }
+
+    #[test]
+    fn the_cascade_state_round_trips() {
+        for c in [Cascade { row: 0, hilite: None }, Cascade { row: 3, hilite: Some(1) }] {
+            assert_eq!(Cascade::decode(c.encode()), Some(c));
+        }
+        assert_eq!(Cascade::decode(0), None);
+        let m = sub(5, 7, 2);
+        assert_eq!(MenuMode::decode(m.encode()), Some(m));
     }
 
     #[test]

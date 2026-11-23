@@ -1089,6 +1089,7 @@ impl Loader {
                         {
                             let mut wm = self.shared.window_mgr.lock_or_recover();
                             if let Some(win) = wm.get_window_mut(hwnd) {
+                                win.window_ulong.remove(&pm_menubar::CASCADE_KEY);
                                 if new_open == 0 { win.window_ulong.remove(&-1); }
                                 else { win.window_ulong.insert(-1, new_open); }
                             }
@@ -1106,7 +1107,7 @@ impl Loader {
                     } else if open_item > 0 {
                         // Click on empty part of menu bar: close dropdown.
                         self.mouse_menu_closed(hwnd);
-                        { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                        self.close_pulldown(hwnd);
                         return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
                     }
                 } else if open_item > 0 {
@@ -1126,6 +1127,23 @@ impl Loader {
                         let drop_y2 = y; // same as menu bar bottom
                         let drop_y1 = drop_y2 - child_count * item_h;
 
+                        // An open cascade (pm_menubar.rs) lies over the
+                        // pull-down's side: a click in it chooses.
+                        if let Some((c_x, c_y2, sub)) = self.open_cascade(hwnd, parent_item, drop_x, drop_y2) {
+                            let sub_h = sub.row_h();
+                            let c_y1 = c_y2 - sub.children.len() as i32 * sub_h;
+                            if click_x >= c_x && click_x < c_x + DROP_W && click_y >= c_y1 && click_y < c_y2 {
+                                let pick = sub.children.get(((c_y2 - 1 - click_y) / sub_h) as usize)
+                                    .filter(|c| c.style & MIS_SEPARATOR == 0 && c.attr & MIA_DISABLED == 0
+                                                && c.children.is_empty());
+                                if let Some(c) = pick {
+                                    self.close_pulldown(hwnd);
+                                    self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
+                                    self.mouse_menu_chose(hwnd, c.id, c.style);
+                                }
+                                return ApiResult::Normal(0);
+                            }
+                        }
                         if click_x >= drop_x && click_x < drop_x + DROP_W
                            && click_y >= drop_y1 && click_y < drop_y2
                         {
@@ -1133,9 +1151,17 @@ impl Loader {
                             let child_idx = ((drop_y2 - 1 - click_y) / item_h) as usize;
                             if let Some(child) = parent_item.children.get(child_idx)
                                 && child.style & MIS_SEPARATOR == 0 && child.attr & MIA_DISABLED == 0
+                                && !child.children.is_empty()
+                            {
+                                // A row with a cascade opens or closes it.
+                                self.mouse_cascade(hwnd, parent_item, child_idx);
+                                return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
+                            }
+                            if let Some(child) = parent_item.children.get(child_idx)
+                                && child.style & MIS_SEPARATOR == 0 && child.attr & MIA_DISABLED == 0
                             {
                                 // Close dropdown before dispatching.
-                                { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                                self.close_pulldown(hwnd);
                                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
                                 // WM_MENUSELECT(TRUE) to the client, whose
                                 // reply decides whether the command (with
@@ -1147,7 +1173,7 @@ impl Loader {
                         } else {
                             // Click outside dropdown: close it.
                             self.mouse_menu_closed(hwnd);
-                            { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                            self.close_pulldown(hwnd);
                             return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
                         }
                     }
@@ -1157,7 +1183,7 @@ impl Loader {
 
             WM_MENUEND if class_name == "#Menu" => {
                 // Close any open dropdown and redraw the menu bar.
-                { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                self.close_pulldown(hwnd);
                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)
             }
 

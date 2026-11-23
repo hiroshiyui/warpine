@@ -3082,12 +3082,22 @@ const MENUKEY_STEPS: &str = "\
     3100 key left\n\
     3200 key down\n\
     3400 key esc\n\
-    3500 key esc\n";
+    3500 key esc\n\
+    3600 key f10\n\
+    3700 key left\n\
+    3800 key down\n\
+    3900 key down\n\
+    4000 key right\n\
+    4100 key down\n\
+    4200 key enter\n\
+    4500 click 110 62\n\
+    4800 click 110 114\n\
+    5100 click 260 108\n";
 
 #[test]
 fn gui_pm_menukey_test_drives_the_menu_bar_with_keys() {
-    let steps = format!("{MENUKEY_STEPS}3700 key alt+f4\n6000 quit\n");
-    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 39, &steps);
+    let steps = format!("{MENUKEY_STEPS}5400 key alt+f4\n8000 quit\n");
+    assert_scripted_checks_pass("samples/pm_menukey_test/pm_menukey_test.exe", "pm_menukey_test", 43, &steps);
 }
 
 /// Keyboard menu mode: Edit highlighted on the bar, its pull-down dropped
@@ -3143,7 +3153,23 @@ fn gui_modern_theme_is_the_same_in_every_compositor() {
         check_gui_golden_with("pm_dialog_modern", "samples/pm_dialog_test/pm_dialog_test.exe",
             "1500 key ctrl+d\n2500 dump {dump}\n2600 quit\n",
             &[("WARPINE_THEME", "modern"), ("WARPINE_DESKTOP", "local"), ("WARPINE_COMPOSITOR", comp)], false);
+        check_gui_golden_with("pm_menukey_cascade_modern", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS,
+            &[("WARPINE_THEME", "modern"), ("WARPINE_DESKTOP", "local"), ("WARPINE_COMPOSITOR", comp)], false);
     }
+}
+
+/// Keyboard menu mode into a cascade: View dropped, Zoom's cascade open
+/// beside its row with Zoom out highlighted (pm_menukey_test).
+const CASCADE_STEPS: &str =
+    "1000 key f10\n1200 key left\n1400 key down\n1600 key down\n1800 key right\n2000 key down\n2600 dump {dump}\n2700 quit\n";
+
+/// The cascade in the classic theme and, rounded and shadowed, in the
+/// modern one (the desktop server's picture; the other compositors are
+/// held to it above).
+#[test]
+fn gui_menu_cascade_matches_golden() {
+    check_gui_golden("pm_menukey_cascade", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS);
+    check_gui_golden_modern("pm_menukey_cascade_modern", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS);
 }
 
 /// pm_bench: the self-benchmark runs every measurement, reports each with a
