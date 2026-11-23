@@ -26,8 +26,9 @@
 //! the tick increment, Home / End go to the ends); the notifications'
 //! mp2 (the new value as a SHORT; `CSN_SETFOCUS`: TRUE or FALSE), sent
 //! after a change by the user or `CSM_SETVALUE`, `CSN_TRACKING` while the
-//! dial is dragged. `CSN_QUERYBACKGROUNDCOLOR` is not sent, and the
-//! `CSM_SETBITMAPDATA` pictures are kept but not drawn.
+//! dial is dragged; held − / + buttons repeat. `CSN_QUERYBACKGROUNDCOLOR`
+//! is not sent. `CSM_SETBITMAPDATA`'s pictures replace the button glyphs,
+//! stretched to the buttons.
 
 use super::constants::*;
 use super::pm_types::WindowManager;
@@ -285,6 +286,8 @@ impl Loader {
                 ok(true)
             }
             WM_BUTTON1UP => ok(self.circ_release(hwnd)),
+            // A held button steps again (WindowManager::post_drag_scroll).
+            WM_TIMER if mp1 == TID_SCROLL => ok(self.circ_repeat(hwnd, style, &s)),
             WM_CHAR => ok(self.circ_char(hwnd, style, &s, mp1, mp2)),
             _ => return None,
         })
@@ -340,6 +343,18 @@ impl Loader {
             None => {}
         }
         true
+    }
+
+    /// `WM_TIMER(TID_SCROLL)` while a button is held with the pointer on
+    /// it: one more step.
+    fn circ_repeat(&self, hwnd: u32, style: u32, s: &CircState) -> bool {
+        let Some(Held::Button { up, over: true }) = s.held else { return false };
+        if self.shared.window_mgr.lock_or_recover().pressed_control != hwnd {
+            return false;
+        }
+        let wrap = style & (CSS_360 | CSS_CIRCULARVALUE) == CSS_360 | CSS_CIRCULARVALUE;
+        let v = s.stepped(if up { 1 } else { -1 }, s.scroll, wrap);
+        self.circ_set(hwnd, v as i32, CSN_CHANGED)
     }
 
     /// Button 1 released: a turned dial tells its owner `CSN_CHANGED`.
@@ -445,6 +460,13 @@ impl Loader {
             if bw <= 0 { continue; }
             let pressed = s.held == Some(Held::Button { up, over: true });
             control_box(p, (x + bx, y + by, bw - 1, bh - 1), if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
+            // CSM_SETBITMAPDATA's picture for this button and state,
+            // stretched to it (the reference: "other bit maps are
+            // stretched"), else the − / + glyph.
+            let hbm = s.bitmaps[usize::from(up) * 2 + usize::from(pressed)];
+            if hbm != 0 && self.paint_bitmap_handle(p, (x + bx + 1, y + by + 1, bw - 2, bh - 2), hbm, true) {
+                continue;
+            }
             let (mx, my) = (x + bx + bw / 2, y + by + bh / 2);
             p.fill((mx - 3, my, mx + 3, my), CONTROL_TEXT_COLOR);
             if up {
@@ -466,6 +488,34 @@ mod tests {
 
     fn state(low: i16, high: i16, value: i16) -> CircState {
         CircState { low, high, value, ..CircState::default() }
+    }
+
+    #[test]
+    fn a_held_button_repeats_while_the_pointer_is_on_it() {
+        let l = Loader::new_mock();
+        let h = {
+            let mut wm = l.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            let h = wm.create_window(CLASS_CIRCSLIDER.into(), 0, hmq);
+            let w = wm.get_window_mut(h).unwrap();
+            (w.cx, w.cy) = (120, 100 + CONTROL_LINE_H);
+            h
+        };
+        let g = Geometry::new(0, 120, 100 + CONTROL_LINE_H);
+        let at = |(x, y): (i32, i32)| (x as u16 as u32) | ((y as u16 as u32) << 16);
+        let plus = at((g.plus.0 + 2, g.plus.1 + 2));
+        let value = |l: &Loader| l.circ_info(h).unwrap().3.value;
+        l.circslider_message(h, WM_BUTTON1DOWN, plus, 0);
+        assert_eq!(value(&l), 1, "the press steps once");
+        assert_eq!(l.shared.window_mgr.lock_or_recover().post_drag_scroll(), Some(h), "held: it repeats");
+        l.circslider_message(h, WM_TIMER, TID_SCROLL, 0);
+        l.circslider_message(h, WM_TIMER, TID_SCROLL, 0);
+        assert_eq!(value(&l), 3);
+        l.circslider_message(h, WM_MOUSEMOVE, at(g.center), 0);
+        assert_eq!(l.shared.window_mgr.lock_or_recover().post_drag_scroll(), None, "not while off the button");
+        l.circslider_message(h, WM_BUTTON1UP, at(g.center), 0);
+        l.circslider_message(h, WM_TIMER, TID_SCROLL, 0);
+        assert_eq!(value(&l), 3, "released: no more steps");
     }
 
     #[test]

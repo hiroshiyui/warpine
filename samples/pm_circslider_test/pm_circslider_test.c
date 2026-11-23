@@ -10,7 +10,8 @@
  *
  * main() checks the CSM_* messages first (WinRegisterCircularSlider, the
  * default range and increments, refused ranges, increments and values,
- * CSM_QUERYRADIUS, CSM_SETBITMAPDATA), sets dial 30 to 0..50 in steps of
+ * CSM_QUERYRADIUS, CSM_SETBITMAPDATA with a red picture for Volume's -
+ * button), sets dial 30 to 0..50 in steps of
  * 5 at 20 and dial 31 to 0..359, and gives dial 30 the focus. The
  * integration test then presses Right, Page Up and End on dial 30, clicks
  * its + button (at the end: nothing changes) and its - button, presses
@@ -27,6 +28,7 @@
 #define INCL_GPI
 #define INCL_WINCIRCULARSLIDER
 #define INCL_DOSPROCESS
+#define INCL_DEV
 #include <os2.h>
 #include <string.h>
 
@@ -123,6 +125,29 @@ static HWND dial( PSZ text, ULONG style, LONG x, LONG y, ULONG id )
                             x, y, 200, 220, client, HWND_TOP, id, NULL, NULL );
 }
 
+/* A red 8 x 8 bitmap: Volume's - button picture. */
+static HBITMAP red_bitmap( void )
+{
+    static BYTE bits[8 * 24];
+    BITMAPINFOHEADER2 bmih;
+    BITMAPINFO2       info;
+    SIZEL sizl = { 0, 0 };
+    HDC   hdc = DevOpenDC( hab, OD_MEMORY, "*", 0L, NULL, NULLHANDLE );
+    HPS   hps = GpiCreatePS( hab, hdc, &sizl, PU_PELS | GPIT_MICRO | GPIA_ASSOC );
+    int   i;
+
+    for( i = 0; i < (int)sizeof( bits ); i += 3 ) {
+        bits[i] = 0; bits[i + 1] = 0; bits[i + 2] = 0xFF;      /* B, G, R */
+    }
+    memset( &bmih, 0, sizeof( bmih ) );
+    bmih.cbFix = sizeof( bmih );
+    bmih.cx = 8; bmih.cy = 8; bmih.cPlanes = 1; bmih.cBitCount = 24;
+    memset( &info, 0, sizeof( info ) );
+    info.cbFix = 16;
+    info.cx = 8; info.cy = 8; info.cPlanes = 1; info.cBitCount = 24;
+    return GpiCreateBitmap( hps, &bmih, CBM_INIT, bits, &info );
+}
+
 static void check_messages( void )
 {
     SHORT        lo = -1, hi = -1, v = -1;
@@ -148,7 +173,9 @@ static void check_messages( void )
     check( "CSM_QUERYVALUE", v, 20 );
     check( "CSM_QUERYRADIUS", (LONG)WinSendMsg( volume, CSM_QUERYRADIUS, MPFROMP( &radius ), 0 ), TRUE );
     check( "  a dial that fits", radius > 20 && radius <= 100, TRUE );
-    bd.hbmLeftUp = bd.hbmLeftDown = bd.hbmRightUp = bd.hbmRightDown = NULLHANDLE;
+    bd.hbmLeftUp = red_bitmap();
+    bd.hbmLeftDown = bd.hbmRightUp = bd.hbmRightDown = NULLHANDLE;
+    check( "a bitmap for the - button", bd.hbmLeftUp != NULLHANDLE, TRUE );
     check( "CSM_SETBITMAPDATA", (LONG)WinSendMsg( volume, CSM_SETBITMAPDATA, MPFROMP( &bd ), 0 ), TRUE );
     check( "CSM_SETRANGE 0..359", (LONG)WinSendMsg( heading, CSM_SETRANGE, MPFROMSHORT( 0 ), MPFROMSHORT( 359 ) ), TRUE );
 }

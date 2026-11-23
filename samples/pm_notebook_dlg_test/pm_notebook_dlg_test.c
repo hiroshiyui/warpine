@@ -16,7 +16,8 @@
  *   P5 "Picture"  a tab bitmap (BFA_MAJORTABBITMAP), no window
  *   P6 "Last"     no window
  *
- * and two notebook buttons (BKM_SETNOTEBOOKBUTTONS): "Undo" and
+ * and two notebook buttons (BKM_SETNOTEBOOKBUTTONS): "Undo" (with the red
+ * picture as its hImage) and
  * "Default". Six tabs do not fit the notebook's width (three do), so it
  * shows scroll arrows. The program checks what it can at once; the integration test
  * then (see tests/integration.rs, NOTEBOOK_DLG_STEPS):
@@ -220,6 +221,7 @@ static void build_book( HWND dlg )
 
     check( "BKM_SETNOTEBOOKBUTTONS with a bad id",
            (LONG)WinSendMsg( book, BKM_SETNOTEBOOKBUTTONS, MPFROMLONG( 1 ), MPFROMP( &bad ) ), FALSE );
+    buttons[0].hImage = hbm_tab;     /* "Undo" shows the red picture */
     check( "BKM_SETNOTEBOOKBUTTONS",
            (LONG)WinSendMsg( book, BKM_SETNOTEBOOKBUTTONS, MPFROMLONG( 2 ), MPFROMP( buttons ) ), TRUE );
     undo = WinWindowFromID( book, ID_UNDO );

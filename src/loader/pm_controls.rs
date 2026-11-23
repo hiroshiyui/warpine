@@ -278,6 +278,9 @@ fn align_offset(win: &super::pm_types::OS2Window, face: FontSpec, view_w: i32) -
     if align & ES_RIGHT != 0 { room } else { room / 2 }
 }
 
+/// Inset of a notebook button's picture from its edges.
+const BUTTON_IMAGE_INSET: i32 = 4;
+
 /// The character index of an edit control under the pointer at
 /// `(local_x, local_y)` (relative to the control, `cy` high): the row under
 /// the pointer (see [`row_under_pointer`]; clamped to the text), then the
@@ -387,6 +390,15 @@ impl Loader {
     /// (`BM_SETHILITE`), has a black outline
     /// when it is the default button (`BS_DEFAULT`) and a focus mark inside
     /// while it has the focus.
+    /// The picture of notebook button `hwnd` (`NOTEBOOKBUTTON.hImage`);
+    /// 0 for other buttons.
+    fn notebook_button_image(&self, hwnd: u32) -> u32 {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let Some(parent) = wm.get_window(hwnd).map(|w| w.parent) else { return 0 };
+        wm.get_window(parent).and_then(|n| n.notebook.as_ref())
+            .and_then(|n| n.buttons.iter().find(|b| b.hwnd == hwnd)).map_or(0, |b| b.image)
+    }
+
     pub(super) fn paint_button(&self, p: &Painter, hwnd: u32,
                                (x, y, cx, cy): (i32, i32, i32, i32), text: &str) {
         let (push, pressed, default, focused) = {
@@ -403,11 +415,20 @@ impl Loader {
             p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color: CONTROL_EMPHASIS_COLOR,
                                fill: false, mix: crate::gui::surface::Mix::Overpaint });
         }
-        let max_w = cx - 2 * CONTROL_TEXT_INSET;
+        let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
+        // A notebook button's picture (NOTEBOOKBUTTON.hImage, pm_notebook.rs):
+        // a square at its left, the text in the rest.
+        let image = self.notebook_button_image(hwnd);
+        let side = if image != 0 { (cy - 2 * BUTTON_IMAGE_INSET).max(0) } else { 0 };
+        if side > 0 {
+            self.paint_bitmap_handle(p, (x + BUTTON_IMAGE_INSET + shift, y + BUTTON_IMAGE_INSET - shift, side, side),
+                                     image, true);
+        }
+        let (tx, tw) = if side > 0 { (x + side + BUTTON_IMAGE_INSET, cx - side - BUTTON_IMAGE_INSET) } else { (x, cx) };
+        let max_w = tw - 2 * CONTROL_TEXT_INSET;
         let (shown, _) = super::pm_dialog::mnemonic_label(text);
         let w = font::text_width(font::fit_text(&shown, max_w, p.font()), p.font());
-        let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
-        super::control_label(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, text, max_w);
+        super::control_label(p, tx + (tw - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, text, max_w);
         if push(focused) {
             let i = BUTTON_FOCUS_INSET;
             p.op(DrawOp::Box { x1: x + i, y1: y + i, x2: x + cx - i, y2: y + cy - i,

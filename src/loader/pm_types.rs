@@ -1719,6 +1719,11 @@ impl WindowManager {
             // dragged arm does not.
             w.slider.as_ref().and_then(|s| s.held)
                 .filter(|h| !matches!(h, super::pm_slider::Held::Arm { .. }))?;
+        } else if w.class_name == super::pm_circslider::CLASS_CIRCSLIDER {
+            // A held − / + button repeats while the pointer is on it
+            // (pm_circslider.rs); a turned dial does not.
+            w.circslider.as_ref().and_then(|s| s.held)
+                .filter(|h| matches!(h, super::pm_circslider::Held::Button { over: true, .. }))?;
         } else if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX") {
             return None;
         } else {

@@ -462,6 +462,17 @@ impl Loader {
             WM_BUTTON1DOWN | WM_BUTTON1DBLCLK => ok(self.slider_press(hwnd, style, &s, &g, mouse_pos(mp1))),
             WM_MOUSEMOVE => ok(self.slider_drag(hwnd, &s, &g, mouse_pos(mp1))),
             WM_BUTTON1UP => ok(self.slider_release(hwnd, style, &g)),
+            // Button 2 moves the arm to the pointer and drags it from there.
+            WM_BUTTON2DOWN | WM_BUTTON2DBLCLK => ok(self.slider_press2(hwnd, style, &s, &g, mouse_pos(mp1))),
+            WM_BUTTON2UP => {
+                let held = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let held = wm.capture_hwnd == hwnd && wm.pressed_control == hwnd;
+                    if held { wm.capture_hwnd = 0; }
+                    held
+                };
+                ok(held && self.slider_release(hwnd, style, &g))
+            }
             WM_TIMER if mp1 == TID_SCROLL => ok(self.slider_repeat(hwnd, &s, &g)),
             WM_CHAR => ok(self.slider_char(hwnd, style, &s, &g, mp1, mp2)),
             SLM_QUERYSLIDERINFO => ApiResult::Normal(match lo {
@@ -645,6 +656,30 @@ impl Loader {
             }
             Held::Arm { .. } => {}
         }
+        true
+    }
+
+    /// Button 2 pressed at `at`: the arm's middle jumps to the pointer
+    /// (`SLN_SLIDERTRACK`) and follows it until button 2 is released; the
+    /// slider holds the pointer meanwhile. TODO(unverified): PM's user
+    /// guides describe the button-2 drag only loosely; that the arm jumps
+    /// at once is Warpine's choice.
+    fn slider_press2(&self, hwnd: u32, style: u32, s: &SliderState, g: &Geometry, at: (i32, i32)) -> bool {
+        if style & (WS_DISABLED | SLS_READONLY) != 0 {
+            return false;
+        }
+        self.set_focus_window(hwnd);
+        let (t, _) = g.along(at);
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            wm.pressed_control = hwnd;
+            wm.capture_hwnd = hwnd;
+            wm.drag_pointer = at;
+            if let Some(sl) = wm.slider_mut(hwnd) {
+                sl.held = Some(Held::Arm { grab: 0, start: s.arm });
+            }
+        }
+        self.slider_move_to(hwnd, g.px_at(t), SLN_SLIDERTRACK);
         true
     }
 
@@ -1202,6 +1237,25 @@ mod tests {
         assert_eq!(f.notes(), vec![(SLN_CHANGE, 40)], "snapped to the nearest increment");
         assert_eq!(f.send(SLM_QUERYSLIDERINFO, info(SMA_SLIDERARMPOSITION, SMA_RANGEVALUE), 0), two_shorts(40, 100));
         assert_eq!(f.loader.shared.window_mgr.lock_or_recover().pressed_control, 0);
+    }
+
+    #[test]
+    fn button_2_moves_the_arm_to_the_pointer_and_drags_it() {
+        let f = fixture(0);
+        let g = f.geometry();
+        let c = g.mid_c;
+        f.send(WM_BUTTON2DOWN, f.at(g.arm_t(30), c), 0);
+        {
+            let wm = f.loader.shared.window_mgr.lock_or_recover();
+            assert_eq!((wm.pressed_control, wm.capture_hwnd), (f.slider, f.slider), "held, with the pointer");
+        }
+        assert_eq!(f.notes(), vec![(SLN_SETFOCUS, f.slider), (SLN_SLIDERTRACK, 30)], "the arm's middle at the pointer");
+        f.send(WM_MOUSEMOVE, f.at(g.arm_t(60), c), 0);
+        assert_eq!(f.notes(), vec![(SLN_SLIDERTRACK, 60)]);
+        f.send(WM_BUTTON2UP, f.at(g.arm_t(60), c), 0);
+        assert_eq!(f.notes(), vec![(SLN_CHANGE, 60)]);
+        let wm = f.loader.shared.window_mgr.lock_or_recover();
+        assert_eq!((wm.pressed_control, wm.capture_hwnd), (0, 0), "released");
     }
 
     #[test]

@@ -26,9 +26,12 @@
 //! pages; their `WM_COMMAND` goes to the top page's window (their owner
 //! follows the top page), else to the notebook's owner. A tab shows its bitmap
 //! (`BKM_SETTABBITMAP`, stretched to the tab) instead of its text, on its
-//! colour (`BKM_SETTABCOLOR`). Sizes and colours are Warpine's own;
-//! `BKS_SPIRALBIND`, `BKS_ROUNDEDTABS` / `BKS_POLYGONTABS` and the
-//! back-page corners are drawn as the defaults.
+//! colour (`BKM_SETTABCOLOR`). `BKS_ROUNDEDTABS` / `BKS_POLYGONTABS` cut
+//! the tabs' outer corners round or straight; `BKS_SPIRALBIND` draws loops
+//! along the page's bound edge; `BKS_BACKPAGES*` puts the back pages at
+//! that corner (and the binding on the other side); a notebook button
+//! shows its `hImage` left of its text. Sizes, colours and these shapes
+//! are Warpine's own (TODO(unverified): what PM's look like).
 //!
 //! Page windows: `BKM_SETPAGEWINDOWHWND`, or `BKM_SETPAGEINFO` with
 //! `BFA_PAGEFROMDLGRES` (a dialog resource) / `BFA_PAGEFROMDLGTEMPLATE` (a
@@ -121,6 +124,13 @@ pub const BKS_STATUSTEXTCENTER: u32 = 0x0000_2000;
 pub const BKS_TABTEXTRIGHT: u32 = 0x0000_4000;
 pub const BKS_TABTEXTCENTER: u32 = 0x0000_8000;
 pub const BKS_TABBEDDIALOG: u32 = 0x0000_0800;
+pub const BKS_BACKPAGESBR: u32 = 0x0000_0001;
+pub const BKS_BACKPAGESBL: u32 = 0x0000_0002;
+pub const BKS_BACKPAGESTR: u32 = 0x0000_0004;
+pub const BKS_BACKPAGESTL: u32 = 0x0000_0008;
+pub const BKS_ROUNDEDTABS: u32 = 0x0000_0100;
+pub const BKS_POLYGONTABS: u32 = 0x0000_0200;
+pub const BKS_SPIRALBIND: u32 = 0x0000_0400;
 
 /// `BKA_*COLOR[INDEX]` attributes of `BKM_SETNOTEBOOKCOLORS`, in pairs
 /// (index, RGB) for: page background, major tab background, minor tab
@@ -176,6 +186,11 @@ const FIRST_PAGE_ID: u32 = 0x100;
 /// Warpine's sizes, in pels.
 const MARGIN: i32 = 4;
 const BACK_PAGES: i32 = 6;
+/// How far a rounded or polygon tab's outer corners reach in.
+const TAB_CORNER: i32 = 5;
+/// The spiral binding: a loop every this many pels, so wide.
+const SPIRAL_STEP: i32 = 10;
+const SPIRAL_W: i32 = 8;
 const DEFAULT_MAJOR_TAB: (i32, i32) = (80, 22);
 const DEFAULT_MINOR_TAB: (i32, i32) = (60, 20);
 const DEFAULT_PAGE_BUTTON: (i32, i32) = (21, 21);
@@ -235,6 +250,35 @@ pub enum DialogSource {
 pub struct NotebookButton {
     pub hwnd: u32,
     pub text: String,
+    /// `NOTEBOOKBUTTON.hImage`: a bitmap drawn on the button (0: none).
+    pub image: u32,
+}
+
+/// Where the back pages show: towards the right (else the left) and the
+/// bottom (else the top) of the page (`BKS_BACKPAGES*`; bottom right by
+/// default).
+pub fn back_pages(style: u32) -> (bool, bool) {
+    if style & BKS_BACKPAGESBR != 0 { (true, true) }
+    else if style & BKS_BACKPAGESTL != 0 { (false, false) }
+    else if style & BKS_BACKPAGESTR != 0 { (true, false) }
+    else if style & BKS_BACKPAGESBL != 0 { (false, true) }
+    else { (true, true) }
+}
+
+/// How far a tab's outer corners are cut at `k` pels from its outer edge:
+/// a quarter circle (`BKS_ROUNDEDTABS`), a diagonal (`BKS_POLYGONTABS`),
+/// nothing (square tabs, the default).
+pub fn tab_corner_cut(style: u32, k: i32) -> i32 {
+    if k >= TAB_CORNER { return 0; }
+    if style & BKS_POLYGONTABS != 0 {
+        TAB_CORNER - k
+    } else if style & BKS_ROUNDEDTABS != 0 {
+        let r = TAB_CORNER as f32;
+        let dy = r - k as f32 - 0.5;
+        (r - (r * r - dy * dy).max(0.0).sqrt()).round() as i32
+    } else {
+        0
+    }
 }
 
 impl Page {
@@ -556,8 +600,9 @@ impl Layout {
             }
         }
         // Back pages: a few edges on the outer sides of the page.
-        r -= BACK_PAGES;
-        b += BACK_PAGES;
+        let (right, bottom) = back_pages(style);
+        if right { r -= BACK_PAGES } else { l += BACK_PAGES }
+        if bottom { b += BACK_PAGES } else { t -= BACK_PAGES }
         // Status line and page buttons along the page's bottom.
         let (bw, bh) = s.page_button;
         let next_button = Some((r - MARGIN - bw, b + MARGIN, bw, bh));
@@ -931,7 +976,7 @@ impl Loader {
     /// replace the notebook buttons by push buttons of kind
     /// `BS_NOTEBOOKBUTTON` with these texts, ids and styles. FALSE for more
     /// than `MAX_NOTEBOOK_BUTTONS`, an unreadable array or an id above
-    /// `BKA_MAXBUTTONID`. `hImage` is not drawn.
+    /// `BKA_MAXBUTTONID`. `hImage` is drawn on the button (`paint_button`).
     fn notebook_set_buttons(&self, hwnd: u32, count: u32, array: u32) -> bool {
         if count as usize > MAX_NOTEBOOK_BUTTONS || (count != 0 && array == 0) {
             return false;
@@ -940,11 +985,12 @@ impl Loader {
         let mut specs = Vec::with_capacity(count as usize);
         for i in 0..count {
             let at = i * NOTEBOOK_BUTTON_BYTES;
-            let (Some(text), Some(id), Some(style)) = (rd(at), rd(at + 4), rd(at + 12)) else { return false };
+            let (Some(text), Some(id), Some(image), Some(style)) = (rd(at), rd(at + 4), rd(at + 8), rd(at + 12))
+                else { return false };
             if id > BKA_MAXBUTTONID {
                 return false;
             }
-            specs.push((self.notebook_text(hwnd, text), id, style));
+            specs.push((self.notebook_text(hwnd, text), id, image, style));
         }
         {
             let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -955,7 +1001,7 @@ impl Loader {
                 wm.destroy_window(b.hwnd);
             }
             let mut buttons = Vec::with_capacity(specs.len());
-            for (text, id, style) in specs {
+            for (text, id, image, style) in specs {
                 let b = wm.create_window("WC_BUTTON".into(), hwnd, hmq);
                 if let Some(w) = wm.get_window_mut(b) {
                     w.text = text.clone();
@@ -963,7 +1009,7 @@ impl Loader {
                     w.style = WS_VISIBLE | BS_NOTEBOOKBUTTON | (style & !BS_PRIMARYSTYLES);
                     w.visible = true;
                 }
-                buttons.push(NotebookButton { hwnd: b, text });
+                buttons.push(NotebookButton { hwnd: b, text, image });
             }
             if let Some(n) = wm.get_window_mut(hwnd).and_then(|w| w.notebook.as_deref_mut()) {
                 n.buttons = buttons;
@@ -1042,12 +1088,14 @@ impl Loader {
             p.fill((rr, b, rr, t), dark);
         };
         p.fill((x, y, x + cx - 1, y + cy - 1), face);
-        // Back pages: stacked edges right of and below the page.
+        // Back pages: stacked edges towards their corner (BKS_BACKPAGES*).
         if style & BKS_TABBEDDIALOG == 0 {
             let (px, py, pcx, pcy) = lay.page;
+            let (right, bottom) = back_pages(style);
+            let (sx, sy) = (if right { 1 } else { -1 }, if bottom { -1 } else { 1 });
             for k in (1..=BACK_PAGES / 2).rev() {
                 let d = 2 * k;
-                outline((px + d, py - d - lay.status.map_or(0, |st| st.3 + 2 * MARGIN), pcx,
+                outline((px + sx * d, py + sy * d - lay.status.map_or(0, |st| st.3 + 2 * MARGIN), pcx,
                          pcy + lay.status.map_or(0, |st| st.3 + 2 * MARGIN)), LIGHT_COLOR, EDGE_COLOR);
             }
         }
@@ -1058,6 +1106,22 @@ impl Loader {
         let (sl, sb, sr, st) = at(sheet);
         p.fill((sl, sb, sr, st), page_bg);
         outline(sheet, LIGHT_COLOR, EDGE_COLOR);
+        // A spiral binding: loops along the page's edge away from the back
+        // pages (BKS_SPIRALBIND; BKS_SOLIDBIND is the plain edge).
+        if style & BKS_SPIRALBIND != 0 && style & BKS_TABBEDDIALOG == 0 {
+            let (right, _) = back_pages(style);
+            let bx = if right { sl } else { sr };
+            let mut yy = sb + SPIRAL_STEP / 2;
+            while yy + 3 <= st {
+                let (x0, x1) = (bx - SPIRAL_W / 2, bx + SPIRAL_W / 2);
+                p.fill((x0 + 1, yy + 2, x1 - 1, yy + 2), EDGE_COLOR);
+                p.fill((x0 + 1, yy, x1 - 1, yy), EDGE_COLOR);
+                p.fill((x0, yy + 1, x0, yy + 1), EDGE_COLOR);
+                p.fill((x1, yy + 1, x1, yy + 1), EDGE_COLOR);
+                p.fill((x0 + 1, yy + 1, x1 - 1, yy + 1), LIGHT_COLOR);
+                yy += SPIRAL_STEP;
+            }
+        }
         let (cur_major, cur_minor) = s.current_tabs();
         let tab_text = |i: usize, r: (i32, i32, i32, i32), color: u32| {
             let (l, b, rr, t) = at(r);
@@ -1075,13 +1139,36 @@ impl Loader {
         };
         // Tabs: the current one in the page's colour, the others in their
         // own (BKM_SETTABCOLOR) or the notebook's.
-        for (band, current, bg, fg) in [(&lay.major, cur_major, s.colors[1], s.colors[3]),
-                                        (&lay.minor, cur_minor, s.colors[2], s.colors[4])] {
+        let major_outer = major_side(style);
+        let minor_outer = if matches!(major_outer, Side::Right | Side::Left) { Side::Bottom } else { Side::Right };
+        for (band, current, bg, fg, outer) in [(&lay.major, cur_major, s.colors[1], s.colors[3], major_outer),
+                                               (&lay.minor, cur_minor, s.colors[2], s.colors[4], minor_outer)] {
             for &(i, r) in &band.tabs {
                 let (l, b, rr, t) = at(r);
                 let own = s.pages[i].tab_color.or(bg).unwrap_or(TAB_COLOR);
                 p.fill((l, b, rr, t), if Some(i) == current { page_bg } else { own });
                 outline(r, LIGHT_COLOR, EDGE_COLOR);
+                // Rounded or polygon tabs: the outer corners cut away.
+                for k in 0..TAB_CORNER {
+                    let c = tab_corner_cut(style, k);
+                    if c == 0 { continue; }
+                    let cut = |(x0, y0, x1, y1): (i32, i32, i32, i32), edge: (i32, i32)| {
+                        p.fill((x0, y0, x1, y1), face);
+                        p.fill((edge.0, edge.1, edge.0, edge.1), EDGE_COLOR);
+                    };
+                    match outer {
+                        Side::Right | Side::Left => {
+                            let x = if outer == Side::Right { rr - k } else { l + k };
+                            cut((x, t - c + 1, x, t), (x, t - c));
+                            cut((x, b, x, b + c - 1), (x, b + c));
+                        }
+                        Side::Top | Side::Bottom => {
+                            let y = if outer == Side::Top { t - k } else { b + k };
+                            cut((l, y, l + c - 1, y), (l + c, y));
+                            cut((rr - c + 1, y, rr, y), (rr - c, y));
+                        }
+                    }
+                }
                 tab_text(i, r, fg.unwrap_or(TEXT_COLOR));
             }
             // Scroll arrows when not all tabs fit.
@@ -1224,6 +1311,32 @@ mod tests {
     }
 
     #[test]
+    fn back_pages_take_their_corner_and_room() {
+        assert_eq!(back_pages(0), (true, true), "bottom right by default");
+        assert_eq!(back_pages(BKS_BACKPAGESBL), (false, true));
+        assert_eq!(back_pages(BKS_BACKPAGESTR), (true, false));
+        assert_eq!(back_pages(BKS_BACKPAGESTL), (false, false));
+        let s = book(&[BKA_MAJOR, BKA_MAJOR]);
+        let w = |t: &str| 8 * t.len() as i32;
+        let br = Layout::new(&s, 0, 400, 300, &w).page;
+        let tl = Layout::new(&s, BKS_BACKPAGESTL, 400, 300, &w).page;
+        assert_eq!(tl.0, br.0 + BACK_PAGES, "room on the left");
+        assert_eq!(tl.2, br.2, "the same width");
+        assert_eq!(tl.1 + tl.3, br.1 + br.3 - BACK_PAGES, "room on the top");
+    }
+
+    #[test]
+    fn rounded_and_polygon_tabs_cut_their_outer_corners() {
+        assert!((0..TAB_CORNER).all(|k| tab_corner_cut(0, k) == 0), "square by default");
+        let poly: Vec<i32> = (0..=TAB_CORNER).map(|k| tab_corner_cut(BKS_POLYGONTABS, k)).collect();
+        assert_eq!(poly, vec![5, 4, 3, 2, 1, 0], "a diagonal");
+        let round: Vec<i32> = (0..=TAB_CORNER).map(|k| tab_corner_cut(BKS_ROUNDEDTABS, k)).collect();
+        assert!(round[0] > 0 && round.windows(2).all(|w| w[0] >= w[1]) && round[TAB_CORNER as usize] == 0,
+                "an arc: {round:?}");
+        assert!(round[1] < poly[1], "rounder than the diagonal near the edge");
+    }
+
+    #[test]
     fn layout_places_tabs_page_and_buttons() {
         let mut s = book(&[BKA_MAJOR | BKA_STATUSTEXTON, BKA_MINOR, BKA_MAJOR]);
         s.top = s.pages[1].id;
@@ -1271,8 +1384,8 @@ mod tests {
     fn layout_scrolls_a_long_band_and_places_buttons() {
         let mut s = book(&[BKA_MAJOR; 12]);
         s.major_first = 2;
-        s.buttons = vec![NotebookButton { hwnd: 1, text: "OK".into() },
-                         NotebookButton { hwnd: 2, text: "Cancel".into() }];
+        s.buttons = vec![NotebookButton { hwnd: 1, text: "OK".into(), image: 0 },
+                         NotebookButton { hwnd: 2, text: "Cancel".into(), image: 0 }];
         let w = |t: &str| 8 * t.len() as i32;
         let lay = Layout::new(&s, 0, 400, 200, &w);
         // Buttons: a row along the bottom, below the tabs and the page.

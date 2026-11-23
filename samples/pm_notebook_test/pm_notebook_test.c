@@ -140,6 +140,7 @@ static MRESULT EXPENTRY ClientProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2
         return 0;
     }
     case WM_CONTROL:
+        if( SHORT1FROMMP( mp1 ) != 1 ) return 0;     /* the styled notebooks */
         if( SHORT2FROMMP( mp1 ) == BKN_PAGESELECTED && n_sel < MAX_LOG ) {
             PPAGESELECTNOTIFY psn = (PPAGESELECTNOTIFY)mp2;
             sel_cur[n_sel] = psn->ulPageIdCur;
@@ -160,6 +161,8 @@ static MRESULT EXPENTRY ClientProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2
     return WinDefWindowProc( hwnd, msg, mp1, mp2 );
 }
 
+static void styled_books( void );
+
 static void build_book( void )
 {
     static const char *tabs[3] = { "First", "Sub", "Second" };
@@ -175,6 +178,7 @@ static void build_book( void )
     book = WinCreateWindow( client, WC_NOTEBOOK, "", WS_VISIBLE | BKS_MAJORTABRIGHT | BKS_BACKPAGESBR,
                             8, 8, 380, 250, client, HWND_TOP, 1, NULL, NULL );
     check( "the notebook is created", book != NULLHANDLE, TRUE );
+    styled_books();
     for( i = 0; i < 3; i++ ) {
         id[i] = (ULONG)WinSendMsg( book, BKM_INSERTPAGE, 0, MPFROM2SHORT( styles[i], BKA_LAST ) );
         WinSendMsg( book, BKM_SETTABTEXT, MPFROMLONG( id[i] ), MPFROMP( tabs[i] ) );
@@ -222,6 +226,30 @@ static void build_book( void )
     check( "page 1 hidden", WinIsWindowVisible( page[0] ), FALSE );
 }
 
+/* Two small notebooks right of the first, for their look only: polygon
+   tabs on the left with the back pages at the bottom left, and rounded tabs
+   on the top with a spiral binding and the back pages at the top right. */
+static void styled_books( void )
+{
+    static const ULONG style[2] = { BKS_MAJORTABLEFT | BKS_BACKPAGESBL | BKS_POLYGONTABS,
+                                    BKS_MAJORTABTOP | BKS_BACKPAGESTR | BKS_ROUNDEDTABS | BKS_SPIRALBIND };
+    static const char *tabs[2] = { "One", "Two" };
+    int b, i;
+
+    for( b = 0; b < 2; b++ ) {
+        HWND nb = WinCreateWindow( client, WC_NOTEBOOK, "", WS_VISIBLE | style[b],
+                                   400, 8 + 130 * b, 220, 120, client, HWND_TOP, 2 + b, NULL, NULL );
+        ULONG n = 0;
+        for( i = 0; i < 2; i++ ) {
+            ULONG pid = (ULONG)WinSendMsg( nb, BKM_INSERTPAGE, 0, MPFROM2SHORT( BKA_MAJOR, BKA_LAST ) );
+            WinSendMsg( nb, BKM_SETTABTEXT, MPFROMLONG( pid ), MPFROMP( tabs[i] ) );
+            n += pid != 0;
+        }
+        check( b == 0 ? "a polygon-tab notebook at the bottom left" : "a rounded, spiral-bound notebook at the top right",
+               nb != NULLHANDLE && n == 2, TRUE );
+    }
+}
+
 int main( void )
 {
     HMQ   hmq;
@@ -234,7 +262,7 @@ int main( void )
     WinRegisterClass( hab, "NotebookTest", ClientProc, CS_SIZEREDRAW, 0 );
     frame = WinCreateStdWindow( HWND_DESKTOP, 0, &flags, "NotebookTest",
                                 "Notebook", WS_VISIBLE, NULLHANDLE, 0, &client );
-    WinSetWindowPos( frame, HWND_TOP, 100, 200, 400, 300, SWP_MOVE | SWP_SIZE | SWP_SHOW | SWP_ACTIVATE );
+    WinSetWindowPos( frame, HWND_TOP, 100, 200, 640, 300, SWP_MOVE | SWP_SIZE | SWP_SHOW | SWP_ACTIVATE );
     build_book();
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) ) WinDispatchMsg( hab, &qmsg );

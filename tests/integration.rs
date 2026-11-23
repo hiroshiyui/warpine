@@ -3134,7 +3134,7 @@ const CIRCSLIDER_STEPS: &str = "\
 #[test]
 fn gui_pm_circslider_test_turns_its_dials() {
     let steps = format!("{CIRCSLIDER_STEPS}2900 key alt+f4\n5000 quit\n");
-    assert_scripted_checks_pass("samples/pm_circslider_test/pm_circslider_test.exe", "pm_circslider_test", 30, &steps);
+    assert_scripted_checks_pass("samples/pm_circslider_test/pm_circslider_test.exe", "pm_circslider_test", 31, &steps);
 }
 
 /// The circular sliders after the session.
@@ -4250,7 +4250,7 @@ const NOTEBOOK_STEPS: &str = "\
 #[test]
 fn gui_pm_notebook_test_turns_pages_and_notifies() {
     let steps = format!("{NOTEBOOK_STEPS}2400 key alt+f4\n4500 quit\n");
-    assert_scripted_checks_pass("samples/pm_notebook_test/pm_notebook_test.exe", "pm_notebook_test", 42, &steps);
+    assert_scripted_checks_pass("samples/pm_notebook_test/pm_notebook_test.exe", "pm_notebook_test", 44, &steps);
 }
 
 /// pm_notebook_test's picture: page 1 (a label and "xyz" in its entry
