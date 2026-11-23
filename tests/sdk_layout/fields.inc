@@ -700,6 +700,18 @@
     P("CNRDRAGINIT.y", offsetof(CNRDRAGINIT, y));
     P("CNRDRAGINIT.cx", offsetof(CNRDRAGINIT, cx));
     P("CNRDRAGINIT.cy", offsetof(CNRDRAGINIT, cy));
+    P("VSDRAGINIT", sizeof(VSDRAGINIT));
+    P("VSDRAGINIT.hwnd", offsetof(VSDRAGINIT, hwnd));
+    P("VSDRAGINIT.x", offsetof(VSDRAGINIT, x));
+    P("VSDRAGINIT.y", offsetof(VSDRAGINIT, y));
+    P("VSDRAGINIT.cx", offsetof(VSDRAGINIT, cx));
+    P("VSDRAGINIT.cy", offsetof(VSDRAGINIT, cy));
+    P("VSDRAGINIT.usRow", offsetof(VSDRAGINIT, usRow));
+    P("VSDRAGINIT.usColumn", offsetof(VSDRAGINIT, usColumn));
+    P("VSDRAGINFO", sizeof(VSDRAGINFO));
+    P("VSDRAGINFO.pDragInfo", offsetof(VSDRAGINFO, pDragInfo));
+    P("VSDRAGINFO.usRow", offsetof(VSDRAGINFO, usRow));
+    P("VSDRAGINFO.usColumn", offsetof(VSDRAGINFO, usColumn));
     P("CONVCONTEXT", sizeof(CONVCONTEXT));
     P("CONVCONTEXT.cb", offsetof(CONVCONTEXT, cb));
     P("CONVCONTEXT.fsContext", offsetof(CONVCONTEXT, fsContext));

@@ -20,6 +20,8 @@
 #define CA_DRAWBITMAP                 0x00020000
 #define CA_DRAWICON                   0x00040000
 #define CA_TITLEREADONLY              0x00080000
+#define CA_ORDEREDTARGETEMPH          0x00010000
+#define CA_MIXEDTARGETEMPH            0x00200000
 #define CA_TREELINE                   0x00400000
 #define CFA_RIGHT                     0x0002
 #define CFA_CENTER                    0x0004
@@ -119,6 +121,7 @@
 #define CMA_PARTIAL                   0x2000
 #define CMA_COMPLETE                  0x4000
 #define CMA_SLTREEBITMAPORICON        0x4000
+#define CN_DRAGAFTER                  0x0065
 #define CN_DRAGLEAVE                  0x0066
 #define CN_DRAGOVER                   0x0067
 #define CN_DROP                       0x0068
@@ -136,6 +139,7 @@
 #define CN_HELP                       0x0076
 #define CN_CONTEXTMENU                0x0077
 #define CRA_SELECTED                  0x0001
+#define CRA_TARGET                    0x0002
 #define CRA_CURSORED                  0x0004
 #define CRA_FILTERED                  0x0010
 #define CRA_RECORDREADONLY            0x0040
@@ -307,6 +311,10 @@
 #define VMA_ITEMSPACING       0x0002
 #define VN_SELECT             0x0078
 #define VN_ENTER              0x0079
+#define VN_DRAGLEAVE          0x007A
+#define VN_DRAGOVER           0x007B
+#define VN_DROP               0x007C
+#define VN_INITDRAG           0x007E
 #define VN_SETFOCUS           0x007F
 #define VN_KILLFOCUS          0x0080
 #define VN_HELP               0x0081
@@ -1151,6 +1159,23 @@ typedef struct _CNRDRAGINIT {
     LONG        cx;
     LONG        cy;
 } CNRDRAGINIT, *PCNRDRAGINIT;
+
+/* What a value set's VN_INITDRAG / VN_DRAGOVER / VN_DROP give (mp2). */
+typedef struct _VSDRAGINIT {
+    HWND   hwnd;
+    LONG   x;
+    LONG   y;
+    LONG   cx;
+    LONG   cy;
+    USHORT usRow;
+    USHORT usColumn;
+} VSDRAGINIT, *PVSDRAGINIT;
+
+typedef struct _VSDRAGINFO {
+    PDRAGINFO pDragInfo;
+    USHORT    usRow;
+    USHORT    usColumn;
+} VSDRAGINFO, *PVSDRAGINFO;
 
 /* ── DDE ────────────────────────────────────────────────────────────── */
 typedef struct _CONVCONTEXT {
