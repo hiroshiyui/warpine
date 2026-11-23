@@ -650,9 +650,6 @@ pub struct WindowManager {
     /// receives the pointer's moves and the release wherever the pointer
     /// is — a button pops up, a text control extends its selection.
     pub pressed_control: u32,
-    /// The push button under the pointer, drawn with the hover face in the
-    /// modern theme (ADR-0118); 0 = none.
-    pub hover_control: u32,
     /// Where the pointer last was over `pressed_control` while it is held,
     /// relative to the control's bottom-left corner: the drag scroll timer
     /// (`WM_TIMER(TID_SCROLL)`) replays it while the pointer rests outside.
@@ -870,7 +867,6 @@ impl WindowManager {
             first_scroll_rate_ms: super::constants::DRAG_SCROLL_MS as u32,
             scroll_rate_ms: super::constants::DRAG_SCROLL_MS as u32,
             alt_alone: false,
-            hover_control: 0,
             cursors: HashMap::new(),
             cursor_blink_off: false,
             text_caret: None,

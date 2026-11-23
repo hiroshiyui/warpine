@@ -400,7 +400,6 @@ impl Loader {
         let Some((style, _, _, s)) = self.circ_info(hwnd) else { return };
         let g = Geometry::new(style, cx, cy);
         let focused = self.shared.window_mgr.lock_or_recover().focus_hwnd == hwnd;
-        let modern = !crate::gui::theme::current().bevelled();
         p.fill((x, y, x + cx - 1, y + cy - 1), self.control_background(hwnd));
         let at = |a: f32, d: f32| { let (px, py) = g.at(a, d); (x + px, y + py) };
         let circle = |r: f32| (0..CIRCLE_POINTS).map(|i| at(i as f32 * 360.0 / CIRCLE_POINTS as f32, r)).collect::<Vec<_>>();
@@ -410,14 +409,8 @@ impl Loader {
             stroke: edge.map(|(color, width)| Stroke { color, mix: Mix::Overpaint, style: SOLID_LINE, width }),
         };
         // The dial.
-        let face = if modern { crate::gui::theme::MODERN_TRACK_COLOR } else { CONTROL_FACE_COLOR };
-        let edge = match (focused, modern) {
-            (true, true) => crate::gui::theme::MODERN_ACCENT_COLOR,
-            (true, false) => CONTROL_EMPHASIS_COLOR,
-            (false, true) => crate::gui::theme::MODERN_EDGE_COLOR,
-            (false, false) => CONTROL_BORDER_COLOR,
-        };
-        p.op(shape(circle(g.radius as f32), Some(face), Some((edge, if focused { 2 } else { 1 }))));
+        let edge = if focused { CONTROL_EMPHASIS_COLOR } else { CONTROL_BORDER_COLOR };
+        p.op(shape(circle(g.radius as f32), Some(CONTROL_FACE_COLOR), Some((edge, if focused { 2 } else { 1 }))));
         // Tick marks every `tick` values (the first and last always).
         if style & CSS_NOTICKS == 0 && s.tick > 0 {
             let span = s.high as i32 - s.low as i32;
@@ -434,7 +427,7 @@ impl Loader {
             }
         }
         // The knob, and the value in the middle.
-        let knob = if modern { crate::gui::theme::MODERN_ACCENT_COLOR } else { CONTROL_TEXT_COLOR };
+        let knob = CONTROL_TEXT_COLOR;
         let (kx, ky) = g.at(g.angle(&s, s.value), (g.radius - KNOB_INSET) as f32);
         let knob_points = (0..CIRCLE_POINTS / 3).map(|i| {
             let a = (i as f32 * 360.0 / (CIRCLE_POINTS / 3) as f32).to_radians();
@@ -446,14 +439,12 @@ impl Loader {
             let w = font::text_width(&num, p.font());
             control_text(p, x + g.center.0 - w / 2, y + g.center.1 - CONTROL_LINE_H / 2, &num);
         }
-        // The − and + buttons (modern: flat, a box only while pressed).
+        // The − and + buttons.
         for (rect, up) in [(g.minus, false), (g.plus, true)] {
             let (bx, by, bw, bh) = rect;
             if bw <= 0 { continue; }
             let pressed = s.held == Some(Held::Button { up, over: true });
-            if pressed || !modern {
-                control_box(p, (x + bx, y + by, bw - 1, bh - 1), if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
-            }
+            control_box(p, (x + bx, y + by, bw - 1, bh - 1), if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
             let (mx, my) = (x + bx + bw / 2, y + by + bh / 2);
             p.fill((mx - 3, my, mx + 3, my), CONTROL_TEXT_COLOR);
             if up {

@@ -14,12 +14,9 @@ use std::time::Duration;
 
 /// Return the path to the compiled warpine binary.  Cargo sets
 /// CARGO_BIN_EXE_warpine automatically when building integration tests.
-/// Country, codepage and theme for every run: Warpine takes the first two
-/// from the host locale, so tests pin the US defaults to stay reproducible
-/// on any machine, and the golden pictures hold the classic theme (a test
-/// of the modern one sets `WARPINE_THEME` after these; ADR-0118).
-const PINNED_ENV: &[(&str, &str)] =
-    &[("WARPINE_COUNTRY", "1"), ("WARPINE_CODEPAGE", "437"), ("WARPINE_THEME", "classic")];
+/// Country and codepage for every run: Warpine takes them from the host
+/// locale, so tests pin the US defaults to stay reproducible on any machine.
+const PINNED_ENV: &[(&str, &str)] = &[("WARPINE_COUNTRY", "1"), ("WARPINE_CODEPAGE", "437")];
 
 fn warpine() -> &'static str {
     env!("CARGO_BIN_EXE_warpine")
@@ -2523,12 +2520,6 @@ fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &st
     check_gui_golden_with(name, sample, steps, env, env.is_empty());
 }
 
-/// [`check_gui_golden`] in the modern theme (`WARPINE_THEME=modern`,
-/// ADR-0118), against a golden of its own.
-fn check_gui_golden_modern(name: &str, sample: &str, steps: &str) {
-    check_gui_golden_with(name, sample, steps, &[("WARPINE_THEME", "modern")], true);
-}
-
 /// The golden-picture check; `writes`: a `WARPINE_UPDATE_GOLDEN` run writes
 /// this run's picture as the golden.
 fn check_gui_golden_with(name: &str, sample: &str, steps: &str, env: &[(&str, &str)], writes: bool) {
@@ -3120,53 +3111,13 @@ fn gui_pm_menukey_test_matches_golden() {
         "1000 key f10\n1200 key right\n1400 key down\n1600 key down\n2200 dump {dump}\n2300 quit\n");
 }
 
-/// The modern theme (ADR-0118): the dialog of pm_dialog_test over its
-/// window, both with rounded corners and a shadow, flat title-bar
-/// pictograms and a thin edge line instead of bevels. The desktop server
-/// shapes the pictures (the default desktop); the in-process compositors
-/// draw the same pels (checked by hand when the theme was made).
+/// The menu cascade in-process, software and layered: the same picture
+/// as the desktop server's.
 #[test]
-fn gui_modern_theme_matches_golden() {
-    check_gui_golden_modern("pm_dialog_modern", "samples/pm_dialog_test/pm_dialog_test.exe",
-        "1500 key ctrl+d\n2500 dump {dump}\n2600 quit\n");
-}
-
-/// The modern theme's built-in controls: rounded boxes, the focused entry
-/// field's accent edge (pm_controls_test after typing).
-#[test]
-fn gui_modern_controls_match_golden() {
-    check_gui_golden_modern("pm_controls_modern", "samples/pm_controls_test/pm_controls_test.exe",
-        "700 click 230 300\n900 text  Hello\n1600 dump {dump}\n1700 quit\n");
-}
-
-/// The modern theme's menus: the Edit pull-down from the keyboard, rounded
-/// and shadowed, Copy checked and Paste highlighted (pm_menukey_test).
-#[test]
-fn gui_modern_menu_matches_golden() {
-    check_gui_golden_modern("pm_menukey_modern", "samples/pm_menukey_test/pm_menukey_test.exe",
-        "1000 key f10\n1200 key right\n1400 key down\n1600 key down\n2200 dump {dump}\n2300 quit\n");
-}
-
-/// The modern theme's scroll bars and sliders: a light track, flat arrows,
-/// slim rounded thumbs, the ribbon in the accent colour.
-#[test]
-fn gui_modern_scroll_bars_and_sliders_match_golden() {
-    check_gui_golden_modern("pm_scroll_modern", "samples/pm_scroll_test/pm_scroll_test.exe",
-        "1500 dump {dump}\n1600 quit\n");
-    check_gui_golden_modern("pm_slider_modern", "samples/pm_slider_valueset_test/pm_slider_valueset_test.exe",
-        "1000 click 204 151\n1300 drag 134 151 241 151\n1800 click 79 151\n2600 dump {dump}\n2700 quit\n");
-}
-
-/// The modern theme in-process, software and layered: the same picture as
-/// the desktop server's.
-#[test]
-fn gui_modern_theme_is_the_same_in_every_compositor() {
+fn gui_menu_cascade_is_the_same_in_every_compositor() {
     for comp in ["software", "layered"] {
-        check_gui_golden_with("pm_dialog_modern", "samples/pm_dialog_test/pm_dialog_test.exe",
-            "1500 key ctrl+d\n2500 dump {dump}\n2600 quit\n",
-            &[("WARPINE_THEME", "modern"), ("WARPINE_DESKTOP", "local"), ("WARPINE_COMPOSITOR", comp)], false);
-        check_gui_golden_with("pm_menukey_cascade_modern", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS,
-            &[("WARPINE_THEME", "modern"), ("WARPINE_DESKTOP", "local"), ("WARPINE_COMPOSITOR", comp)], false);
+        check_gui_golden_with("pm_menukey_cascade", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS,
+            &[("WARPINE_DESKTOP", "local"), ("WARPINE_COMPOSITOR", comp)], false);
     }
 }
 
@@ -3186,12 +3137,11 @@ fn gui_pm_circslider_test_turns_its_dials() {
     assert_scripted_checks_pass("samples/pm_circslider_test/pm_circslider_test.exe", "pm_circslider_test", 30, &steps);
 }
 
-/// The circular sliders after the session, in both themes.
+/// The circular sliders after the session.
 #[test]
 fn gui_circslider_matches_golden() {
     let steps = format!("{CIRCSLIDER_STEPS}2800 dump {{dump}}\n2900 quit\n");
     check_gui_golden("pm_circslider", "samples/pm_circslider_test/pm_circslider_test.exe", &steps);
-    check_gui_golden_modern("pm_circslider_modern", "samples/pm_circslider_test/pm_circslider_test.exe", &steps);
 }
 
 /// Keyboard menu mode into a cascade: View dropped, Zoom's cascade open
@@ -3199,13 +3149,11 @@ fn gui_circslider_matches_golden() {
 const CASCADE_STEPS: &str =
     "1000 key f10\n1200 key left\n1400 key down\n1600 key down\n1800 key right\n2000 key down\n2600 dump {dump}\n2700 quit\n";
 
-/// The cascade in the classic theme and, rounded and shadowed, in the
-/// modern one (the desktop server's picture; the other compositors are
-/// held to it above).
+/// The cascade, as the desktop server draws it (the other compositors are
+/// held to it by `gui_menu_cascade_is_the_same_in_every_compositor`).
 #[test]
 fn gui_menu_cascade_matches_golden() {
     check_gui_golden("pm_menukey_cascade", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS);
-    check_gui_golden_modern("pm_menukey_cascade_modern", "samples/pm_menukey_test/pm_menukey_test.exe", CASCADE_STEPS);
 }
 
 /// pm_bench: the self-benchmark runs every measurement, reports each with a

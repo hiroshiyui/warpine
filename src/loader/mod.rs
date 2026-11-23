@@ -1560,43 +1560,9 @@ impl Loader {
 }
 
 /// Fill a control's rectangle `(x, y, cx, cy)` and outline it.
-fn control_box(p: &Painter, rect: (i32, i32, i32, i32), fill: u32) {
-    control_box_edged(p, rect, fill, CONTROL_BORDER_COLOR);
-}
-
-/// [`control_box`] with an edge of `edge`. In the modern theme (ADR-0118)
-/// the box has rounded corners: the pels outside them are left as they
-/// are, so what lies behind the control shows there.
-fn control_box_edged(p: &Painter, (x, y, cx, cy): (i32, i32, i32, i32), fill: u32, edge: u32) {
-    if crate::gui::theme::current().bevelled() || cx < 6 || cy < 6 {
-        for (color, fill) in [(fill, true), (edge, false)] {
-            p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color, fill, mix: Mix::Overpaint });
-        }
-        return;
-    }
-    rounded_box(p, (x, y, cx, cy), Some(fill), edge);
-}
-
-/// A box over `(x, y)`..=`(x + cx, y + cy)` with corners of radius
-/// `theme::CONTROL_RADIUS`: filled with `fill` if given, edged with `edge`.
-fn rounded_box(p: &Painter, (x, y, cx, cy): (i32, i32, i32, i32), fill: Option<u32>, edge: u32) {
-    use crate::gui::theme::{corner_inset, CONTROL_RADIUS};
-    let r = CONTROL_RADIUS.min(cx / 2).min(cy / 2);
-    // Row `k` from the top or bottom edge, and its inset.
-    let inset = |row: i32| corner_inset(r, row.min(cy - row));
-    for row in 0..=cy {
-        let (i, yy) = (inset(row), y + row);
-        if let Some(fill) = fill {
-            p.fill((x + i, yy, x + cx - i, yy), fill);
-        }
-        // The edge: the end pels of the row, joined to the next row's.
-        let next = if row < cy { inset(row + 1) } else { i };
-        let (l0, l1) = (x + i.min(next), x + i.max(next));
-        p.fill((l0, yy, l1, yy), edge);
-        p.fill((x + cx - i.max(next), yy, x + cx - i.min(next), yy), edge);
-        if row == 0 || row == cy {
-            p.fill((x + i, yy, x + cx - i, yy), edge);
-        }
+fn control_box(p: &Painter, (x, y, cx, cy): (i32, i32, i32, i32), fill: u32) {
+    for (color, fill) in [(fill, true), (CONTROL_BORDER_COLOR, false)] {
+        p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color, fill, mix: Mix::Overpaint });
     }
 }
 

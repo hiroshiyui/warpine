@@ -616,8 +616,7 @@ impl Server {
         let list = self.model.draw_list();
         let items: Vec<Placed> = list.iter().filter_map(|(slot, it)| {
             let pixmap = self.clients.get(slot)?.pixmaps.get(&it.pixmap)?;
-            Some(Placed { pixmap, x: it.x, y: it.y, parts: &it.parts,
-                          rounded: crate::desktop::model::item_frame(it) })
+            Some(Placed { pixmap, x: it.x, y: it.y, parts: &it.parts })
         }).collect();
         self.comp.compose(&items, &damage);
         self.last_compose = Instant::now();

@@ -198,23 +198,23 @@ impl RemoteDesktop {
         }
         let layer = self.frames.get(&p.hwnd).expect("present");
         items.push(Item { frame: p.hwnd, pixmap: layer.pixmap.id, x: p.frame.x0, y: p.frame.y0,
-                          parts: layer.parts.iter().map(|r| area(*r)).collect(), rounded: p.rounded });
+                          parts: layer.parts.iter().map(|r| area(*r)).collect() });
 
         // The open pull-down and its cascade follow the chrome.
         let menu = f.chrome.menu.as_ref();
         let mut layer = self.frames.remove(&p.hwnd).expect("present");
         let pd = menu.and_then(|m| m.pulldown.as_ref());
-        self.sync_menu_picture(&mut layer.pulldown, pd, reusable, p.pulldown, (p.hwnd, p.rounded), items, damage);
+        self.sync_menu_picture(&mut layer.pulldown, pd, reusable, p.pulldown, p.hwnd, items, damage);
         let cd = menu.and_then(|m| m.cascade_pd.as_ref()).map(|(_, c)| c);
-        self.sync_menu_picture(&mut layer.cascade, cd, reusable, p.cascade, (p.hwnd, p.rounded), items, damage);
+        self.sync_menu_picture(&mut layer.cascade, cd, reusable, p.cascade, p.hwnd, items, damage);
         self.frames.insert(p.hwnd, layer);
     }
 
     /// Bring a pull-down's or cascade's picture in `slot` up to date with
-    /// `pd`, and add its item at `rect` (of frame `hwnd`, rounded or not).
+    /// `pd`, and add its item at `rect` (of frame `hwnd`).
     #[allow(clippy::too_many_arguments)]
     fn sync_menu_picture(&mut self, slot: &mut Option<(Shared, i32)>, pd: Option<&super::super::Pulldown>,
-                         reusable: bool, rect: Rect, (hwnd, rounded): (u32, bool), items: &mut Vec<Item>,
+                         reusable: bool, rect: Rect, hwnd: u32, items: &mut Vec<Item>,
                          damage: &mut Vec<(u32, Area)>) {
         let Some(pd) = pd else {
             if let Some((s, _)) = slot.take() { self.drop_pixmap(s); }
@@ -230,7 +230,7 @@ impl RemoteDesktop {
         }
         if let Some((s, h)) = slot.as_ref() && !rect.is_empty() {
             items.push(Item { frame: hwnd, pixmap: s.id, x: rect.x0, y: rect.y0,
-                              parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)], rounded });
+                              parts: vec![Area::new(0, 0, MENU_DROPDOWN_W, *h)] });
         }
     }
 
@@ -255,8 +255,7 @@ impl RemoteDesktop {
             self.overlay = Some((s, o.generation));
         }
         let (s, _) = self.overlay.as_ref()?;
-        Some(Item { frame: 0, pixmap: s.id, x: o.rect.x0, y: o.rect.y0, parts: vec![Area::new(0, 0, w, h)],
-                   rounded: crate::gui::theme::current().rounded_frames() })
+        Some(Item { frame: 0, pixmap: s.id, x: o.rect.x0, y: o.rect.y0, parts: vec![Area::new(0, 0, w, h)] })
     }
 }
 

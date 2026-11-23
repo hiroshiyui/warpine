@@ -34,7 +34,6 @@
 use super::constants::*;
 use super::{control_box, ApiResult, Loader, MutexExt, Painter, CONTROL_FACE_COLOR,
             CONTROL_PRESSED_COLOR, CONTROL_SCROLLBAR_COLOR, CONTROL_TEXT_COLOR};
-use crate::gui::theme;
 
 pub(super) const CLASS_SCROLLBAR: &str = "WC_SCROLLBAR";
 
@@ -456,29 +455,15 @@ impl Loader {
                             if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
             }
         };
-        // Modern (ADR-0118): a light track, flat arrows (a box only while
-        // pressed) and a slimmer rounded thumb without an outline.
-        let modern = !theme::current().bevelled();
-        let shaft = if modern { theme::MODERN_TRACK_COLOR } else { CONTROL_SCROLLBAR_COLOR };
-        p.fill((x, y, x + cx - 1, y + cy - 1), shaft);
+        p.fill((x, y, x + cx - 1, y + cy - 1), CONTROL_SCROLLBAR_COLOR);
         let pressed = |part: Part| s.held.is_some_and(|h| h.part == part && h.over);
         let glyph = if s.enabled() { CONTROL_TEXT_COLOR } else { DISABLED_ARROW_COLOR };
         for (part, t0) in [(Part::LineUp, 0), (Part::LineDown, len - g.arrow)] {
             let r = span(t0, t0 + g.arrow);
-            if !modern || pressed(part) {
-                button(r, pressed(part));
-            }
+            button(r, pressed(part));
             draw_arrow(p, r, vertical, part == Part::LineUp, glyph);
         }
-        if g.thumb > 0 && modern {
-            let (rx, ry, w, h) = span(g.thumb_at, g.thumb_at + g.thumb);
-            let i = theme::MODERN_THUMB_INSET;
-            let (ix, iy) = if vertical { (i, 0) } else { (0, i) };
-            let color = if track.is_some() { theme::MODERN_THUMB_HELD_COLOR } else { theme::MODERN_THUMB_COLOR };
-            if w - 2 * ix > 0 && h - 2 * iy > 0 {
-                super::rounded_box(p, (rx + ix, ry + iy, w - 2 * ix - 1, h - 2 * iy - 1), Some(color), color);
-            }
-        } else if g.thumb > 0 {
+        if g.thumb > 0 {
             button(span(g.thumb_at, g.thumb_at + g.thumb), false);
         }
         // The tracking outline of a slider dragged without SBS_AUTOTRACK.
