@@ -345,6 +345,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - osFree's numbers for ordinals 1–47 being IBM's, data at 1–19;
   - every version accepted by `<Class>NewClass`;
   - `somConstructClass`, `somSaveMetrics`, `somWriteMetrics` doing nothing.
+- **SOM corrections after the Reference** (ADR-0062 addendum, 2026-11-24): `SOMERROR_NotRegistered` (20159) from `somUnloadClassFile` of an unregistered class; a class no file made freed alone with 0; the root classes refused; "Test passed: …" / "Assertion passed: …" as the noted text; `SOMERROR_OutOfMemory` (20099) for allocation failures; the class manager's methods called only for a class not registered.
 - **SOM class loading and data resolution** (ADR-0060, ADR-0062 addenda):
   - `SOMERROR_BadArgument` (20199) as `somDataResolve`'s error for an object without the token's data; `somDataResolveChk` at ordinal 3079;
   - `ERROR_PROC_NOT_FOUND` from the default `SOMLoadModule` for a DLL with neither entry point, the DLL staying loaded;

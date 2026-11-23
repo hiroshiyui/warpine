@@ -354,6 +354,9 @@ pub(crate) enum ChainThen {
     Rexx { session: u32 },
     /// The SOM root's initializer (destructor) walk ran (`som.rs`,
     /// ADR-0122): free control block `ctrl`, then object `obj` unless 0,
+    /// A class manager's own somLocateClassFile returned the file
+    /// (`som.rs`): call its somFindClsInFile there.
+    SomFindInFile { mgr: u32, id: u32, major: u32, minor: u32 },
     /// and return `result`.
     SomWalkDone { ctrl: u32, obj: u32, result: u32 },
     /// `somFindClass` (or a sibling) loaded the file of class `id`
@@ -497,6 +500,7 @@ impl Loader {
                 ChainEnd::Return(self.som_module_loaded(hmod, phandle, inits, entry, chain)),
             ChainThen::SomFindClassNamed { id, major, minor, file } =>
                 self.som_find_class_named(chain, id, major, minor, file),
+            ChainThen::SomFindInFile { mgr, id, major, minor } => self.som_find_in_file(chain, mgr, id, major, minor),
             ChainThen::HitTest { hwnd, after } => self.hit_test_done(hwnd, after, chain),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
                 self.sent_done(id, hwnd, after, finish, calls, chain),

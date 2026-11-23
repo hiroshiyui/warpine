@@ -204,6 +204,8 @@ pub const SOM_EXCEPTION_FREE: u32 = 3099;
 const ENV_MAJOR: u32 = 0;
 const ENV_EXCEPTION_NAME: u32 = 4;
 const ENV_EXCEPTION_PARAMS: u32 = 8;
+/// The most threads with their own somSetOutChar routine.
+const MAX_THREAD_ROUTINES: usize = 4096;
 /// The size of a `somInitInfo` entry: class, own `somDefaultInit`, own
 /// `somDestruct`, the class's data offset in the instance.
 pub const SOM_INIT_INFO_SIZE: u32 = 16;
@@ -290,6 +292,29 @@ pub const SOMCLASSMGR_METHODS: &[(u32, &str)] = &[
 
 /// The token of `SOMObject` method `name`: its place in the release
 /// order plus one (the runtime makes SOMObject's tokens first).
+/// The token of `SOMClass` method `name`: SOMObject's come first.
+const fn class_token(name: &str) -> u32 {
+    let mut i = 0;
+    while i < SOMCLASS_METHODS.len() {
+        if str_eq(SOMCLASS_METHODS[i].1, name) { return (SOMOBJECT_METHODS.len() + i) as u32 + 1; }
+        i += 1;
+    }
+    panic!("not a SOMClass method")
+}
+
+/// The token of `SOMClassMgr` method `name`: SOMObject's and SOMClass's
+/// come first.
+const fn mgr_token(name: &str) -> u32 {
+    let mut i = 0;
+    while i < SOMCLASSMGR_METHODS.len() {
+        if str_eq(SOMCLASSMGR_METHODS[i].1, name) {
+            return (SOMOBJECT_METHODS.len() + SOMCLASS_METHODS.len() + i) as u32 + 1;
+        }
+        i += 1;
+    }
+    panic!("not a SOMClassMgr method")
+}
+
 const fn root_token(name: &str) -> u32 {
     let mut i = 0;
     while i < SOMOBJECT_METHODS.len() {
@@ -360,6 +385,11 @@ const TOKEN_SOM_UNINIT: u32 = root_token("somUninit");
 const TOKEN_SOM_DUMP_SELF_INT: u32 = root_token("somDumpSelfInt");
 const TOKEN_SOM_DEFAULT_INIT: u32 = root_token("somDefaultInit");
 const TOKEN_SOM_DESTRUCT: u32 = root_token("somDestruct");
+const TOKEN_SOM_GET_NAME: u32 = class_token("somGetName");
+const TOKEN_SOM_CLASS_READY: u32 = class_token("somClassReady");
+const TOKEN_SOM_LOCATE_CLASS_FILE: u32 = mgr_token("somLocateClassFile");
+const TOKEN_SOM_FIND_CLS_IN_FILE: u32 = mgr_token("somFindClsInFile");
+const TOKEN_SOM_LOAD_CLASS_FILE: u32 = mgr_token("somLoadClassFile");
 
 /// One method a class supports: its token and procedure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,6 +510,8 @@ pub struct SomRuntime {
     /// Each class's table of `somInitInfo` entries, made when first asked
     /// for: its address and number of entries (ADR-0122).
     pub init_tables: HashMap<u32, (u32, u32)>,
+    /// The output routine each thread set with somSetOutChar.
+    pub out_char: HashMap<u32, u32>,
     /// Classes made while the class manager loaded a module: its handle.
     pub modules: HashMap<u32, u32>,
     /// The guest copy of "SOMInitModule" the default
@@ -726,6 +758,8 @@ pub const SOMERROR_TEST_OBJECT_FAILURE: u32 = 20109;
 pub const SOMERROR_NOT_IMPLEMENTED_YET_IGNORE: u32 = 20171;
 pub const SOMERROR_OUT_OF_MEMORY: u32 = 20099;
 pub const SOMERROR_BAD_ARGUMENT: u32 = 20199;
+/// `SOMERROR_NotRegistered`: a class that is not registered.
+pub const SOMERROR_NOT_REGISTERED: u32 = 20159;
 pub const SOMERROR_NO_PARENT_CLASS: u32 = 20219;
 pub const SOMERROR_NO_META_CLASS: u32 = 20229;
 /// `somTest`'s failure: `SOMERROR_FailedTest` with the given severity.
@@ -1437,40 +1471,81 @@ impl Loader {
         0
     }
 
-    /// `somUnregisterClass`: the class manager forgets class `cls`
-    /// (`somFindClass` will look for it again); 0, or 1 if it was not
-    /// registered.
-    fn som_unregister(&self, cls: u32) -> u32 {
-        let mut rt = self.shared.som.lock_or_recover();
-        let Some(name) = rt.classes.get(&cls).map(|c| c.name.clone()) else { return 1 };
-        if rt.by_name.get(&name) != Some(&cls) { return 1; }
-        rt.by_name.remove(&name);
-        0
+    /// `somInitMIClass(self, inherit_vars, className, parentClasses (a
+    /// sequence by value: _maximum, _length, _buffer), dataSize,
+    /// dataAlignment, maxStaticMethods, major, minor)`: eleven words, so
+    /// the registry's handler reads `minor` from the stack itself.
+    pub(crate) fn som_init_mi_class(&self, a: &[u32; 10], minor: u32) -> u32 {
+        self.som_init();
+        let n = a[4] as usize;
+        if n == 0 || n > MAX_PARENTS { return 0; }
+        let parents: Option<Vec<u32>> = (0..n as u32).map(|i| self.guest_read::<u32>(a[5].checked_add(4 * i)?)).collect();
+        let Some(parents) = parents else { return 0 };
+        let r = self.som_init_class(a[0], a[2], &parents, a[6]);
+        if let Some(c) = self.shared.som.lock_or_recover().classes.get_mut(&a[0]) { c.version = (a[9], minor); }
+        r
     }
 
-    /// `somUnloadClassFile`: every class the module of class `cls` made is
-    /// unregistered and its objects' methods resolve to nothing (their
-    /// code goes with the module), then `SOMDeleteModule` frees the
-    /// module. Nonzero if the class did not come from a module the class
-    /// manager loaded.
-    fn som_unload_class_file(&self, vcpu: u32, cls: u32) -> ApiResult {
-        let mut tables = Vec::new();
-        let hmod = {
+    /// Whether `cls` is a registered class other than the root classes.
+    fn som_registered(&self, cls: u32) -> bool {
+        let rt = self.shared.som.lock_or_recover();
+        if [rt.som_object, rt.som_class, rt.som_class_mgr].contains(&cls) { return false; }
+        rt.classes.get(&cls).is_some_and(|c| rt.by_name.get(&c.name) == Some(&cls))
+    }
+
+    /// Forget `classes` and free them: their records, method tables,
+    /// initializer tables and class objects ("frees the class object",
+    /// SOM Programming Reference). Their objects resolve nothing after.
+    fn som_free_classes(&self, classes: &[u32]) {
+        let mut blocks = Vec::new();
+        {
             let mut rt = self.shared.som.lock_or_recover();
-            let Some(&hmod) = rt.modules.get(&cls) else { return ApiResult::Normal(1) };
-            let made: Vec<u32> = rt.modules.iter().filter(|&(_, &m)| m == hmod).map(|(&c, _)| c).collect();
-            for c in made {
+            for &c in classes {
                 rt.modules.remove(&c);
-                // Its initializer table names the module's code.
-                tables.extend(rt.init_tables.remove(&c).map(|t| t.0));
+                blocks.extend(rt.init_tables.remove(&c).map(|t| t.0));
                 let Some((name, mtab)) = rt.classes.get(&c).map(|k| (k.name.clone(), k.mtab)) else { continue };
                 if rt.by_name.get(&name) == Some(&c) { rt.by_name.remove(&name); }
-                rt.mtabs.remove(&mtab);
+                if rt.mtabs.remove(&mtab).is_some() { blocks.push(mtab); }
                 rt.ready_order.retain(|&k| k != c);
             }
-            hmod
+        }
+        for b in blocks { self.som_free_mem(b); }
+        for &c in classes { self.som_free_done(c); }
+    }
+
+    /// `somUnregisterClass`: the class is unregistered and its object
+    /// freed; a class loaded from a file is unloaded with its file's other
+    /// classes (somUnloadClassFile). 0, or 1 if it was not registered.
+    fn som_unregister(&self, vcpu: u32, cls: u32) -> ApiResult {
+        if !self.som_registered(cls) { return ApiResult::Normal(1); }
+        if self.shared.som.lock_or_recover().modules.contains_key(&cls) {
+            return self.som_unload_class_file(vcpu, cls);
+        }
+        self.som_free_classes(&[cls]);
+        ApiResult::Normal(0)
+    }
+
+    /// `somUnloadClassFile`: the classes the module of class `cls` made are
+    /// unregistered and freed (their code goes with the module), then
+    /// `SOMDeleteModule` frees the module. A class no file of the class
+    /// manager's made is freed alone (0); a root class is left (1); an
+    /// unregistered one raises SOMERROR_NotRegistered (the code is
+    /// Warpine's choice).
+    fn som_unload_class_file(&self, vcpu: u32, cls: u32) -> ApiResult {
+        let root = {
+            let rt = self.shared.som.lock_or_recover();
+            [rt.som_object, rt.som_class, rt.som_class_mgr].contains(&cls)
         };
-        for t in tables { self.som_free_mem(t); }
+        if root { return ApiResult::Normal(1); }
+        if !self.som_registered(cls) { return self.som_raise(vcpu, SOMERROR_NOT_REGISTERED, 0, 0, 1); }
+        let module = self.shared.som.lock_or_recover().modules.get(&cls).copied();
+        let Some(hmod) = module else {
+            self.som_free_classes(&[cls]);
+            return ApiResult::Normal(0);
+        };
+        let made: Vec<u32> = self.shared.som.lock_or_recover().modules.iter()
+            .filter(|&(_, &m)| m == hmod).map(|(&c, _)| c).collect();
+        self.som_free_classes(&made);
         let deleter = self.som_var(SOM_VAR_DELETE_MODULE);
         if deleter == thunk(SOM_DEFAULT_DELETE_MODULE) || deleter == 0 {
             return self.dos_free_module(hmod);
@@ -1538,9 +1613,15 @@ impl Loader {
             let _ = self.guest_write::<u32>(info.ccds, pm);
             let _ = self.guest_write::<u32>(info.ccds.wrapping_add(4), token);
         }
-        if info.cif == 0 { return ok(cls); }
-        let step = CallStep::hook(info.cif, vec![cls], false);
-        self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::Return(cls)))
+        // A metaclass's own somClassReady runs (the class is ready already;
+        // SOMClass's, which an override calls, then does nothing), then
+        // the class init function.
+        let mut steps = Vec::new();
+        let ready = self.som_resolve(cls, TOKEN_SOM_CLASS_READY);
+        if ready != thunk(3313) { steps.push(CallStep::hook(ready, vec![cls], false)); }
+        if info.cif != 0 { steps.push(CallStep::hook(info.cif, vec![cls], false)); }
+        if steps.is_empty() { return ok(cls); }
+        self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::Return(cls)))
     }
 
     /// The registered class the somId `id` names.
@@ -1754,16 +1835,43 @@ impl Loader {
         out
     }
 
+    /// `text` for thread `vcpu`'s output routine: written at once when it
+    /// is the default (no steps), else one call per character.
+    fn som_text_steps(&self, vcpu: u32, text: &[u8]) -> Vec<CallStep> {
+        let routine = self.som_out_routine(vcpu);
+        if routine == thunk(SOM_DEFAULT_OUT_CHAR) || routine == 0 {
+            let _ = self.write_handle(STDOUT_HANDLE, text);
+            return Vec::new();
+        }
+        text.iter().take(MAX_PRINT).map(|&c| CallStep::hook(routine, vec![c as u32], false)).collect()
+    }
+
+    /// A passed test or assertion: "<what> passed: msg" above
+    /// SOM_AssertLevel 0 (the text is Warpine's), else nothing.
+    fn som_passed(&self, vcpu: u32, what: &str, msg: u32) -> ApiResult {
+        if self.som_var(SOM_ASSERT_LEVEL) as i32 <= 0 { return ApiResult::Normal(0); }
+        let msg = self.som_name(msg).unwrap_or_default();
+        self.som_output(vcpu, format!("{what} passed: {msg}\n").into_bytes())
+    }
+
     /// Write `out` through `SOMOutCharRoutine`; the count of characters.
     fn som_output(&self, vcpu: u32, out: Vec<u8>) -> ApiResult {
-        // A program's own SOMOutCharRoutine gets every character.
-        let routine = self.som_var(SOM_VAR_OUT_CHAR);
+        // A program's own SOMOutCharRoutine gets every character; the
+        // thread's own (somSetOutChar) comes first.
+        let routine = self.som_out_routine(vcpu);
         if out.is_empty() { return ApiResult::Normal(0); }
         if routine == thunk(SOM_DEFAULT_OUT_CHAR) || routine == 0 {
             return ApiResult::Normal(self.write_handle(STDOUT_HANDLE, &out).unwrap_or(0));
         }
         let steps = out.iter().map(|&c| CallStep::hook(routine, vec![c as u32], false)).collect();
         self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::Return(out.len() as u32)))
+    }
+
+    /// The output routine thread `vcpu` uses: its own (somSetOutChar), else
+    /// SOMOutCharRoutine's.
+    fn som_out_routine(&self, vcpu: u32) -> u32 {
+        let own = self.shared.som.lock_or_recover().out_char.get(&vcpu).copied();
+        own.unwrap_or_else(|| self.som_var(SOM_VAR_OUT_CHAR))
     }
 
     /// `somParentNumResolve(parentMtab, n, token)`: the procedure of
@@ -1927,6 +2035,41 @@ impl Loader {
         self.som_load_class(vcpu, id, &name, (major, minor), file, SOM_INIT_MODULE)
     }
 
+    /// A class manager's own `somLocateClassFile` / `somFindClsInFile` /
+    /// `somLoadClassFile` (SOM Programming Reference: somFindClass uses
+    /// somLocateClassFile and somFindClsInFile, which uses
+    /// somLoadClassFile): when `mgr` (a[0]) overrides the next method of
+    /// the lookup and the class is not registered, the lookup goes through
+    /// the methods. `None`: no override, the kernel's own path.
+    fn som_find_via_methods(&self, vcpu: u32, a: &[u32; 10], in_file: bool) -> Option<ApiResult> {
+        let (mgr, id, major, minor) = (a[0], a[1], a[2], a[3]);
+        let registered = self.som_id_name(id).is_some_and(|n| self.shared.som.lock_or_recover().by_name.contains_key(&n));
+        if registered { return None; }
+        if in_file {
+            let load = self.som_resolve(mgr, TOKEN_SOM_LOAD_CLASS_FILE);
+            if load == thunk(3405) { return None; }
+            let step = CallStep::hook(load, vec![mgr, id, major, minor, a[4]], false);
+            return Some(self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::ReturnLast)));
+        }
+        let locate = self.som_resolve(mgr, TOKEN_SOM_LOCATE_CLASS_FILE);
+        let find_in = self.som_resolve(mgr, TOKEN_SOM_FIND_CLS_IN_FILE);
+        let load = self.som_resolve(mgr, TOKEN_SOM_LOAD_CLASS_FILE);
+        if locate == thunk(3404) && find_in == thunk(3403) && load == thunk(3405) { return None; }
+        let step = CallStep::hook(locate, vec![mgr, id, major, minor], false);
+        Some(self.start_chain(CallChain::new(vcpu, vec![step], false,
+                                             ChainThen::SomFindInFile { mgr, id, major, minor })))
+    }
+
+    /// The class manager's somLocateClassFile returned the file (its
+    /// result): its somFindClsInFile looks there.
+    pub(crate) fn som_find_in_file(&self, chain: &CallChain, mgr: u32, id: u32, major: u32, minor: u32)
+        -> super::pm_hook::ChainEnd {
+        use super::pm_hook::ChainEnd;
+        let find_in = self.som_resolve(mgr, TOKEN_SOM_FIND_CLS_IN_FILE);
+        let step = CallStep::hook(find_in, vec![mgr, id, major, minor, chain.last], false);
+        ChainEnd::Next(Box::new(CallChain::new(chain.tid, vec![step], false, ChainThen::ReturnLast)))
+    }
+
     /// The program's `SOMClassInitFuncName` returned the name of the
     /// initialization function (its result, a string): go on loading.
     pub(crate) fn som_find_class_named(&self, chain: &CallChain, id: u32, major: u32, minor: u32, file: u32)
@@ -2068,9 +2211,25 @@ impl Loader {
             SOM_COMPARE_IDS => ok((self.som_id_name(a[0]).is_some() && self.som_id_name(a[0]) == self.som_id_name(a[1])) as u32),
             SOM_IS_OBJ => ok(self.shared.som.lock_or_recover().instances.contains(&a[0]) as u32),
             SOM_PRINTF => self.som_printf(vcpu, a),
-            SOM_MALLOC => ok(self.som_malloc(a[0]).unwrap_or(0)),
-            SOM_CALLOC => ok(a[0].checked_mul(a[1]).and_then(|n| self.som_malloc(n)).unwrap_or(0)),
-            SOM_REALLOC => ok(self.som_realloc(a[0], a[1])),
+            // SOMMalloc / SOMCalloc / SOMRealloc: SOMError on failure
+            // (SOM Programming Reference); the code is Warpine's choice.
+            SOM_MALLOC => match self.som_malloc(a[0]) {
+                Some(at) => ok(at),
+                None => self.som_raise(vcpu, SOMERROR_OUT_OF_MEMORY, 0, 0, 0),
+            },
+            SOM_CALLOC => match a[0].checked_mul(a[1]).and_then(|n| self.som_malloc(n)) {
+                Some(at) => ok(at),
+                None => self.som_raise(vcpu, SOMERROR_OUT_OF_MEMORY, 0, 0, 0),
+            },
+            SOM_REALLOC => {
+                // Out of memory raises; a pointer that is no block of the
+                // runtime's gives 0, as before.
+                let block = a[0] == 0 || self.shared.som.lock_or_recover().heap.blocks.contains_key(&a[0]);
+                match self.som_realloc(a[0], a[1]) {
+                    0 if block && a[1] != 0 => self.som_raise(vcpu, SOMERROR_OUT_OF_MEMORY, 0, 0, 0),
+                    at => ok(at),
+                }
+            }
             SOM_FREE_MEM => { self.som_free_mem(a[0]); ok(0) }
             SOM_METACLASS_FOR => ok(self.som_metaclass_for(a[0], a[1])),
             SOM_DEFAULT_LOAD_MODULE => {
@@ -2089,13 +2248,19 @@ impl Loader {
             SOM_DEFAULT_DELETE_MODULE => self.dos_free_module(a[0]),
             // SOMError(code, fileName, lineNum).
             SOM_DEFAULT_ERROR => self.som_default_error(vcpu, a[0], a[1], a[2]),
-            SOM_DEFAULT_OUT_CHAR => {
-                let _ = self.write_handle(STDOUT_HANDLE, &[a[0] as u8]);
-                ok(1)
-            }
+            // The default SOMOutCharRoutine: 1 when the character was
+            // written, 0 when the write failed.
+            SOM_DEFAULT_OUT_CHAR => ok(self.write_handle(STDOUT_HANDLE, &[a[0] as u8]).map_or(0, |n| (n == 1) as u32)),
+            // somSetOutChar(routine): for the calling thread only ("affects
+            // only the application (or thread) in which it occurs"); 0 puts
+            // the default back. SOMOutCharRoutine stays process-wide.
             SOM_SET_OUT_CHAR => {
-                let routine = if a[0] == 0 { thunk(SOM_DEFAULT_OUT_CHAR) } else { a[0] };
-                if let Some(at) = self.som_data_address(SOM_VAR_OUT_CHAR) { let _ = self.guest_write::<u32>(at, routine); }
+                let mut rt = self.shared.som.lock_or_recover();
+                if a[0] == 0 {
+                    rt.out_char.insert(vcpu, thunk(SOM_DEFAULT_OUT_CHAR));
+                } else if rt.out_char.len() < MAX_THREAD_ROUTINES || rt.out_char.contains_key(&vcpu) {
+                    rt.out_char.insert(vcpu, a[0]);
+                }
                 ok(0)
             }
             SOM_METHOD_ERROR => ok(0),
@@ -2122,18 +2287,23 @@ impl Loader {
                 if fine { ok(a[0]) } else { self.som_raise(vcpu, SOMERROR_TEST_OBJECT_FAILURE, a[2], a[3], a[0]) }
             }
             SOM_TEST => {
-                // somTest(condition, severity, file, line, msg).
-                if a[0] != 0 { return ok(0); }
-                self.som_raise(vcpu, SOMERROR_FAILED_TEST_BASE + (a[1] % 10), a[2], a[3], 0)
+                // somTest(condition, severity, file, line, msg) — SOM_Test
+                // (fatal) and SOM_TestC (a warning): a passed test is noted
+                // above SOM_AssertLevel 0; a failed one is fatal, or a
+                // warning shown only above SOM_WarnLevel 0.
+                if a[0] != 0 { return self.som_passed(vcpu, "Test", a[4]); }
+                let severity = a[1] % 10;
+                if severity != SOM_FATAL && self.som_var(SOM_WARN_LEVEL) as i32 <= 0 { return ok(0); }
+                self.som_raise(vcpu, SOMERROR_FAILED_TEST_BASE + severity, a[2], a[3], 0)
             }
             SOM_ASSERT => {
                 // somAssert(condition, code, file, line, msg): a kept
-                // assertion is noted when SOM_AssertLevel is above 0; a
-                // failed one raises its code.
-                if a[0] == 0 { return self.som_raise(vcpu, a[1], a[2], a[3], 0); }
-                if self.som_var(SOM_ASSERT_LEVEL) as i32 <= 0 { return ok(0); }
-                let msg = self.som_name(a[4]).unwrap_or_default();
-                self.som_output(vcpu, format!("Assertion passed: {msg}\n").into_bytes())
+                // assertion is noted above SOM_AssertLevel 0; a failed one
+                // with a fatal code raises it, with any other only above
+                // SOM_WarnLevel 0 (SOM Programming Reference, SOM_Assert).
+                if a[0] != 0 { return self.som_passed(vcpu, "Assertion", a[4]); }
+                if a[1] % 10 != SOM_FATAL && self.som_var(SOM_WARN_LEVEL) as i32 <= 0 { return ok(0); }
+                self.som_raise(vcpu, a[1], a[2], a[3], 0)
             }
             SOM_CHECK_ARGS => { self.som_check_args(a[0], a[1]); ok(0) }
             SOM_CHECK_ID => {
@@ -2229,7 +2399,15 @@ impl Loader {
                                                 ChainThen::SomFree { obj: a[0] }))
             }
             3203 => ok(class_of(a[0])),
-            3204 => ok(info(class_of(a[0]), &|c| c.name_addr)),
+            // somGetClassName "simply invokes somGetName on the class of
+            // the receiver" (SOM Programming Reference): a metaclass's
+            // override answers.
+            3204 => {
+                let cls = class_of(a[0]);
+                let get_name = self.som_resolve(cls, TOKEN_SOM_GET_NAME);
+                if get_name == thunk(3302) || cls == 0 { return ok(info(cls, &|c| c.name_addr)); }
+                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(get_name, vec![cls], false)], false, ChainThen::ReturnLast))
+            }
             3205 => ok(info(class_of(a[0]), &|c| c.instance_size)),
             3206 => {
                 // The class first: class_of takes the runtime's lock too.
@@ -2242,17 +2420,20 @@ impl Loader {
                 let cls = class_of(a[0]);
                 ok(self.shared.som.lock_or_recover().token_of(cls, &name).is_some() as u32)
             }
+            // somPrintSelf / somDumpSelf write through the thread's output
+            // routine, as somPrintf does.
             3209 => {
-                let _ = self.write_handle(STDOUT_HANDLE, format!("{}\n", self.som_describe(a[0])).as_bytes());
-                ok(a[0])
+                let steps = self.som_text_steps(vcpu, format!("{}\n", self.som_describe(a[0])).as_bytes());
+                if steps.is_empty() { return ok(a[0]); }
+                self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::Return(a[0])))
             }
             3210 => {
                 // somDumpSelf(level): a line, then the object's somDumpSelfInt.
                 let indent = "  ".repeat((a[1] as i32).clamp(0, 32) as usize);
-                let _ = self.write_handle(STDOUT_HANDLE, format!("{indent}{}\n", self.som_describe(a[0])).as_bytes());
+                let mut steps = self.som_text_steps(vcpu, format!("{indent}{}\n", self.som_describe(a[0])).as_bytes());
                 let int = self.som_resolve(a[0], TOKEN_SOM_DUMP_SELF_INT);
-                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(int, vec![a[0], a[1]], false)], false,
-                                                ChainThen::Return(0)))
+                steps.push(CallStep::hook(int, vec![a[0], a[1]], false));
+                self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::Return(0)))
             }
             3212 => {
                 // somDefaultInit(ctrl): at the root, the object's somInit
@@ -2293,7 +2474,12 @@ impl Loader {
             3302 => ok(info(a[0], &|c| c.name_addr)),
             3303 => ok(info(a[0], &|c| c.parents.first().copied().unwrap_or(0))),
             3304 => ok(info(a[0], &|c| c.instance_size)),
-            3305 => ok(info(a[0], &|c| c.data_size)),
+            // somGetInstancePartSize: the instance variables the class
+            // introduced; SOMObject's method-table word is not one.
+            3305 => {
+                if a[0] == self.shared.som.lock_or_recover().som_object { return ok(0); }
+                ok(info(a[0], &|c| c.data_size))
+            }
             // The data token of a class is the class itself.
             3306 => ok(info(a[0], &|c| if c.parts.is_empty() { 0 } else { a[0] })),
             3307 => ok(info(a[0], &|c| c.slots.len() as u32)),
@@ -2338,10 +2524,21 @@ impl Loader {
                     None => self.som_raise(vcpu, SOMERROR_METHOD_NOT_FOUND, 0, 0, 0),
                 }
             }
-            3326 => ok(self.som_malloc(a[1]).unwrap_or(0)),
+            // somAllocate(size) / somDeallocate(memptr): through SOMMalloc
+            // and SOMFree, a program's replacements included.
+            3326 => {
+                let malloc = self.som_var(SOM_VAR_MALLOC);
+                if malloc == thunk(SOM_MALLOC) || malloc == 0 { return self.som_call(vcpu, SOM_MALLOC, &[a[1], 0, 0, 0, 0, 0, 0, 0, 0, 0]); }
+                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(malloc, vec![a[1]], false)], false, ChainThen::ReturnLast))
+            }
             // somDeallocate: the block goes; an object freed this way (a
             // destructor's own deallocation) is no object any more.
-            3327 => { self.som_forget_object(a[1]); self.som_free_mem(a[1]); ok(0) }
+            3327 => {
+                self.som_forget_object(a[1]);
+                let free = self.som_var(SOM_VAR_FREE);
+                if free == thunk(SOM_FREE_MEM) || free == 0 { self.som_free_mem(a[1]); return ok(0); }
+                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(free, vec![a[1]], false)], false, ChainThen::Return(0)))
+            }
             3311 => ok(self.som_add_method(a[0], a[1], a[3])),
             3312 => ok(self.som_override(a[0], a[1], a[2])),
             3313 => ok(self.som_class_ready(a[0])),
@@ -2350,28 +2547,19 @@ impl Loader {
                 let token = self.shared.som.lock_or_recover().token_of(a[0], &name).unwrap_or(0);
                 ok(if ord == 3314 { token } else { (token != 0) as u32 })
             }
-            3316 => {
-                // somInitMIClass(self, inherit_vars, className, parentClasses
-                // (a sequence by value: _maximum, _length, _buffer),
-                // dataSize, dataAlignment, maxStaticMethods, major, minor).
-                let n = a[4] as usize;
-                if n == 0 || n > MAX_PARENTS { return ok(0); }
-                let parents: Option<Vec<u32>> = (0..n as u32).map(|i| self.guest_read::<u32>(a[5].checked_add(4 * i)?)).collect();
-                let Some(parents) = parents else { return ok(0) };
-                ok(self.som_init_class(a[0], a[2], &parents, a[6]))
-            }
+            3316 => ok(self.som_init_mi_class(a, 0)),
             // ── SOMClassMgr ──
             3401 => {
                 let name = self.som_id_name(a[1]).unwrap_or_default();
                 ok(self.shared.som.lock_or_recover().by_name.get(&name).copied().unwrap_or(0))
             }
-            3400 => self.som_find_class(vcpu, a[1], a[2], a[3], None, false),
-            3403 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), false),
+            3400 => self.som_find_via_methods(vcpu, a, false).unwrap_or_else(|| self.som_find_class(vcpu, a[1], a[2], a[3], None, false)),
+            3403 => self.som_find_via_methods(vcpu, a, true).unwrap_or_else(|| self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), false)),
             // somLocateClassFile: without an interface repository, the
             // class's name.
             3404 => ok(self.som_id_name(a[1]).map_or(0, |n| self.som_string(&n))),
             3405 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), true),
-            3406 => ok(self.som_unregister(a[1])),
+            3406 => self.som_unregister(vcpu, a[1]),
             3407 => self.som_unload_class_file(vcpu, a[1]),
             3402 => {
                 let mut rt = self.shared.som.lock_or_recover();
@@ -2629,7 +2817,9 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_PRINTF, &[fmt, 42])), 5);
         // A program's routine gets every character, in order.
         assert_eq!(ok(call(&l, SOM_SET_OUT_CHAR, &[0x0063_0000])), 0);
-        assert_eq!(root(&l, SOM_VAR_OUT_CHAR), 0x0063_0000);
+        assert_eq!(l.som_out_routine(0), 0x0063_0000, "this thread's");
+        assert_eq!(l.som_out_routine(1), thunk(SOM_DEFAULT_OUT_CHAR), "not another thread's");
+        assert_eq!(root(&l, SOM_VAR_OUT_CHAR), thunk(SOM_DEFAULT_OUT_CHAR), "SOMOutCharRoutine stays");
         let r = call(&l, SOM_PRINTF, &[fmt, 42]);
         let ApiResult::CallChain(ref c) = r else { panic!("{r:?}") };
         let chars: Vec<u32> = c.steps.iter().map(|s| match s {
@@ -2640,7 +2830,7 @@ mod tests {
         assert_eq!(finish(&l, r), 5);
         // somSetOutChar(0) puts the default back.
         ok(call(&l, SOM_SET_OUT_CHAR, &[0]));
-        assert_eq!(root(&l, SOM_VAR_OUT_CHAR), thunk(SOM_DEFAULT_OUT_CHAR));
+        assert_eq!(l.som_out_routine(0), thunk(SOM_DEFAULT_OUT_CHAR));
         assert_eq!(ok(call(&l, SOM_DEFAULT_OUT_CHAR, &[b'x' as u32])), 1);
         // SOMError: a warning returns, a fatal code (last digit 9) ends
         // the process with it.
@@ -2960,6 +3150,84 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_EXCEPTION_ID, &[0])), 0);
     }
 
+    /// The second batch of corrections after IBM's SOM Programming
+    /// Reference: the levels of somTest / somAssert, SOMObject's part size,
+    /// somGetClassName through somGetName, somAllocate through SOMMalloc,
+    /// somPrintSelf through the thread's output routine, somInitMIClass's
+    /// version, a metaclass's somClassReady after somBuildClass, and a
+    /// class manager's own lookup methods.
+    #[test]
+    fn reference_corrections_second_batch() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let som_class_mgr = l.shared.som.lock_or_recover().som_class_mgr;
+        let set = |var: u32, v: u32| l.guest_write::<u32>(l.som_data_address(var).unwrap(), v).unwrap();
+        let chained = |r: ApiResult| matches!(r, ApiResult::CallChain(_));
+        // somTest / somAssert: a program's SOMError shows when one is raised.
+        set(SOM_VAR_ERROR, 0x0066_0000);
+        let msg = put(&l, 0x3000, "m");
+        assert_eq!(ok(call(&l, SOM_TEST, &[1, 9, 0, 0, msg])), 0, "passed, SOM_AssertLevel 0: nothing");
+        assert_eq!(ok(call(&l, SOM_TEST, &[0, 2, 0, 0, msg])), 0, "a warning, SOM_WarnLevel 0: nothing");
+        assert!(chained(call(&l, SOM_TEST, &[0, 9, 0, 0, msg])), "a fatal failure always");
+        assert_eq!(ok(call(&l, SOM_ASSERT, &[0, 20012, 0, 0, msg])), 0, "a warning code, SOM_WarnLevel 0");
+        assert!(chained(call(&l, SOM_ASSERT, &[0, 20019, 0, 0, msg])), "a fatal code always");
+        set(SOM_WARN_LEVEL, 1);
+        assert!(chained(call(&l, SOM_TEST, &[0, 2, 0, 0, msg])), "a warning above SOM_WarnLevel 0");
+        assert!(chained(call(&l, SOM_ASSERT, &[0, 20012, 0, 0, msg])));
+        // SOMObject introduces no instance variables.
+        assert_eq!(ok(call(&l, 3305, &[som_object])), 0);
+        // somGetClassName asks the class's somGetName (a metaclass's own).
+        let namer = new_class(&l, som_class, "Namer", &[som_class], 0, &[("somGetName", 0x0067_0000)]);
+        let named = new_class(&l, namer, "Named", &[som_object], 0, &[]);
+        let obj = ok(call(&l, 3301, &[named]));
+        let ApiResult::CallChain(c) = call(&l, 3204, &[obj]) else { panic!() };
+        assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0067_0000, args, .. }) if args == &vec![named]));
+        let plain = new_class(&l, som_class, "Plain2", &[som_object], 0, &[]);
+        let p = ok(call(&l, 3301, &[plain]));
+        assert_eq!(l.read_guest_string(ok(call(&l, 3204, &[p]))), "Plain2");
+        // somAllocate through a program's SOMMalloc.
+        set(SOM_VAR_MALLOC, 0x0068_0000);
+        let ApiResult::CallChain(c) = call(&l, 3326, &[plain, 16]) else { panic!() };
+        assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0068_0000, args, .. }) if args == &vec![16]));
+        set(SOM_VAR_MALLOC, thunk(SOM_MALLOC));
+        // somPrintSelf through this thread's output routine.
+        ok(call(&l, SOM_SET_OUT_CHAR, &[0x0063_0000]));
+        let ApiResult::CallChain(c) = call(&l, 3209, &[p]) else { panic!() };
+        assert!(c.steps.iter().all(|s| matches!(s, CallStep::Guest { proc_addr: 0x0063_0000, .. })));
+        assert!(matches!(c.then, ChainThen::Return(r) if r == p), "returns the object");
+        ok(call(&l, SOM_SET_OUT_CHAR, &[0]));
+        // somInitMIClass records its version (the minor from the 11th word).
+        let mi = finish(&l, call(&l, 3300, &[som_class]));
+        l.guest_write::<u32>(0x3800, som_object).unwrap();
+        let a = [mi, 0, put(&l, 0x3820, "Versioned2"), 1, 1, 0x3800, 0, 4, 0, 3];
+        assert_eq!(l.som_init_mi_class(&a, 7), 0);
+        ok(call(&l, 3313, &[mi]));
+        assert_eq!((ok(call(&l, 3317, &[mi, 3, 7])), ok(call(&l, 3317, &[mi, 3, 8]))), (1, 0));
+        // somBuildClass: the metaclass's own somClassReady runs.
+        let readier = new_class(&l, som_class, "Readier", &[som_class], 0, &[("somClassReady", 0x0069_0000)]);
+        assert_ne!(readier, 0);
+        let built_id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3840, "Built")]));
+        let meta_id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3860, "Readier")]));
+        let none = [(0, 0); 6];
+        let sci = put_sci(&l, 0x4000, built_id, &[], 0x5900, 0, 0x5000, 0, none, 0, 0, meta_id);
+        let ApiResult::CallChain(c) = call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]) else { panic!() };
+        let built = l.guest_read::<u32>(0x5000).unwrap();
+        assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0069_0000, args, .. }) if args == &vec![built]));
+        // A class manager's own somLocateClassFile, then its somFindClsInFile.
+        let my_mgr = new_class(&l, som_class, "MyMgr", &[som_class_mgr], 0, &[("somLocateClassFile", 0x006A_0000)]);
+        let m = ok(call(&l, 3301, &[my_mgr]));
+        let nowhere = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3880, "Nowhere2")]));
+        let ApiResult::CallChain(mut c) = call(&l, 3400, &[m, nowhere, 0, 0]) else { panic!() };
+        assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x006A_0000, args, .. }) if args == &vec![m, nowhere, 0, 0]));
+        c.steps.pop_front();
+        c.returned(0x38A0, false);
+        let super::super::pm_hook::ChainEnd::Next(next) = l.finish_chain(&c) else { panic!() };
+        assert!(matches!(next.steps.front(), Some(CallStep::Guest { proc_addr, args, .. })
+                         if *proc_addr == thunk(3403) && args == &vec![m, nowhere, 0, 0, 0x38A0]));
+        // A registered class is answered at once, overrides or not.
+        assert_eq!(ok(call(&l, 3400, &[m, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x38C0, "Plain2")])), 0, 0])), plain);
+    }
+
     /// somUnregisterClass forgets a class; somUnloadClassFile forgets the
     /// classes of the module that made one, withdraws their method tables
     /// (their objects resolve nothing) and frees the module.
@@ -2970,18 +3238,30 @@ mod tests {
         let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
         let a = new_class(&l, som_class, "ModA", &[som_object], 0, &[("work", 0x0065_0000)]);
         let b = new_class(&l, som_class, "ModB", &[som_object], 0, &[]);
+        // somUnregisterClass frees the class object; a second time, 1.
         assert_eq!(ok(call(&l, 3406, &[mgr, b])), 0);
+        assert!(!l.shared.som.lock_or_recover().classes.contains_key(&b), "freed");
         assert_eq!(ok(call(&l, 3406, &[mgr, b])), 1, "not registered any more");
-        assert_eq!(ok(call(&l, 3407, &[mgr, a])), 1, "no module made it");
-        // As if a module 0x1234 had made both.
-        l.shared.som.lock_or_recover().modules.extend([(a, 0x1234), (b, 0x1234)]);
+        // somUnloadClassFile of an unregistered class: SOMError.
+        assert!(matches!(call(&l, 3407, &[mgr, b]), ApiResult::ExitProcess(SOMERROR_NOT_REGISTERED)));
+        // A class no file made is freed alone.
+        let c = new_class(&l, som_class, "ModC", &[som_object], 0, &[]);
+        assert_eq!(ok(call(&l, 3407, &[mgr, c])), 0);
+        assert!(!l.shared.som.lock_or_recover().by_name.contains_key("ModC"));
+        // The root classes stay.
+        assert_eq!(ok(call(&l, 3406, &[mgr, som_object])), 1);
+        assert_eq!(ok(call(&l, 3407, &[mgr, som_object])), 1);
+        // As if a module 0x1234 had made A and another class B2.
+        let b2 = new_class(&l, som_class, "ModB2", &[som_object], 0, &[]);
+        l.shared.som.lock_or_recover().modules.extend([(a, 0x1234), (b2, 0x1234)]);
         let obj = finish(&l, call(&l, 3300, &[a]));
         let work = token(&l, a, "work");
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, work])), 0x0065_0000);
         // The default SOMDeleteModule: DosFreeModule of an unknown handle.
         assert_ne!(ok(call(&l, 3407, &[mgr, a])), 0);
         let rt = l.shared.som.lock_or_recover();
-        assert!(!rt.by_name.contains_key("ModA") && rt.modules.is_empty());
+        assert!(!rt.by_name.contains_key("ModA") && !rt.by_name.contains_key("ModB2") && rt.modules.is_empty());
+        assert!(!rt.classes.contains_key(&a) && !rt.classes.contains_key(&b2), "the group's class objects are freed");
         drop(rt);
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, work])), thunk(SOM_METHOD_ERROR), "its code is gone");
         assert_eq!(ok(call(&l, 3400, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3700, "ModA")])), 0, 0])), 0,
@@ -3068,8 +3348,9 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_MALLOC, &[20])), a, "and reused");
         let z = ok(call(&l, SOM_CALLOC, &[4, 8]));
         assert_eq!(l.guest_read_bytes(z, 32).unwrap(), vec![0; 32]);
-        assert_eq!(ok(call(&l, SOM_CALLOC, &[u32::MAX, 2])), 0, "overflow");
-        assert_eq!(ok(call(&l, SOM_MALLOC, &[MAX_ALLOC + 1])), 0);
+        // A failed allocation calls SOMError (SOMERROR_OutOfMemory, fatal).
+        assert!(matches!(call(&l, SOM_CALLOC, &[u32::MAX, 2]), ApiResult::ExitProcess(SOMERROR_OUT_OF_MEMORY)), "overflow");
+        assert!(matches!(call(&l, SOM_MALLOC, &[MAX_ALLOC + 1]), ApiResult::ExitProcess(SOMERROR_OUT_OF_MEMORY)));
         let big = ok(call(&l, SOM_MALLOC, &[100_000]));
         assert_eq!(big % 4096, 0, "pages of its own");
         ok(call(&l, SOM_FREE_MEM, &[big]));

@@ -7,8 +7,9 @@
  *   - somFindClsInFile through the program's own SOMLoadModule, which
  *     calls the default one; the DLL has only <Class>NewClass;
  *   - a class without a file is not found; somLocateClassFile;
- *   - somUnregisterClass; somUnloadClassFile through the program's own
- *     SOMDeleteModule, then the class loaded afresh;
+ *   - somUnregisterClass, which unloads Greeter's file and frees the
+ *     class; somUnloadClassFile through the program's own SOMDeleteModule,
+ *     then the class loaded afresh;
  *   - somSetOutChar, a program's SOMError, and the default SOMError
  *     ending the program on a fatal code.
  * The classes are used by name only (somResolveByName): the program
@@ -88,11 +89,11 @@ int main( void )
             _somLocateClassFile( mgr, somIdFromString( "Nowhere" ), 0, 0 ) );
 
     /* One call per statement: the order of a call's arguments is unspecified. */
+    /* Unregistering a loaded class unloads its file and frees the class
+     * (SOM Programming Reference); a root class stays. */
     printf( "unregister Greeter: %ld\n", _somUnregisterClass( mgr, greeter ) );
     printf( "unregister Greeter again: %ld\n", _somUnregisterClass( mgr, greeter ) );
-    printf( "unload Greeter's file: %ld\n", _somUnloadClassFile( mgr, greeter ) );
-    printf( "unload it again: %ld\n", _somUnloadClassFile( mgr, greeter ) );
-    printf( "unload a class of no file: %ld\n", _somUnloadClassFile( mgr, SOMObjectClassData.classObject ) );
+    printf( "unload SOMObject: %ld\n", _somUnloadClassFile( mgr, SOMObjectClassData.classObject ) );
 
     default_delete = SOMDeleteModule;
     SOMDeleteModule = my_delete;

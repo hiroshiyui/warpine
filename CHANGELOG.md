@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- **The rest of the SOM kernel follows IBM's SOM Programming Reference** (ADR-0062 addendum):
+  - `somFindClass` goes through a program's class manager's own `somLocateClassFile`, `somFindClsInFile` and `somLoadClassFile` when it overrides them;
+  - `somBuildClass` calls the metaclass's own `somClassReady`;
+  - `somUnregisterClass` and `somUnloadClassFile` free the class objects, unregistering a loaded class unloads its file, and unloading an unregistered class raises `SOMERROR_NotRegistered`;
+  - `somSetOutChar` sets the calling thread's routine, and `somPrintSelf` / `somDumpSelf` write through it;
+  - `somTest` / `somAssert` show warnings only above `SOM_WarnLevel` 0 and note a passed test above `SOM_AssertLevel` 0;
+  - `SOMMalloc` / `SOMCalloc` / `SOMRealloc` call `SOMError` when out of memory, `somAllocate` / `somDeallocate` use a program's replacements, and the default `SOMOutCharRoutine` returns 0 when its write fails;
+  - `SOMObject`'s `somGetInstancePartSize` is 0, `somGetClassName` asks the class's `somGetName`, and `somInitMIClass` records the class's version.
+- **The SDK's `SOM_Ignore` / `SOM_Warn`** are IBM's 1 and 2 (they were 0 and 1).
+
 ## [0.0.15] - 2026-11-24
 
 ### Added

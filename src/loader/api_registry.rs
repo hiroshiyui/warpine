@@ -1093,8 +1093,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3314,&a) },
     ApiEntry { ordinal: SOM_BASE + 3315, module: "SOM", name: "WrpSOMClass_somSupportsMethod", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,3315,&a) },
-    ApiEntry { ordinal: SOM_BASE + 3316, module: "SOM", name: "WrpSOMClass_somInitMIClass", argc: 10,
-               handler: |l,_v,i,a| l.som_call(i,3316,&a) },
+    // somInitMIClass takes eleven words: its minor version is the 11th.
+    ApiEntry { ordinal: SOM_BASE + 3316, module: "SOM", name: "WrpSOMClass_somInitMIClass", argc: 11,
+               handler: |l,v,_i,a| {
+                   let minor = v.get_regs().ok().and_then(|r| l.guest_read::<u32>((r.rsp as u32).wrapping_add(4 + 4 * 10))).unwrap_or(0);
+                   ApiResult::Normal(l.som_init_mi_class(&a, minor))
+               } },
     ApiEntry { ordinal: SOM_BASE + 3317, module: "SOM", name: "WrpSOMClass_somCheckVersion", argc: 3,
                handler: |l,_v,i,a| l.som_call(i,3317,&a) },
     ApiEntry { ordinal: SOM_BASE + 3318, module: "SOM", name: "WrpSOMClass_somGetVersionNumbers", argc: 3,

@@ -264,7 +264,7 @@ fn test_som_samples_run_on_the_som_runtime() {
         "found Echo\n", "echo echo\n",
         "Nowhere: not found, its file would be Nowhere\n",
         "unregister Greeter: 0\n", "unregister Greeter again: 1\n",
-        "unload Greeter's file: 0\n", "unload it again: 1\n", "unload a class of no file: 1\n",
+        "unload SOMObject: 1\n",
         "SOMDeleteModule(echoes) -> 0\n", "unload Echo's file: 0\n",
         "EchoNewClass(3, 4)\n", "found Echo again\n", "again again\n",
         "QUIET 7\n", "quiet 8\n", "my SOMError: code 20012, with a place\n", "a fatal error next\n",

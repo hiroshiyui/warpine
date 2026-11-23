@@ -52,17 +52,6 @@ The WPS is a PM application on the session desktop, built on SOM. The SOM kernel
 IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30`) is gone and was never archived; the 3.0 books above are a separate copy.
 
 - [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
-- [ ] **Bugs: Warpine contradicts the Reference**:
-  - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
-  - `somBuildClass` calls `somClassReady`, `somNew` and `somRegisterClass` internally, so a metaclass's or class manager's overrides never run;
-  - `somPrintSelf` and `somDumpSelf` write to standard output, not through `SOMOutCharRoutine`; `somDumpSelf`'s layout is an opening line, the `somDumpSelfInt` lines and a closing `}`, each indented 2 blanks per level;
-  - `somUnregisterClass` and `somUnloadClassFile` do not free the class object; `somUnloadClassFile` on an unregistered class must raise an error, and `somUnregisterClass` of a loaded class unloads its group;
-  - `somSetOutChar` changes the process-wide variable; it is per application (thread);
-  - `somAssert` / `somTest` ignore `SOM_WarnLevel` / `SOM_AssertLevel` (warnings only above 0; a passed `SOM_Test` prints a message above 0);
-  - `SOMMalloc` / `SOMCalloc` / `SOMRealloc` / `SOMFree` do not call `SOMError` on failure; the default `SOMOutCharRoutine` ignores a failed write;
-  - `somAllocate` / `somDeallocate` bypass a replaced `SOMMalloc` / `SOMFree`;
-  - `SOMObject`'s `somGetInstancePartSize` is 4, not 0; `somGetClassName` does not call the class's `somGetName`;
-  - `somInitMIClass` does not record the class's version.
 - [ ] **Missing, documented by the Reference**:
   - environments: `somEnvironmentEnd`, `somMainProgram` (the exception calls came with ADR-0122's stage S4); TypeCodes (`any` carries an opaque one);
   - the `somRenew` family (`somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero`): objects in the caller's memory;
