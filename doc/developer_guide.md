@@ -2184,7 +2184,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2371: 2281 warpine + 23 `gen_api` + 39 `lx_link` + 10 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2383: 2282 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 9 `somidl` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2351,6 +2351,7 @@ samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
   - `lx_parse` and `ne_parse`, through a module whose path is `src/`, so their `header` submodules resolve;
   - `msgfile`, where parsed files must round-trip;
   - `os2rc`, the whole of `src/bin/os2rc.rs`: `compile_in_memory` compiles a script to a .res file without reading any file (no `#include`, `RCINCLUDE` or resource file);
+  - `somidl`, `src/cpp.rs` and `src/somidl/`: `parse_in_memory` preprocesses and parses an IDL file without reading any file, and a parsed file is dumped;
   - `bitmap`, `src/loader/bitmap_codec.rs` (the byte-slice codec `pm_bitmap.rs` builds surfaces on), with shims for six constants and `MAX_SURFACE_DIM`: an `RT_BITMAP` resource is split into its format and pel data, decoded when it has at most 2²⁰ pels;
   - `lx_link`, the whole of `src/bin/lx_link.rs`: `link_in_memory` reads one input (its first byte picks `.o`, `.res`, `.dll` or `.msg`; archives are told by their magic), links it, with `--gc-sections` when the byte's top bit is set, and writes the debug companion when it has DWARF.
 - **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs, message files, resource scripts and lx-link inputs into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
@@ -2513,7 +2514,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2371 unit tests (2281 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 226 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2383 unit tests (2282 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 9 somidl + 6 os2msg + 5 gen_arch + 7 gen_compat), 227 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2561,8 +2562,17 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
 
 **`src/bin/os2msg.rs`** — the message compiler of the C SDK (ADR-0105): `os2msg [--codepage N] in.txt -o out.msg`, a thin front end to `msgfile::compile` and `write`. `lx-link` takes `.msg` inputs (`Inputs::messages`) and adds `message_object`: one data section holding `msgfile::build_segment`'s segment, at `__warpine_message_segment`.
 
+**`src/cpp.rs`** — the C preprocessor of the SDK tools, included by `os2rc` and `somidl` with `#[path]` (ADR-0122): `logical_lines` (comments, continuations), `tokenize`, `Preprocessor` (`#define` / `#include` / `#if` …; the predefined names, whether an included file emits its lines (`emits`) and a statement that includes a file (`include_keyword`) are the tool's) and `Eval` (C expressions, casts; `#if` takes unknown names as 0, the tools reject them). Include depth (32), macro expansion depth (64) and the text read (16 MB) are bounded.
+
+**`src/bin/somidl.rs`, `src/somidl/`** — the SOM IDL compiler of the C SDK (ADR-0122): `somidl [-I dir]... [-D name[=value]]... [-s emitters] [-o dir] [--dump] file.idl`. The front end so far:
+- `mod.rs`: `parse_source` / `parse_file` / `parse_in_memory` run the preprocessor (`__SOMIDL__` defined) and the parser;
+- `ast.rs`: the syntax tree (`Definition`, `Interface`, `InterfaceItem`, `Operation`, `Attribute`, `TypeDecl`, `Type`, `ImplItem`);
+- `parser.rs`: modules, interfaces and forward declarations, attributes, operations (`in` / `out` / `inout`, `oneway`, `raises`, `context`), `typedef` / `struct` / `enum` / `const` (constant expressions see earlier constants), the basic types, `string<n>`, `sequence<T, n>` (a `>>` closes two), arrays, and the implementation section (`releaseorder`, class modifiers, member modifiers, instance variables, `passthru`). `union` and `exception` are refused until stage S4; modules, structs and sequences nest at most 32 deep;
+- `dump.rs`: `--dump`, the tree as indented text. The emitters come with later batches.
+- Tests: the unit tests in `somidl.rs` (each construct, errors with their places, the command line, Open Watcom's `hello.idl` and `animals.idl` read in place), `somidl_parses_open_watcom_s_som_samples`, and the `somidl` fuzz target.
+
 **`src/bin/os2rc.rs`** — the resource compiler of the C SDK (ADR-0099): `os2rc [-I dir] [-D name=value] in.rc -o out.res`.
-- **Preprocessor:** `logical_lines` (comments, continuations), `Preprocessor` (`#define` / `#include` / `#if` …; headers give only their directives; `RC_INVOKED`), and `Eval` (C expressions, casts; `#if` takes unknown names as 0, resources reject them).
+- **Preprocessor:** `src/cpp.rs`, with `RC_INVOKED`, `__WARPINE_RC__` and `__OS2__` defined, `RCINCLUDE`, and only `.rc` / `.dlg` includes emitting lines (headers give their directives).
 - **`Parser`:** one statement after another, into `Resource`s. String and message tables gather into bundles, written after the rest.
 - **Encoders:** `encode_menu`, `encode_dialog` (items depth first, then the pool: class name, text, control data, presentation parameters), and `write_res` (the classic `.res` format).
 - **The oracle:** every layout and default matches Open Watcom's `wrc -zm`:

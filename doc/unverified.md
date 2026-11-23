@@ -355,7 +355,9 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - the control-block structures (`somInitCtrl`, `somDestructCtrl`, `somAssignCtrl`), their per-class table, and the macro names beyond those the SOM Programming Guide shows;
   - the exact text and formatting of generated files, the implementation template's contents and the `def` emitter's output;
   - which SOM IDL modifiers are accepted, ignored or refused at each stage;
-  - `__SOMIDL__` and any other predefined macros.
+  - `__SOMIDL__` and any other predefined macros;
+  - `--dump`'s format, the nesting limit (32), constants resolved by the last part of a scoped name, and the implementation section read by shape;
+  - the shared preprocessor's 16 MB limit on the text one run reads.
 - **SOM layouts** (ADR-0072):
   - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;
   - lacking root methods warning (20171) instead of IBM's fatal `SOMERROR_NotImplementedYet`;

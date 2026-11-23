@@ -4929,3 +4929,34 @@ fn gui_layered_compositor_moves_windows() {
 fn gui_layered_compositor_resizes_windows() {
     check_drag_sizing_border_resizes_window(LAYERED);
 }
+
+/// somidl (ADR-0122, the front end): Open Watcom's SOM sample IDL files,
+/// read in place, preprocess and parse; `--dump` prints their syntax
+/// trees, and a run without it reports that the emitters are still to
+/// come. The root classes' IDL are stand-ins until the SDK has its own.
+/// Skips when Open Watcom is not installed.
+#[test]
+fn somidl_parses_open_watcom_s_som_samples() {
+    let samples = std::path::Path::new("vendor/watcom/samples/os2/som");
+    if !samples.is_dir() {
+        eprintln!("skipping somidl_parses_open_watcom_s_som_samples: Open Watcom not installed (vendor/setup_watcom.sh)");
+        return;
+    }
+    let roots = tempfile::tempdir().unwrap();
+    std::fs::write(roots.path().join("somobj.idl"), "#ifndef somobj_idl\n#define somobj_idl\ninterface SOMObject {};\n#endif\n").unwrap();
+    std::fs::write(roots.path().join("somcls.idl"),
+                   "#ifndef somcls_idl\n#define somcls_idl\ninterface SOMClass : SOMObject {};\n#endif\n").unwrap();
+    for (idl, want) in [("helloc/hello.idl", "interface Hello : SOMObject\n"),
+                        ("hellocpp/hello.idl", "interface Hello : SOMObject\n"),
+                        ("animals/animals.idl", "  interface Kennel : SOMClass\n")] {
+        let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots.path()).arg("--dump")
+            .arg(samples.join(idl)).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{idl}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(text.contains(want), "{idl}:\n{text}");
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots.path())
+        .arg(samples.join("helloc/hello.idl")).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented yet"));
+}

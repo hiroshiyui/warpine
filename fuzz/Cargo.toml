@@ -58,6 +58,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "somidl"
+path = "fuzz_targets/somidl.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "lx_link"
 path = "fuzz_targets/lx_link.rs"
 test = false

@@ -18,7 +18,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2: 32-bit (LX
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2372 unit tests (2282 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 226 integration tests
+cargo test                                 # 2383 unit tests (2282 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 9 somidl + 6 os2msg + 5 gen_arch + 7 gen_compat) + 227 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); then `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -31,6 +31,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 - **C from GCC / clang** (ADR-0095): freestanding i386 ELF (`-m32 -ffreestanding -fno-pic`) linked by `lx-link` (`cargo build --bin lx_link`, then `make -C samples/c_hello`, or `CC=clang`); it refuses PIC and undefined symbols.
 - **The C SDK** (ADR-0096–0101): `sdk/include/os2.h` declares everything (Dos*, Que*, NLS, MSG, Vio*, Kbd*, Mou*; PM in `os2/pm.h` and its module headers; `INCL_*` select nothing), plus `rexxsaa.h`, `os2me.h` and a small C runtime. `make -C sdk`; a Makefile includes `sdk/os2.mk` (`samples/c_sdk_test`).
   - Resources (ADR-0099): `os2rc -I sdk/include x.rc -o x.res`, `.res` to `lx-link` (`samples/c_pm_test`); output byte-identical to `wrc -zm` (`os2rc_matches_open_watcom_wrc`).
+  - SOM IDL (ADR-0122, in progress): `somidl -I dir --dump x.idl` parses SOM IDL (front end only so far; emitters to come), through the C preprocessor `src/cpp.rs` it shares with `os2rc`.
   - Messages (ADR-0105): `os2msg x.txt -o x.msg`, Warpine's own format (`src/loader/msgfile.rs`, shared with `lx-link` via `#[path]`), bound by `lx-link` (`samples/c_msg_test`). IBM `MKMSGF` files are not read.
   - Every declared call is in `targets/os2api.def` (PMWIN / PMGPI sub-dispatcher calls too); VIO / KBD / MOU use `OS2_PASCAL_API`; every integer `#define` equals Warpine's constant of that name. Structure layouts match Open Watcom's (`tests/sdk_layout`, ADR-0101): a new shared structure goes into `fields.inc`.
   - DLLs: `lx-link --dll --export A,B.2 [--initinstance --terminstance] $(OS2_DLL0) objs libos2c.a -o x.dll`; a `.dll` input links its exports as imports.

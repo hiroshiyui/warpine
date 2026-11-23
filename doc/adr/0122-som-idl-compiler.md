@@ -90,3 +90,11 @@ A program rebuilt from source with bindings Warpine generates does not depend on
 - The exact text and formatting of generated files, the implementation template's contents, and the `def` emitter's output.
 - Which SOM IDL modifiers are accepted, ignored or refused in S1.
 - `__SOMIDL__` and any other predefined macros.
+
+## Addendum (2026-11-23): batches 1 and 2, the shared preprocessor and the front end
+
+- **The preprocessor** moved from `src/bin/os2rc.rs` to `src/cpp.rs`, which `os2rc` and `somidl` include with `#[path]` (as `msgfile.rs` is shared). What differs between the tools is configuration: the predefined names, whether an included file emits its lines (`os2rc`: only `.rc` / `.dlg`; `somidl`: every file) and a statement that includes a file (`os2rc`'s `RCINCLUDE`). The text one run reads is now bounded (16 MB, includes counted) besides the include and expansion depths. `os2rc`'s output stays byte-identical to `wrc -zm`.
+- **The front end** (`src/somidl/`: `ast.rs`, `parser.rs`, `dump.rs`) parses the whole of stage S1's language and, so that Open Watcom's `animals.idl` parses, also `sequence`, `any`, `raises` and `context`, which the emitters will use from stage S4. `union` and `exception` are refused with "not supported yet". Constant expressions see the constants declared before them, a scoped name by its last part. Modules, structs and sequences nest at most 32 deep.
+- **The implementation section** is parsed by shape, not by a list of known modifiers: `name = value` and a bare `name` are class modifiers, `member: modifier[, modifier = value]` are member modifiers, anything else is an instance variable. Which modifiers mean something is the emitters' business (batch 5).
+- **`--dump`** prints the tree as indented text, one declaration per line; without it `somidl` parses and exits with 1, saying the emitters are not implemented yet.
+- **Tests:** unit tests for each construct, errors with their file and line, the command line and Open Watcom's `hello.idl` / `animals.idl` (read in place, with stand-in root IDL); `somidl_parses_open_watcom_s_som_samples` runs the binary; the `somidl` fuzz target (ADR-0112) ran 680 000 inputs without a fault.
