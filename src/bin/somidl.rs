@@ -216,7 +216,9 @@ mod tests {
         assert!(error("interface A {\n void f(long x);\n};\n").contains("input.idl:2: expected in, out or inout"));
         assert!(error("interface A { void f() };").contains("expected ;"));
         assert!(error("module M { interface A {};").contains("not closed"));
-        assert!(error("union U switch (long) { case 1: long a; };").contains("not supported yet"));
+        assert!(error("union U switch (long) { long a; };").contains("expected case or default"));
+        assert!(error("union U (long) { case 1: long a; };").contains("expected switch"));
+        assert!(error("exception E { long a; ").contains("not closed"));
         assert!(error("typedef string<0> S;").contains("positive"));
         assert!(error("const long X = Y;").contains("unknown name Y"));
         assert!(error("#include <somobj.idl>\n").contains("cannot find include file"), "no file is read");
@@ -318,7 +320,6 @@ mod tests {
     fn what_s1_does_not_cover_is_refused() {
         let err = |text: &str| emit(text, &["h"]).err().unwrap_or_default();
         let base = "#include <somcls.idl>\n";
-        assert!(err(&format!("{base}interface A : SOMObject {{ void f(in any x); }};")).contains("any"));
         assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ metaclass = Nowhere; }}; }};")).contains("metaclass Nowhere"));
         assert!(err(&format!("{base}interface A : SOMObject {{ void f(); implementation {{ f: init; }}; }};")).contains("inout somInitCtrl ctrl"));
         assert!(err(&format!("{base}interface A : SOMObject {{ implementation {{ directinitclasses = \"Nope\"; }}; }};")).contains("directinitclasses names Nope"));
@@ -422,6 +423,35 @@ mod tests {
                      "    long right( Environment *ev, long x ) { return SOM_Resolve( this, R, right )( (R *)this, ev, x ); }",
                      "    LR( Environment *ev, long x ) { if( somIsObj( this ) && (SOMObject *)_somGetClass( this ) == (SOMObject *)(_LR) ) SOM_Resolve( this, LR, withX )( this, ev, 0, x ); }"] {
             assert!(xh.contains(want), "{want:?} missing in\n{xh}");
+        }
+    }
+
+    /// Stage S4: exceptions (a struct and its ex_ id, scoped by module and
+    /// interface), unions (_d and _u, labels as written) and any.
+    #[test]
+    fn exceptions_unions_and_any() {
+        let text = "module Shop {\n\
+            \x20 exception OutOf { string item; long left; };\n\
+            \x20 exception Closed {};\n\
+            \x20 interface Till {\n\
+            \x20   exception Jam { long code; };\n\
+            \x20   union Pay switch (long) { case 1: case 2: long cents; default: string note; };\n\
+            \x20   Pay take(in any what) raises(OutOf, Jam);\n\
+            \x20 };\n\
+            };\n";
+        let d = dump(text);
+        for want in ["  exception OutOf\n    string item\n    long left\n", "  exception Closed\n",
+                     "    exception Jam\n", "    union Pay switch (long)\n      1, 2: long cents\n      default: string note\n",
+                     "operation Pay take(in any what) raises(OutOf, Jam)"] {
+            assert!(d.contains(want), "{want:?} missing in\n{d}");
+        }
+        let h = emitted(text, "h");
+        for want in ["#define ex_Shop_OutOf \"Shop::OutOf\"\ntypedef struct Shop_OutOf {\n    string item;\n    long left;\n} Shop_OutOf;",
+                     "typedef struct Shop_Closed {\n    long somEmpty_;\n} Shop_Closed;",
+                     "#define ex_Shop_Till_Jam \"Shop::Till::Jam\"",
+                     "typedef struct Shop_Till_Pay {\n    long _d;\n    union {\n        long cents; /* 1, 2 */\n        string note; /* default */\n    } _u;\n} Shop_Till_Pay;",
+                     "typedef Shop_Till_Pay SOMLINK somTP_Shop_Till_take( Shop_Till *somSelf, Environment *ev, any what );"] {
+            assert!(h.contains(want), "{want:?} missing in\n{h}");
         }
     }
 

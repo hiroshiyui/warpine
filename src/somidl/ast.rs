@@ -68,6 +68,18 @@ pub enum TypeDecl {
     Struct { name: String, members: Vec<Member> },
     Enum { name: String, items: Vec<String> },
     Const { ty: Type, name: String, value: ConstValue },
+    /// `exception Name { members };`
+    Exception { name: String, members: Vec<Member> },
+    /// `union Name switch (disc) { case …: member; default: member; };`
+    Union { name: String, disc: Type, cases: Vec<UnionCase> },
+}
+
+/// One arm of a union: its labels as written (`default` for the default
+/// arm) and its member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnionCase {
+    pub labels: Vec<String>,
+    pub member: Member,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

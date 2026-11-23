@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The SOM IDL parser (ADR-0122): preprocessed tokens to the syntax tree.
-// Stage S1's language: modules, interfaces and forward declarations,
-// attributes, operations, typedefs, structs, enums, constants, the basic
-// types, strings and sequences, and the implementation section. `union`
-// and `exception` are refused for now (stage S4).
+// The SOM IDL parser (ADR-0122): preprocessed tokens to the syntax tree:
+// modules, interfaces and forward declarations, attributes, operations,
+// typedefs, structs, enums, constants, exceptions, unions, the basic
+// types, `any`, strings and sequences, and the implementation section.
 
 use super::ast::*;
 use crate::cpp::{err, Error, Eval, Kind, Loc, Result, Tok};
@@ -239,8 +238,57 @@ impl<'a> Parser<'a> {
             };
             return Ok(TypeDecl::Const { ty, name, value });
         }
-        if self.at_word("union") || self.at_word("exception") {
-            return err(loc, format!("{} is not supported yet (ADR-0122, stage S4)", self.describe()));
+        if self.eat_word("exception") {
+            let name = self.ident()?;
+            self.expect_punct("{")?;
+            self.enter()?;
+            let mut members = Vec::new();
+            while !self.eat_punct("}") {
+                if self.peek().is_none() { return err(self.loc(), format!("exception {name} is not closed")); }
+                members.push(self.member()?);
+                self.expect_punct(";")?;
+            }
+            self.leave();
+            return Ok(TypeDecl::Exception { name, members });
+        }
+        if self.eat_word("union") {
+            let name = self.ident()?;
+            if !self.eat_word("switch") { return err(self.loc(), format!("union {name}: expected switch")); }
+            self.expect_punct("(")?;
+            let disc = self.type_spec()?;
+            self.expect_punct(")")?;
+            self.expect_punct("{")?;
+            self.enter()?;
+            let mut cases = Vec::new();
+            while !self.eat_punct("}") {
+                if self.peek().is_none() { return err(self.loc(), format!("union {name} is not closed")); }
+                let mut labels = Vec::new();
+                loop {
+                    if self.eat_word("default") {
+                        labels.push("default".to_string());
+                    } else if self.eat_word("case") {
+                        // The label as written, up to its colon.
+                        let mut text = String::new();
+                        while let Some(t) = self.peek() {
+                            if t.is_punct(":") && !self.at_scope() { break; }
+                            if !text.is_empty() && t.space_before { text.push(' '); }
+                            text.push_str(&t.text);
+                            self.pos += 1;
+                        }
+                        if text.is_empty() { return err(self.loc(), "a case needs a label"); }
+                        labels.push(text);
+                    } else {
+                        break;
+                    }
+                    self.expect_punct(":")?;
+                }
+                if labels.is_empty() { return err(self.loc(), format!("union {name}: expected case or default")); }
+                let member = self.member()?;
+                self.expect_punct(";")?;
+                cases.push(UnionCase { labels, member });
+            }
+            self.leave();
+            return Ok(TypeDecl::Union { name, disc, cases });
         }
         err(loc, format!("expected a definition, found {}", self.describe()))
     }

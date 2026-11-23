@@ -75,6 +75,29 @@ int main( void )
         _somFree( b );
     }
 
+    /* Stage S4: exceptions, a union, an any. */
+    {
+        Gauge        *g = GaugeNew();
+        Gauge_Reading r;
+        any           a;
+        check( "no exception: the value", _set( g, ev, 5 ) == 5 && ev->_major == NO_EXCEPTION );
+        _set( g, ev, 500 );
+        check( "a raised exception: USER_EXCEPTION", ev->_major == USER_EXCEPTION );
+        check( "... its id", somExceptionId( ev ) && strcmp( somExceptionId( ev ), ex_TooBig ) == 0 );
+        check( "... its value", ((TooBig *)somExceptionValue( ev ))->limit == 100 );
+        somExceptionFree( ev );
+        check( "somExceptionFree clears it", ev->_major == NO_EXCEPTION && somExceptionId( ev ) == 0 );
+        _set( g, ev, -3 );
+        check( "an interface's exception: its scoped id", strcmp( somExceptionId( ev ), "Gauge::Negative" ) == 0
+               && ((Gauge_Negative *)somExceptionValue( ev ))->value == -3 );
+        SOM_UninitEnvironment( ev );
+        r = _read( g, ev, 2 );
+        check( "a union: the discriminator and its arm", r._d == 2 && r._u.scaled == 2.5 );
+        a = _boxed( g, ev );
+        check( "an any: its value", *(long *)a._value == 5 );
+        _somFree( g );
+    }
+
     printf( "som_idl_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );
 }

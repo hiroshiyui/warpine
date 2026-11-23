@@ -892,6 +892,10 @@ SOM.3092   WrpSomInitCtrlFree
 SOM.3093   WrpSomInitWalk
 SOM.3094   WrpSomDestructWalk
 SOM.3095   WrpSomSetDirectInitClasses
+SOM.3096   somSetException
+SOM.3097   somExceptionId
+SOM.3098   somExceptionValue
+SOM.3099   somExceptionFree
 SOM.3198   WrpSomMethodNotImplemented
 SOM.3199   WrpSomMethodError
 SOM.3200   WrpSOMObject_somInit

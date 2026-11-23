@@ -19,9 +19,9 @@
 //
 // `<Class>NewClass` builds the class through `somBuildClass` from a
 // `somStaticClassInfo` (layout version 1: static methods and overrides),
-// after its parent's and explicit metaclass's `NewClass`. Multiple
-// inheritance, `init` methods and `any` are refused for now (stages S3
-// and S4).
+// after its parents' and explicit metaclass's `NewClass`. Exceptions are
+// structs with an `ex_<name>` id; `raises` adds nothing to the C
+// signature: the exception travels in the Environment (somSetException).
 
 use super::ast::*;
 use std::cell::RefCell;
@@ -150,6 +150,23 @@ impl<'a> Emitter<'a> {
             }
             (i.name.as_str(), Known { iface: i, oidl, som_name: path.join("::"), cname, ops: methods_of(i) })
         }).collect();
+        // Types declared in modules (outside interfaces): Module_Name.
+        fn module_names(defs: &[Definition], scope: &mut Vec<String>, names: &mut HashMap<String, String>) {
+            for d in defs {
+                match d {
+                    Definition::Type(t, _) if !scope.is_empty() => {
+                        for n in type_decl_names(t) { names.insert(n.to_string(), format!("{}_{n}", scope.join("_"))); }
+                    }
+                    Definition::Module { name, defs } => {
+                        scope.push(name.clone());
+                        module_names(defs, scope, names);
+                        scope.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        module_names(defs, &mut Vec::new(), &mut type_names);
         Emitter { known, type_names, sequences: RefCell::new(BTreeMap::new()) }
     }
 
@@ -176,7 +193,8 @@ impl<'a> Emitter<'a> {
             Type::Boolean => "boolean".into(),
             Type::Octet => "octet".into(),
             Type::String(_) => "string".into(),
-            Type::Any => return Err("`any` is not supported yet (ADR-0122, stage S4)".into()),
+            // CORBA's any: a TypeCode and a pointer to the value (somapi.h).
+            Type::Any => "any".into(),
             Type::Sequence(elem, _) => {
                 let elem = self.c_type(elem)?;
                 let tag: String = elem.trim_end_matches(['*', ' ']).chars()
@@ -244,9 +262,10 @@ impl<'a> Emitter<'a> {
         None
     }
 
-    /// A typedef, struct, enum or constant; interface-level ones (`prefix`
-    /// the class's C name and `_`) are named after the class.
-    fn type_decl(&self, out: &mut String, prefix: &str, d: &TypeDecl) -> Res<()> {
+    /// A typedef, struct, enum, constant, exception or union;
+    /// interface-level ones (`prefix` the class's C name and `_`, `scope`
+    /// its SOM name and `::`) are named after the class.
+    fn type_decl(&self, out: &mut String, prefix: &str, scope: &str, d: &TypeDecl) -> Res<()> {
         match d {
             TypeDecl::Typedef(m) => {
                 for n in &m.names {
@@ -273,6 +292,30 @@ impl<'a> Emitter<'a> {
                 let v = match value { ConstValue::Int(i) => format!("(({}){i})", self.c_type(ty)?), ConstValue::Str(s) => format!("{s:?}") };
                 let _ = writeln!(out, "#define {prefix}{name} {v}");
             }
+            TypeDecl::Exception { name, members } => {
+                // CORBA's C mapping: a struct of its members (the value
+                // somSetException carries) and ex_<name>, its id.
+                let _ = writeln!(out, "#define ex_{prefix}{name} \"{scope}{name}\"");
+                let _ = writeln!(out, "typedef struct {prefix}{name} {{");
+                if members.is_empty() { let _ = writeln!(out, "    long somEmpty_;"); }
+                for m in members {
+                    for n in &m.names {
+                        let _ = writeln!(out, "    {}{}{};", spaced(&self.c_type(&m.ty)?), n.name, dims(&n.dims));
+                    }
+                }
+                let _ = writeln!(out, "}} {prefix}{name};");
+            }
+            TypeDecl::Union { name, disc, cases } => {
+                // CORBA's C mapping: the discriminator _d, the arms in _u.
+                let _ = writeln!(out, "typedef struct {prefix}{name} {{\n    {}_d;\n    union {{", spaced(&self.c_type(disc)?));
+                for c in cases {
+                    for n in &c.member.names {
+                        let _ = writeln!(out, "        {}{}{}; /* {} */", spaced(&self.c_type(&c.member.ty)?), n.name, dims(&n.dims),
+                                         c.labels.join(", "));
+                    }
+                }
+                let _ = writeln!(out, "    }} _u;\n}} {prefix}{name};");
+            }
         }
         Ok(())
     }
@@ -281,7 +324,8 @@ impl<'a> Emitter<'a> {
 fn type_decl_names(t: &TypeDecl) -> Vec<&str> {
     match t {
         TypeDecl::Typedef(m) => m.names.iter().map(|d| d.name.as_str()).collect(),
-        TypeDecl::Struct { name, .. } | TypeDecl::Enum { name, .. } => vec![name.as_str()],
+        TypeDecl::Struct { name, .. } | TypeDecl::Enum { name, .. } | TypeDecl::Exception { name, .. }
+        | TypeDecl::Union { name, .. } => vec![name.as_str()],
         TypeDecl::Const { .. } => Vec::new(),
     }
 }
@@ -410,6 +454,27 @@ impl<'a> Emitter<'a> {
         })
     }
 
+    /// The main file's types outside interfaces: at file level, and in
+    /// modules (named `Module_Name`, their ids `Module::Name`).
+    fn module_types(&self, out: &mut String, defs: &[Definition], scope: &mut Vec<String>) -> Res<()> {
+        for d in defs {
+            match d {
+                Definition::Type(t, 0) => {
+                    let (prefix, ids) = if scope.is_empty() { (String::new(), String::new()) }
+                        else { (format!("{}_", scope.join("_")), format!("{}::", scope.join("::"))) };
+                    self.type_decl(out, &prefix, &ids, t)?;
+                }
+                Definition::Module { name, defs } => {
+                    scope.push(name.clone());
+                    self.module_types(out, defs, scope)?;
+                    scope.pop();
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// The `NewClass` call that makes class `name` (parents, metaclass).
     fn new_class_call(&self, name: &str) -> String {
         if ROOT_CLASSES.contains(&name) { return format!("{name}NewClass( 0, 0 )"); }
@@ -430,7 +495,9 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(out, "/* ---- {n} ---- */");
         let _ = writeln!(out, "#define {n}_MajorVersion {}\n#define {n}_MinorVersion {}", c.major, c.minor);
         for it in &c.i.items {
-            if let InterfaceItem::Type(t) = it { self.type_decl(out, &format!("{n}_"), t)?; }
+            if let InterfaceItem::Type(t) = it {
+                self.type_decl(out, &format!("{n}_"), &format!("{}::", self.som_name(&c.i.name)), t)?;
+            }
         }
         for m in &c.methods {
             let params = self.params(m, c.oidl)?;
@@ -678,9 +745,7 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
                     else { let _ = writeln!(out, "#ifndef {0}_defined\n#define {0}_defined\ntypedef SOMObject {0};\n#endif", c.name); }
                 }
                 let mut body = String::new();
-                for d in defs {
-                    if let Definition::Type(t, 0) = d { e.type_decl(&mut body, "", t)?; }
-                }
+                e.module_types(&mut body, defs, &mut Vec::new())?;
                 for c in &classes { e.usage(c, &mut body, cpp)?; }
                 // The sequence types the declarations use, before them.
                 for (name, elem) in e.sequences.borrow().iter() {

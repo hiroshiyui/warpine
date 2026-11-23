@@ -130,3 +130,44 @@ SOM_Scope void SOMLINK b_somDefaultInit( Both *somSelf, somInitCtrl *ctrl )
     note( 'B' );
     SOM_InitEnd();
 }
+
+/* Gauge: exceptions through the Environment, a union, an any. */
+SOM_Scope long SOMLINK g_set( Gauge *somSelf, Environment *ev, long v )
+{
+    GaugeData *somThis = GaugeGetData( somSelf );
+    if( v < 0 ) {
+        Gauge_Negative *e = (Gauge_Negative *)SOMMalloc( sizeof( *e ) );
+        e->value = v;
+        somSetException( ev, USER_EXCEPTION, ex_Gauge_Negative, e );
+        return( 0 );
+    }
+    if( v > 100 ) {
+        TooBig *e = (TooBig *)SOMMalloc( sizeof( *e ) );
+        e->limit = 100;
+        somSetException( ev, USER_EXCEPTION, ex_TooBig, e );
+        return( 0 );
+    }
+    return( _level = v );
+}
+
+SOM_Scope Gauge_Reading SOMLINK g_read( Gauge *somSelf, Environment *ev, long kind )
+{
+    GaugeData *somThis = GaugeGetData( somSelf );
+    Gauge_Reading r;
+    (void)ev;
+    r._d = kind;
+    if( kind == 1 ) r._u.whole = _level;
+    else if( kind == 2 || kind == 3 ) r._u.scaled = _level / 2.0;
+    else r._u.text = "unknown";
+    return( r );
+}
+
+SOM_Scope any SOMLINK g_boxed( Gauge *somSelf, Environment *ev )
+{
+    GaugeData *somThis = GaugeGetData( somSelf );
+    any a;
+    (void)ev;
+    a._type = 0;
+    a._value = &_level;
+    return( a );
+}

@@ -832,6 +832,7 @@ What they do:
   - `WrpSomDataExport(ordinal)` (Warpine's, 3090) returns the address of SOM data export `ordinal` (1–19; 0 otherwise): programs linked by `lx-link`, whose imports are call thunks, reach the data exports through it (the SDK's `somapi.h` makes each name a macro for the variable);
   - `WrpSomInitCtrlNew(cls)` / `WrpSomInitCtrlFree(ctrl)` (Warpine's, 3091 / 3092): a control block of Warpine's initializer protocol for an instance of ready class `cls` (0 otherwise), and its release;
   - `WrpSomInitWalk(obj)` / `WrpSomDestructWalk(obj, doFree)` (Warpine's, 3093 / 3094): the protocol run by the kernel for `obj`'s class (below);
+  - `somSetException(ev, major, exceptionName, params)`, `somExceptionId(ev)`, `somExceptionValue(ev)`, `somExceptionFree(ev)` (3096–3099, by name; IBM's ordinals unknown): an `Environment`'s exception — `_major` (`NO_EXCEPTION`, `USER_EXCEPTION`, `SYSTEM_EXCEPTION`), the name kept as given and the value (from `SOMMalloc`), owned by the `Environment` until `somExceptionFree` (which frees it and clears the `Environment`; setting another exception frees the one there); the id and value are 0 when there is none;
   - `WrpSomSetDirectInitClasses(cls, n, names)` (Warpine's, 3095): the ancestors `cls`'s initializers visit, in that order, instead of its parents (`directinitclasses`; each must be an ancestor; 0 for success, 1 otherwise).
 - Data:
   - `SOMObjectClassData`, `SOMClassClassData` and `SOMClassMgrClassData`, the root classes' `ClassData`: the class object, then one token per method in IBM's release order (32, 76 and 22 tokens, ADR-0072), as programs built with IBM's SOM headers read them;
@@ -1171,7 +1172,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 494 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 498 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1192,13 +1193,13 @@ Counts are taken from the static registry (`api_registry.rs`, 494 entries) and t
 | PMCTLS (standard dialogs, circular slider) | registry | 6 | 0 | 6 |
 | WARPINE (Warpine's own extensions) | registry | 10 | 0 | 10 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
-| SOM (the SOM runtime kernel) | registry | 128 | 3 | 131 |
+| SOM (the SOM runtime kernel) | registry | 132 | 3 | 135 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **888** | **21** | **909** |
+| **Total** | | **892** | **21** | **913** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

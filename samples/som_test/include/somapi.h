@@ -64,6 +64,28 @@ SOMEXTERN SOMClass      * SOMLINK somBuildClass( long inheritVars, somStaticClas
 SOMEXTERN SOMClass      * SOMLINK SOMObjectNewClass( integer4 majorVersion, integer4 minorVersion );
 SOMEXTERN SOMClass      * SOMLINK SOMClassNewClass( integer4 majorVersion, integer4 minorVersion );
 SOMEXTERN SOMClass      * SOMLINK SOMClassMgrNewClass( integer4 majorVersion, integer4 minorVersion );
+/* ---- Exceptions in an Environment (ADR-0122, stage S4) ----
+ * A method declared with `raises` reports an exception by
+ * somSetException( ev, USER_EXCEPTION, ex_<Name>, value ): value is the
+ * exception's struct, from SOMMalloc, owned by the Environment until
+ * somExceptionFree. The caller checks ev->_major. */
+typedef enum exception_type { NO_EXCEPTION, USER_EXCEPTION, SYSTEM_EXCEPTION } exception_type;
+SOMEXTERN void    SOMLINK somSetException( Environment *ev, exception_type major, zString exceptionName, void *params );
+SOMEXTERN zString SOMLINK somExceptionId( Environment *ev );
+SOMEXTERN void  * SOMLINK somExceptionValue( Environment *ev );
+SOMEXTERN void    SOMLINK somExceptionFree( Environment *ev );
+#define SOM_InitEnvironment( ev ) \
+    ( (ev)->_major = NO_EXCEPTION, (ev)->exception_id = 0, (ev)->params = 0 )
+#define SOM_UninitEnvironment( ev ) somExceptionFree( ev )
+
+/* CORBA's any: a TypeCode and the value. Warpine has no TypeCode
+ * implementation: a TypeCode is an opaque pointer. */
+typedef void *TypeCode;
+typedef struct any {
+    TypeCode  _type;
+    void     *_value;
+} any;
+
 /* The ancestors class `cls`'s initializers visit, in that order, instead
  * of its parents (`directinitclasses`; `n` somIds): 0 for success. */
 SOMEXTERN long          SOMLINK WrpSomSetDirectInitClasses( SOMClass *cls, long n, somId *names );

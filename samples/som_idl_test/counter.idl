@@ -3,7 +3,8 @@
 // counter.idl - classes for somidl's C bindings (ADR-0122): instance data,
 // a class derived from another of the file, an override calling its
 // parent's, and initializers / destructors in Warpine's protocol; then
-// stage S3: a class with two parents, directinitclasses and an init method.
+// stage S3: a class with two parents, directinitclasses and an init method;
+// stage S4: exceptions raised through the Environment, a union and an any.
 #include <somobj.idl>
 
 interface Counter : SOMObject
@@ -74,6 +75,31 @@ interface Both : Counter, Tagged
         long s;
         withStart: init;
         somDefaultInit: override;
+    };
+#endif
+};
+
+exception TooBig { long limit; };
+
+interface Gauge : SOMObject
+{
+    exception Negative { long value; };
+    union Reading switch (long) {
+        case 1: long whole;
+        case 2: case 3: double scaled;
+        default: string text;
+    };
+
+    long set(in long v) raises(TooBig, Negative);
+    // The level, unless v is negative or above 100.
+    Reading read(in long kind);
+    any boxed();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: set, read, boxed;
+        functionprefix = g_;
+        long level;
     };
 #endif
 };

@@ -34,3 +34,7 @@ import SOMObjectNewClass       SOM.SOMObjectNewClass
 import SOMClassNewClass        SOM.SOMClassNewClass
 import SOMClassMgrNewClass     SOM.SOMClassMgrNewClass
 import WrpSomSetDirectInitClasses SOM.WrpSomSetDirectInitClasses
+import somSetException         SOM.somSetException
+import somExceptionId          SOM.somExceptionId
+import somExceptionValue       SOM.somExceptionValue
+import somExceptionFree        SOM.somExceptionFree

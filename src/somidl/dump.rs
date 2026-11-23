@@ -57,6 +57,16 @@ fn type_decl(out: &mut String, pad: &str, d: &TypeDecl) {
             let v = match value { ConstValue::Int(i) => i.to_string(), ConstValue::Str(s) => format!("{s:?}") };
             let _ = writeln!(out, "{pad}const {ty} {name} = {v}");
         }
+        TypeDecl::Exception { name, members } => {
+            let _ = writeln!(out, "{pad}exception {name}");
+            for m in members { let _ = writeln!(out, "{pad}  {} {}", m.ty, declarators(&m.names)); }
+        }
+        TypeDecl::Union { name, disc, cases } => {
+            let _ = writeln!(out, "{pad}union {name} switch ({disc})");
+            for c in cases {
+                let _ = writeln!(out, "{pad}  {}: {} {}", c.labels.join(", "), c.member.ty, declarators(&c.member.names));
+            }
+        }
     }
 }
 

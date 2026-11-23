@@ -192,6 +192,18 @@ pub const SOM_DESTRUCT_WALK: u32 = 3094;
 /// `directinitclasses` modifier; somidl's bindings call it after
 /// `somBuildClass`, ADR-0122). `names` is an array of `n` somIds.
 pub const SOM_SET_DIRECT_INIT_CLASSES: u32 = 3095;
+/// Exceptions in an `Environment` (SOM Programming Reference; IBM's
+/// ordinals unknown, so Warpine's, imported by name): `somSetException(ev,
+/// major, exceptionName, params)`, `somExceptionId(ev)`,
+/// `somExceptionValue(ev)`, `somExceptionFree(ev)` (ADR-0122, stage S4).
+pub const SOM_SET_EXCEPTION: u32 = 3096;
+pub const SOM_EXCEPTION_ID: u32 = 3097;
+pub const SOM_EXCEPTION_VALUE: u32 = 3098;
+pub const SOM_EXCEPTION_FREE: u32 = 3099;
+/// An `Environment`'s words: `_major`, the exception's name, its value.
+const ENV_MAJOR: u32 = 0;
+const ENV_EXCEPTION_NAME: u32 = 4;
+const ENV_EXCEPTION_PARAMS: u32 = 8;
 /// The size of a `somInitInfo` entry: class, own `somDefaultInit`, own
 /// `somDestruct`, the class's data offset in the instance.
 pub const SOM_INIT_INFO_SIZE: u32 = 16;
@@ -1209,6 +1221,16 @@ impl Loader {
         ctrl
     }
 
+    /// Clear the exception in Environment `ev`: free its value (a block of
+    /// SOMMalloc's; anything else is left alone) and reset `_major`.
+    fn som_exception_free(&self, ev: u32) {
+        let params = self.guest_read::<u32>(ev + ENV_EXCEPTION_PARAMS).unwrap_or(0);
+        if params != 0 { self.som_free_mem(params); }
+        for field in [ENV_MAJOR, ENV_EXCEPTION_NAME, ENV_EXCEPTION_PARAMS] {
+            let _ = self.guest_write::<u32>(ev + field, 0);
+        }
+    }
+
     /// Copy object `from`'s instance data over object `to`'s: both SOM
     /// objects, `from` of `to`'s class or a descendant; what follows the
     /// method-table pointer, `to`'s instance size. Nothing otherwise.
@@ -2148,6 +2170,25 @@ impl Loader {
             SOM_INIT_CTRL_NEW => ok(self.som_init_ctrl_new(a[0])),
             SOM_INIT_CTRL_FREE => { self.som_free_mem(a[0]); ok(0) }
             SOM_SET_DIRECT_INIT_CLASSES => ok(self.som_set_direct_init(a[0], a[1], a[2])),
+            // somSetException(ev, major, exceptionName, params): any
+            // exception already there is freed first; the name is kept as
+            // given, the params (from SOMMalloc, or 0) are the
+            // Environment's until somExceptionFree.
+            SOM_SET_EXCEPTION => {
+                if a[0] == 0 { return ok(0); }
+                self.som_exception_free(a[0]);
+                for (field, v) in [(ENV_MAJOR, a[1]), (ENV_EXCEPTION_NAME, a[2]), (ENV_EXCEPTION_PARAMS, a[3])] {
+                    let _ = self.guest_write::<u32>(a[0] + field, v);
+                }
+                ok(0)
+            }
+            SOM_EXCEPTION_ID | SOM_EXCEPTION_VALUE => {
+                let major = if a[0] == 0 { 0 } else { self.guest_read::<u32>(a[0] + ENV_MAJOR).unwrap_or(0) };
+                if major == 0 { return ok(0); }
+                let field = if ord == SOM_EXCEPTION_ID { ENV_EXCEPTION_NAME } else { ENV_EXCEPTION_PARAMS };
+                ok(self.guest_read::<u32>(a[0] + field).unwrap_or(0))
+            }
+            SOM_EXCEPTION_FREE => { if a[0] != 0 { self.som_exception_free(a[0]); } ok(0) }
             SOM_INIT_WALK => match self.som_root_walk(a[0], false) {
                 Some((steps, ctrl)) => self.start_chain(CallChain::new(vcpu, steps, false,
                                                                        ChainThen::SomWalkDone { ctrl, obj: 0, result: 0 })),
@@ -2885,6 +2926,37 @@ mod tests {
         assert_ne!(ctrl, 0);
         l.guest_write::<u32>(0x3700, id("Point", 0x3640)).unwrap();
         assert_eq!(ok(call(&l, SOM_SET_DIRECT_INIT_CLASSES, &[bottom, 1, 0x3700])), 1, "not an ancestor");
+    }
+
+    /// Stage S4 (ADR-0122): exceptions in an Environment. somSetException
+    /// sets _major, the name and the value (freeing any exception there);
+    /// somExceptionId / Value give them while there is one; somExceptionFree
+    /// frees the value and clears the Environment.
+    #[test]
+    fn exceptions_travel_in_the_environment() {
+        let l = Loader::new_mock();
+        let ev = ok(call(&l, SOM_GET_GLOBAL_ENVIRONMENT, &[]));
+        assert_ne!(ev, 0);
+        assert_eq!(ok(call(&l, SOM_EXCEPTION_ID, &[ev])), 0, "no exception");
+        let name = put(&l, 0x3600, "Gauge::TooBig");
+        let value = ok(call(&l, SOM_MALLOC, &[4]));
+        l.guest_write::<u32>(value, 10).unwrap();
+        assert_eq!(ok(call(&l, SOM_SET_EXCEPTION, &[ev, 1, name, value])), 0);
+        assert_eq!(l.guest_read::<u32>(ev), Some(1), "USER_EXCEPTION");
+        assert_eq!(ok(call(&l, SOM_EXCEPTION_ID, &[ev])), name);
+        assert_eq!(ok(call(&l, SOM_EXCEPTION_VALUE, &[ev])), value);
+        // Another exception replaces it, freeing the first value.
+        let second = ok(call(&l, SOM_MALLOC, &[4]));
+        ok(call(&l, SOM_SET_EXCEPTION, &[ev, 2, name, second]));
+        assert!(!l.shared.som.lock_or_recover().heap.blocks.contains_key(&value), "the first value is freed");
+        assert_eq!(ok(call(&l, SOM_EXCEPTION_FREE, &[ev])), 0);
+        assert!(!l.shared.som.lock_or_recover().heap.blocks.contains_key(&second));
+        assert_eq!((l.guest_read::<u32>(ev), ok(call(&l, SOM_EXCEPTION_VALUE, &[ev]))), (Some(0), 0));
+        // A value not from SOMMalloc is left alone; a null Environment is ignored.
+        ok(call(&l, SOM_SET_EXCEPTION, &[ev, 1, name, 0x3700]));
+        ok(call(&l, SOM_EXCEPTION_FREE, &[ev]));
+        assert_eq!(ok(call(&l, SOM_SET_EXCEPTION, &[0, 1, name, 0])), 0);
+        assert_eq!(ok(call(&l, SOM_EXCEPTION_ID, &[0])), 0);
     }
 
     /// somUnregisterClass forgets a class; somUnloadClassFile forgets the
