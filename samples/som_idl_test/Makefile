@@ -17,7 +17,7 @@ all: $(BUILD)/som_idl_test.exe
 endif
 
 # The bindings: counter.h (usage) and counter.ih (implementation).
-$(BUILD)/counter.h $(BUILD)/counter.ih &: counter.idl $(wildcard $(WARPINE_SDK)/include/*.idl)
+$(BUILD)/counter.h $(BUILD)/counter.ih &: counter.idl $(SOMIDL) $(wildcard $(WARPINE_SDK)/include/*.idl)
 	$(SOMIDL) -I $(WARPINE_SDK)/include -s h,ih -o $(BUILD) counter.idl
 
 $(BUILD)/counter.o: counter.c $(BUILD)/counter.ih $(wildcard $(WARPINE_SDK)/include/*.h)

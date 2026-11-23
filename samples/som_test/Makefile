@@ -47,7 +47,7 @@ $(wildcard $(B)/*.obj): include/som.h include/som.xh
 
 # ---- helloc: its bindings generated from hello.idl by somidl (ADR-0122) ----
 SOMIDL ?= $(CURDIR)/../../target/debug/somidl
-$(B)/hello/hello.h $(B)/hello/hello.ih &: $(SOMSAMPLES)/helloc/hello.idl $(wildcard ../../sdk/include/*.idl) | $(B)
+$(B)/hello/hello.h $(B)/hello/hello.ih &: $(SOMSAMPLES)/helloc/hello.idl $(SOMIDL) $(wildcard ../../sdk/include/*.idl) | $(B)
 	mkdir -p $(B)/hello
 	$(SOMIDL) -I $(CURDIR)/../../sdk/include -s h,ih -o $(B)/hello $<
 $(B)/hello.obj: $(SOMSAMPLES)/helloc/hello.c $(B)/hello/hello.h $(B)/hello/hello.ih | $(B)

@@ -465,7 +465,7 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
         let mut out = head(kind);
         match kind {
             "h" => {
-                let _ = writeln!(out, "#ifndef SOM_{g}_h\n#define SOM_{g}_h\n\n#include <som.h>\n");
+                let _ = writeln!(out, "#ifndef SOM_{g}_h\n#define SOM_{g}_h\n\n#include <som.h>\n#include <somapi.h>\n");
                 for d in defs {
                     if let Definition::Type(t, 0) = d { e.type_decl(&mut out, "", t)?; }
                 }
