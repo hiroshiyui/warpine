@@ -36,7 +36,7 @@ Where no such source turns up and the original cannot be rebuilt (SOM, the WPS, 
 **Missing export lists or ordinals**
 - **DIVE** and **OpenGL / PGL** ([Graphics](#graphics)): their export lists.
 - **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the export lists of UCONV, MMPM/2, TCP/IP, PMCTLS and MSG; dates for the 22 `unknown` exports.
-- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them (Free Pascal's LGPL `som.pas` is not used).
+- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them. None of the IBM manuals now at hand does either (2026-11-23); the routes left are Free Pascal's LGPL `som.pas` as a factual source (not used so far: needs a decision and an ADR) or asking the rights holders.
 - **SOM Stage B2/B3**, classes built from IBM's static class data ([SOM](#som--workplace-shell)): waits for those ordinals, or a source for the initializer / destructor control-block protocol. It holds back IBM-built SOM programs, and with them the Workplace Shell's compatibility.
 
 **Behaviour the public documentation does not settle**
@@ -297,16 +297,27 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
 
 The WPS is a PM application on the session desktop, built on SOM. The SOM kernel's stages 1–4 are done (ADR-0059–0063).
 
+**Sources at hand** (found 2026-11-23; kept locally under `doc/references/`, never committed; public URLs in the README's sources):
+- the OS/2 Warp 4 Toolkit's *System Object Model Programming Guide* and *Reference* and *Workplace Shell Programming Guide* and *Reference* (Internet Archive, reprinted with IBM's permission) — the OS/2 description of SOM and the WPS classes;
+- IBM's OS/390 *SOMobjects Programmer's Reference, Volume 1* (SC28-1997) and *Messages, Codes and Diagnosis* (SC28-1996) — the kernel as documented for OS/390, and the error codes.
+
+**Object model options** (for Warpine's own objects, and for the WPS should SOM compatibility stay blocked; to be decided in an ADR):
+1. SOM, compatible with IBM's as far as the sources allow (the current course, ADR-0059–0073);
+2. the Cross Platform Component Object Model (XPCOM), Mozilla's portable COM-style component model (interfaces described in XPIDL, reference counting, `QueryInterface`, a component manager; MPL-2.0; also used by VirtualBox on its non-Windows hosts) — not binary-compatible with SOM, so IBM-built SOM and WPS binaries would not run on it.
+
+Not available: IBM's SOM 3.0 publications (`ftp.software.ibm.com/publications/clubod/som30`, gone, never archived). Not used: somFree (LGPLv3, no OS/2 target; excluded by decision) and Netlabs' NOM (binary-incompatible with SOM by design).
+
+- [ ] **Check the kernel against the OS/2 SOM Programming Reference**: each function, macro and root-class method Warpine has; behaviour it documents moves from `doc/unverified.md` into the SOM ADRs with a citation, differences become fixes with tests; error codes after *Messages, Codes and Diagnosis*.
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
-  - ordinals 48 and above: unassigned until a permissive source lists them (Free Pascal's LGPL `som.pas` is not used);
+  - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; Free Pascal's LGPL `som.pas` (not used so far) or the rights holders are the routes left;
   - Stage B2/B3 is on hold (decided 2026-11-20) until IBM-built binaries can load (ordinals 48+) or a source describes the control-block protocol: the SOM Programming Guide ("Initializing and Uninitializing Objects") gives the semantics — each class's initializer exactly once, in a left-to-right visit of `directinitclasses` (default: the parents); `somDefaultInit` calls a legacy `somInit`; `somDestruct` runs the class's own clean-up, then its ancestors' — and the Toolkit headers give `somInitCtrl` / `somInitInfo` / `somDestructInfo` / `somAssignInfo`, but neither shows how generated `BeginInitializer` / `Init_<Ancestor>_…` / `EndDestructor` code indexes the mask and info arrays or turns a null `ctrl` into a block;
   - class building from IBM's static class data, Stage B2/B3 (`somBuildClass` itself is done, ADR-0073): initializers and direct-init classes, the initializer / destructor / assignment control blocks of `somParentMtabStruct`, DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`; `somBuildClass` and the other SOM 2.x entries reach IBM-built binaries only once IBM's ordinals above 47 are known;
-  - the root methods that resolve to the not-implemented procedure: the copy, assign, dispatch, cast, reset and renew families, `somGetParents`, the class manager's repository and class-library methods;
+  - the root methods that resolve to the not-implemented procedure: the copy, assign, dispatch, cast, reset and renew families, `somGetParents`, the class manager's repository and class-library methods — the SOM Programming Reference documents them, so they no longer wait on a source;
   - class loading calling a program's own `SOMClassInitFuncName`.
 - [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
 - [ ] **Class files**: `dllname` for `somLocateClassFile`.
 - [ ] **Utilities and metadata**: `SOMU` classes, the interface repository (`SOMIR`), IDL metadata.
-- [ ] **WPS classes**:
+- [ ] **WPS classes** (after the *Workplace Shell Programming Guide* and *Reference*):
   - `WPObject`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`;
   - persistence in OS2.INI;
   - settings notebooks;
