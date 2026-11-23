@@ -4080,7 +4080,7 @@ fn gui_pm_sysmenu_test_opens_the_system_menu_and_tracks_with_the_keyboard() {
 }
 
 /// pm_sysmenu_test with its system menu open (a click on the icon): Restore
-/// and Hide greyed, accelerator texts right-aligned, Window list greyed.
+/// and Hide greyed, accelerator texts right-aligned, Window list enabled.
 #[test]
 fn gui_pm_sysmenu_test_matches_golden() {
     check_gui_golden("pm_sysmenu_test", "samples/pm_sysmenu_test/pm_sysmenu_test.exe",

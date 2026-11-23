@@ -18,8 +18,8 @@
 //! is enabled when is Warpine's reading: Restore when minimized or
 //! maximized, Move unless maximized, Size only for a frame with a sizing
 //! border in its normal state, Minimize / Maximize / Hide only for a frame
-//! with that button and not already in that state, Close always, Window
-//! list never (Warpine has no window list).
+//! with that button and not already in that state, Close and Window list
+//! always (`WinDefWindowProc` shows the window list, `pm_switch.rs`).
 
 use super::popup_menu::PopupItem;
 use crate::loader::constants::{
@@ -63,7 +63,7 @@ pub fn window_items(frame_flags: u32, state: u32) -> Vec<PopupItem> {
 pub fn frame_system_menu_items(frame_flags: u32, state: u32) -> Vec<PopupItem> {
     let mut items = window_items(frame_flags, state);
     items.push(PopupItem::separator());
-    items.push(PopupItem::new(SC_TASKMANAGER, "~Window list", "Ctrl+Esc", false));
+    items.push(PopupItem::new(SC_TASKMANAGER, "~Window list", "Ctrl+Esc", true));
     items
 }
 
@@ -112,7 +112,7 @@ mod tests {
         for id in [SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE, SC_CLOSE] {
             assert!(enabled(&normal, id), "{id:#x}");
         }
-        assert!(!enabled(&normal, SC_HIDE) && !enabled(&normal, SC_TASKMANAGER));
+        assert!(!enabled(&normal, SC_HIDE) && enabled(&normal, SC_TASKMANAGER));
 
         let max = frame_system_menu_items(STD, WS_MAXIMIZED);
         assert!(enabled(&max, SC_RESTORE) && enabled(&max, SC_MINIMIZE));
@@ -122,10 +122,10 @@ mod tests {
         assert!(enabled(&min, SC_RESTORE) && enabled(&min, SC_MOVE) && enabled(&min, SC_MAXIMIZE));
         assert!(!enabled(&min, SC_SIZE) && !enabled(&min, SC_MINIMIZE));
 
-        // No sizing border, no buttons: only Move and Close.
+        // No sizing border, no buttons: only Move, Close and Window list.
         let plain = frame_system_menu_items(FCF_TITLEBAR | FCF_SYSMENU, 0);
         let on: Vec<u32> = plain.iter().filter(|i| i.enabled).map(|i| i.id).collect();
-        assert_eq!(on, vec![SC_MOVE, SC_CLOSE]);
+        assert_eq!(on, vec![SC_MOVE, SC_CLOSE, SC_TASKMANAGER]);
         // A hide button enables Hide.
         assert!(enabled(&frame_system_menu_items(FCF_HIDEBUTTON, 0), SC_HIDE));
     }
