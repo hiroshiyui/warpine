@@ -891,6 +891,7 @@ SOM.3091   WrpSomInitCtrlNew
 SOM.3092   WrpSomInitCtrlFree
 SOM.3093   WrpSomInitWalk
 SOM.3094   WrpSomDestructWalk
+SOM.3095   WrpSomSetDirectInitClasses
 SOM.3198   WrpSomMethodNotImplemented
 SOM.3199   WrpSomMethodError
 SOM.3200   WrpSOMObject_somInit
@@ -907,6 +908,14 @@ SOM.3210   WrpSOMObject_somDumpSelf
 SOM.3211   WrpSOMObject_somDumpSelfInt
 SOM.3212   WrpSOMObject_somDefaultInit
 SOM.3213   WrpSOMObject_somDestruct
+SOM.3214   WrpSOMObject_somDefaultCopyInit
+SOM.3215   WrpSOMObject_somDefaultConstCopyInit
+SOM.3216   WrpSOMObject_somDefaultVCopyInit
+SOM.3217   WrpSOMObject_somDefaultConstVCopyInit
+SOM.3218   WrpSOMObject_somDefaultAssign
+SOM.3219   WrpSOMObject_somDefaultConstAssign
+SOM.3220   WrpSOMObject_somDefaultVAssign
+SOM.3221   WrpSOMObject_somDefaultConstVAssign
 SOM.3300   WrpSOMClass_somNew
 SOM.3301   WrpSOMClass_somNewNoInit
 SOM.3302   WrpSOMClass_somGetName

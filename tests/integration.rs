@@ -2374,7 +2374,8 @@ fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
 /// som_idl_test (ADR-0122): classes declared in SOM IDL, bound by somidl's
 /// C emitters, built by GCC and clang: instance data, a derived class, an
 /// override calling its parent's, out arguments, versions, and
-/// initializers and destructors in Warpine's protocol; and Open Watcom's
+/// initializers and destructors in Warpine's protocol; stage S3's two
+/// parents, directinitclasses, an init method and copy / assign; and Open Watcom's
 /// hello and animals (metaclasses, attributes, sequences, module-scoped
 /// names), their C sources unchanged.
 #[test]
@@ -2404,7 +2405,7 @@ fn som_idl_classes_built_by_gcc_and_clang_run() {
             .output().expect("run warpine");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
-        assert!(text.contains("som_idl_test: done 15/15"), "{compiler}:\n{text}");
+        assert!(text.contains("som_idl_test: done 25/25"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
         // Open Watcom's hello and animals, their sources unchanged, from
         // generated bindings (built when Open Watcom's tree is there).

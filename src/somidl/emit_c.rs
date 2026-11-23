@@ -208,6 +208,27 @@ impl<'a> Emitter<'a> {
         Ok(v)
     }
 
+    /// Where method `name` is declared: class `start` or its ancestors.
+    fn find_method_from(&self, start: &str, name: &str) -> Option<(&Known<'a>, &Operation)> {
+        let k = self.known.get(start)?;
+        if let Some(op) = k.ops.iter().find(|o| o.name == name) { return Some((k, op)); }
+        self.find_method(k.iface, name)
+    }
+
+    /// The ancestors of class `start` (itself included), by simple name.
+    fn ancestry(&self, start: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut todo = vec![start.to_string()];
+        while let Some(n) = todo.pop() {
+            if out.contains(&n) || out.len() > 256 { continue; }
+            if let Some(k) = self.known.get(n.as_str()) {
+                todo.extend(k.iface.parents.iter().filter_map(|p| p.parts.last().cloned()));
+            }
+            out.push(n);
+        }
+        out
+    }
+
     /// Where method `name` is declared: the interface among `cls`'s
     /// ancestors (first parents first) and the method.
     fn find_method(&self, cls: &Interface, name: &str) -> Option<(&Known<'a>, &Operation)> {
@@ -288,9 +309,14 @@ struct AutoAccessor {
 /// A class's view for emitting, checked against what the stage covers.
 struct Class<'a> {
     i: &'a Interface,
-    /// Its C name, and its parent's and metaclass's (simple) names.
+    /// Its C name, and its parents' and metaclass's (simple) names.
     name: String,
     parent: String,
+    parents: Vec<String>,
+    /// `directinitclasses`: the ancestors its initializers visit.
+    direct_init: Vec<String>,
+    /// Its `init` methods (user-defined initializers).
+    inits: Vec<String>,
     meta: Option<String>,
     oidl: bool,
     prefix: String,
@@ -307,12 +333,25 @@ struct Class<'a> {
 impl<'a> Emitter<'a> {
     fn class(&self, i: &'a Interface) -> Res<Class<'a>> {
         let ctx = |m: &str| format!("interface {}: {m}", i.name);
-        if i.parents.len() > 1 {
-            return Err(ctx("multiple inheritance is not supported yet (ADR-0122, stage S3)"));
+        let mut parents: Vec<String> = i.parents.iter().filter_map(|p| p.parts.last().cloned()).collect();
+        if parents.is_empty() { parents.push("SOMObject".into()); }
+        for parent in &parents {
+            if !ROOT_CLASSES.contains(&parent.as_str()) && !self.known.contains_key(parent.as_str()) {
+                return Err(ctx(&format!("parent {parent} is not declared (#include its IDL)")));
+            }
         }
-        let parent = i.parents.first().and_then(|p| p.parts.last().cloned()).unwrap_or_else(|| "SOMObject".into());
-        if !ROOT_CLASSES.contains(&parent.as_str()) && !self.known.contains_key(parent.as_str()) {
-            return Err(ctx(&format!("parent {parent} is not declared (#include its IDL)")));
+        let parent = parents[0].clone();
+        // directinitclasses: a name, or names in a string ("A, B").
+        let direct_init: Vec<String> = match class_modifier(i, "directinitclasses") {
+            Some(ModValue::Str(s)) => s.split(',').map(|n| n.trim().rsplit("::").next().unwrap_or("").to_string())
+                .filter(|n| !n.is_empty()).collect(),
+            Some(v) => vec![modifier_text(v)],
+            None => Vec::new(),
+        };
+        for d in &direct_init {
+            if !ROOT_CLASSES.contains(&d.as_str()) && !self.known.contains_key(d.as_str()) {
+                return Err(ctx(&format!("directinitclasses names {d}, which is not declared")));
+            }
         }
         let meta = class_modifier(i, "metaclass").map(modifier_text);
         if let Some(m) = &meta && !ROOT_CLASSES.contains(&m.as_str()) && !self.known.contains_key(m.as_str()) {
@@ -332,10 +371,16 @@ impl<'a> Emitter<'a> {
         for o in &known.ops {
             if !methods.iter().any(|m: &Operation| m.name == o.name) { methods.push(o.clone()); }
         }
+        // An initializer takes its control block first (SOM Programming Guide).
+        let mut inits = Vec::new();
         for o in &methods {
-            if member_modifiers(i, &o.name).contains(&"init") {
-                return Err(ctx(&format!("{}: init methods are not supported yet (ADR-0122, stage S3)", o.name)));
+            if !member_modifiers(i, &o.name).contains(&"init") { continue; }
+            let ctrl = o.params.first().is_some_and(|p| p.dir == Direction::InOut
+                && matches!(&p.ty, Type::Named(n) if n.parts.last().is_some_and(|l| l == "somInitCtrl")));
+            if !ctrl || o.ret != Type::Void {
+                return Err(ctx(&format!("{}: an init method returns void and takes `inout somInitCtrl ctrl` first", o.name)));
             }
+            inits.push(o.name.clone());
         }
         let overrides = overrides(i);
         for o in &overrides {
@@ -358,7 +403,7 @@ impl<'a> Emitter<'a> {
             }
         }
         Ok(Class {
-            i, name: known.cname.clone(), parent, meta, oidl: known.oidl,
+            i, name: known.cname.clone(), parent, parents, direct_init, inits, meta, oidl: known.oidl,
             prefix: class_modifier(i, "functionprefix").map(modifier_text).unwrap_or_default(),
             major: int("majorversion"), minor: int("minorversion"),
             methods, overrides, data, auto,
@@ -415,6 +460,42 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(out, "    {}{}( {} ) {{ {ret_kw}SOM_Resolve( this, {n}, {} )( {} ); }}", spaced(&ret), m.name,
                                  params.join(", "), m.name, args.join(", "));
             }
+            // Later parents' methods (the C++ class derives from the first
+            // parent only: one method-table word), as forwarding members.
+            let first = self.ancestry(&c.parent);
+            let mut done: Vec<String> = Vec::new();
+            for later in c.parents.iter().skip(1) {
+                for anc in self.ancestry(later) {
+                    if first.contains(&anc) || done.contains(&anc) || ROOT_CLASSES.contains(&anc.as_str()) { continue; }
+                    let Some(k) = self.known.get(anc.as_str()) else { continue };
+                    for m in &k.ops {
+                        let params = self.params(m, k.oidl)?;
+                        let mut args: Vec<String> = vec![format!("({} *)this", k.cname)];
+                        if !k.oidl { args.push("ev".into()); }
+                        args.extend(m.params.iter().map(|p| p.name.clone()));
+                        let ret_kw = if m.ret == Type::Void { "" } else { "return " };
+                        let _ = writeln!(out, "    {}{}( {} ) {{ {ret_kw}SOM_Resolve( this, {}, {} )( {} ); }}", spaced(&self.c_type(&m.ret)?),
+                                         m.name, params.join(", "), k.cname, m.name, args.join(", "));
+                    }
+                    done.push(anc);
+                }
+            }
+            // An init method is also a constructor taking its arguments
+            // (the control block 0); a SOM object of another class (a C++
+            // base) or a non-SOM object is left alone, as SOM_CPP_CLASS's.
+            for name in &c.inits {
+                let Some(m) = c.methods.iter().find(|m| &m.name == name) else { continue };
+                let mut params = Vec::new();
+                if !c.oidl { params.push("Environment *ev".to_string()); }
+                for p in m.params.iter().skip(1) { params.push(self.c_param(p)?); }
+                if params.is_empty() { continue; }
+                let mut args = vec!["this".to_string()];
+                if !c.oidl { args.push("ev".into()); }
+                args.push("0".into());
+                args.extend(m.params.iter().skip(1).map(|p| p.name.clone()));
+                let _ = writeln!(out, "    {n}( {} ) {{ if( somIsObj( this ) && (SOMObject *)_somGetClass( this ) == (SOMObject *)(_{n}) ) SOM_Resolve( this, {n}, {} )( {} ); }}",
+                                 params.join(", "), m.name, args.join(", "));
+            }
             let _ = writeln!(out, "}};\n");
             return Ok(());
         }
@@ -436,7 +517,6 @@ impl<'a> Emitter<'a> {
 
     fn implementation(&self, c: &Class, out: &mut String) -> Res<()> {
         let n = &c.name;
-        let p = self.cname(&c.parent);
         let _ = writeln!(out, "/* ---- {n} ---- */");
         let _ = writeln!(out, "typedef struct {n}Data_struct {{");
         if c.data.is_empty() { let _ = writeln!(out, "    char somEmpty_;"); }
@@ -471,8 +551,17 @@ impl<'a> Emitter<'a> {
             let formal: String = args.iter().map(|a| format!(", {a}")).collect();
             let actual: String = args.iter().map(|a| format!(", ({a})")).collect();
             let intro = &k.cname;
-            for macro_name in [format!("{n}_parent_{p}_{o}"), format!("{n}_parent_{o}")] {
-                let _ = writeln!(out, "#define {macro_name}( somSelf{formal} ) \\\n    SOM_ParentNumResolve( {intro}, 1, {n}CClassData.parentMtab, {o} )( ({intro} *)(somSelf){actual} )");
+            // Each parent that has the method (parents from 1), and the
+            // first of them as `<Class>_parent_<method>`.
+            let mut first = true;
+            for (num, parent) in c.parents.iter().enumerate() {
+                if self.find_method_from(parent, o).is_none() && !ROOT_CLASSES.contains(&parent.as_str()) { continue; }
+                let pc = self.cname(parent);
+                let mut names = vec![format!("{n}_parent_{pc}_{o}")];
+                if first { names.push(format!("{n}_parent_{o}")); first = false; }
+                for macro_name in names {
+                    let _ = writeln!(out, "#define {macro_name}( somSelf{formal} ) \\\n    SOM_ParentNumResolve( {intro}, {}, {n}CClassData.parentMtab, {o} )( ({intro} *)(somSelf){actual} )", num + 1);
+                }
             }
         }
         // The accessors the bindings implement.
@@ -485,9 +574,17 @@ impl<'a> Emitter<'a> {
         // ClassData and the class's static information.
         let _ = writeln!(out, "struct {n}ClassDataStructure SOMDLINK {n}ClassData;");
         let _ = writeln!(out, "struct {n}CClassDataStructure SOMDLINK {n}CClassData;");
-        let _ = writeln!(out, "static char somCN_{n}_t[] = \"{}\";\nstatic char *somCN_{n}_s = somCN_{n}_t;\nstatic char somPN_{n}_t[] = \"{}\";\nstatic char *somPN_{n}_s = somPN_{n}_t;",
-                         self.som_name(&c.i.name), self.som_name(&c.parent));
-        let _ = writeln!(out, "static somId somPN_{n}[1] = {{ &somPN_{n}_s }};");
+        let _ = writeln!(out, "static char somCN_{n}_t[] = \"{}\";\nstatic char *somCN_{n}_s = somCN_{n}_t;", self.som_name(&c.i.name));
+        let ids = |out: &mut String, tag: &str, names: &[String]| {
+            for (k, p) in names.iter().enumerate() {
+                let _ = writeln!(out, "static char {tag}_{n}_{k}_t[] = \"{}\";\nstatic char *{tag}_{n}_{k}_s = {tag}_{n}_{k}_t;", self.som_name(p));
+            }
+            let list: Vec<String> = (0..names.len()).map(|k| format!("&{tag}_{n}_{k}_s")).collect();
+            let _ = writeln!(out, "static somId {tag}_{n}[{}] = {{ {} }};", names.len().max(1),
+                             if list.is_empty() { "0".to_string() } else { list.join(", ") });
+        };
+        ids(out, "somPN", &c.parents);
+        if !c.direct_init.is_empty() { ids(out, "somDI", &c.direct_init); }
         if let Some(meta) = &c.meta {
             let _ = writeln!(out, "static char somMC_{n}_t[] = \"{}\";\nstatic char *somMC_{n}_s = somMC_{n}_t;", self.som_name(meta));
         }
@@ -508,13 +605,19 @@ impl<'a> Emitter<'a> {
         }
         let _ = writeln!(out, "    {{ 0, 0 }}\n}};");
         let meta = if c.meta.is_some() { format!("&somMC_{n}_s") } else { "0".into() };
-        let _ = writeln!(out, "static somStaticClassInfo somSCI_{n} = {{\n    1, {}, {}, 0, 0, 0, {}, {}, {size}, {}, 1, &somCN_{n}_s, {meta}, 0,\n    somPN_{n}, &{n}ClassData, &{n}CClassData,\n    somSM_{n}, somOM_{n}, 0, 0, 0, 0, 0\n}};",
-            c.methods.len(), c.overrides.len(), c.major, c.minor, c.methods.len());
+        let _ = writeln!(out, "static somStaticClassInfo somSCI_{n} = {{\n    1, {}, {}, 0, 0, 0, {}, {}, {size}, {}, {}, &somCN_{n}_s, {meta}, 0,\n    somPN_{n}, &{n}ClassData, &{n}CClassData,\n    somSM_{n}, somOM_{n}, 0, 0, 0, 0, 0\n}};",
+            c.methods.len(), c.overrides.len(), c.major, c.minor, c.methods.len(), c.parents.len());
         let _ = writeln!(out, "SOMClass * SOMLINK {n}NewClass( integer4 majorVersion, integer4 minorVersion )\n{{");
         let _ = writeln!(out, "    if( {n}ClassData.classObject ) return( {n}ClassData.classObject );\n    somEnvironmentNew();");
-        let _ = writeln!(out, "    {};", self.new_class_call(&c.parent));
+        for parent in &c.parents { let _ = writeln!(out, "    {};", self.new_class_call(parent)); }
         if let Some(meta) = &c.meta { let _ = writeln!(out, "    {};", self.new_class_call(meta)); }
-        let _ = writeln!(out, "    return( somBuildClass( 1, &somSCI_{n}, majorVersion, minorVersion ) );\n}}\n");
+        if c.direct_init.is_empty() {
+            let _ = writeln!(out, "    return( somBuildClass( 1, &somSCI_{n}, majorVersion, minorVersion ) );\n}}\n");
+        } else {
+            // directinitclasses: the ancestors its initializers visit.
+            let _ = writeln!(out, "    {{\n        SOMClass *cls = somBuildClass( 1, &somSCI_{n}, majorVersion, minorVersion );\n        if( cls ) WrpSomSetDirectInitClasses( cls, {}, somDI_{n} );\n        return( cls );\n    }}\n}}\n",
+                             c.direct_init.len());
+        }
         Ok(())
     }
 

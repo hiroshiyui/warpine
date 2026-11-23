@@ -187,6 +187,11 @@ pub const SOM_INIT_CTRL_FREE: u32 = 3092;
 /// own `somDefaultInit` / `somDestruct` stay as SOM 1.x code expects.
 pub const SOM_INIT_WALK: u32 = 3093;
 pub const SOM_DESTRUCT_WALK: u32 = 3094;
+/// `WrpSomSetDirectInitClasses(cls, n, names)`: the ancestors class `cls`'s
+/// initializers visit, in that order, instead of its parents (the
+/// `directinitclasses` modifier; somidl's bindings call it after
+/// `somBuildClass`, ADR-0122). `names` is an array of `n` somIds.
+pub const SOM_SET_DIRECT_INIT_CLASSES: u32 = 3095;
 /// The size of a `somInitInfo` entry: class, own `somDefaultInit`, own
 /// `somDestruct`, the class's data offset in the instance.
 pub const SOM_INIT_INFO_SIZE: u32 = 16;
@@ -214,17 +219,17 @@ const NOT_IMPLEMENTED: u32 = 0;
 /// so a program built with IBM's bindings finds each method at IBM's
 /// offset.
 pub const SOMOBJECT_METHODS: &[(u32, &str)] = &[
-    (3200, "somInit"), (3201, "somUninit"), (3202, "somFree"), (NOT_IMPLEMENTED, "somDefaultVCopyInit"),
+    (3200, "somInit"), (3201, "somUninit"), (3202, "somFree"), (3216, "somDefaultVCopyInit"),
     (3204, "somGetClassName"), (3203, "somGetClass"), (3206, "somIsA"), (3208, "somRespondsTo"),
     (3207, "somIsInstanceOf"), (3205, "somGetSize"), (3210, "somDumpSelf"), (3211, "somDumpSelfInt"),
-    (3209, "somPrintSelf"), (NOT_IMPLEMENTED, "somDefaultConstVCopyInit"), (NOT_IMPLEMENTED, "somDispatchV"),
+    (3209, "somPrintSelf"), (3217, "somDefaultConstVCopyInit"), (NOT_IMPLEMENTED, "somDispatchV"),
     (NOT_IMPLEMENTED, "somDispatchL"), (NOT_IMPLEMENTED, "somDispatchA"), (NOT_IMPLEMENTED, "somDispatchD"),
     (NOT_IMPLEMENTED, "somDispatch"), (NOT_IMPLEMENTED, "somClassDispatch"), (NOT_IMPLEMENTED, "somCastObj"),
     (NOT_IMPLEMENTED, "somResetObj"), (3212, "somDefaultInit"), (3213, "somDestruct"),
     (NOT_IMPLEMENTED, "somPrivate1"), (NOT_IMPLEMENTED, "somPrivate2"),
-    (NOT_IMPLEMENTED, "somDefaultCopyInit"), (NOT_IMPLEMENTED, "somDefaultConstCopyInit"),
-    (NOT_IMPLEMENTED, "somDefaultAssign"), (NOT_IMPLEMENTED, "somDefaultConstAssign"),
-    (NOT_IMPLEMENTED, "somDefaultVAssign"), (NOT_IMPLEMENTED, "somDefaultConstVAssign"),
+    (3214, "somDefaultCopyInit"), (3215, "somDefaultConstCopyInit"),
+    (3218, "somDefaultAssign"), (3219, "somDefaultConstAssign"),
+    (3220, "somDefaultVAssign"), (3221, "somDefaultConstVAssign"),
 ];
 pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
     (3300, "somNew"), (NOT_IMPLEMENTED, "somRenew"), (3310, "somInitClass"), (3313, "somClassReady"),
@@ -377,6 +382,9 @@ pub struct SomClass {
     pub ready: bool,
     /// Major and minor version (`somInitClass`; 0.0: none given).
     pub version: (u32, u32),
+    /// The ancestors its initializers visit instead of its parents
+    /// (`directinitclasses`; empty: the parents).
+    pub direct_init: Vec<u32>,
 }
 
 impl SomClass {
@@ -485,8 +493,8 @@ impl SomRuntime {
     }
 
     /// The ancestors of `cls` that its initializers visit, each once:
-    /// parents left to right, each one's ancestors before it, `cls` last
-    /// (ADR-0122; `directinitclasses` are the parents until stage S3).
+    /// its direct-init classes (`directinitclasses`, else its parents)
+    /// left to right, each one's before it, `cls` last (ADR-0122).
     pub fn init_order(&self, cls: u32) -> Vec<u32> {
         let mut order = Vec::new();
         let mut seen = HashSet::new();
@@ -500,7 +508,8 @@ impl SomRuntime {
             if seen.len() >= MAX_CLASSES || !seen.insert(c) { continue; }
             todo.push((c, true));
             if let Some(k) = self.classes.get(&c) {
-                todo.extend(k.parents.iter().rev().map(|&p| (p, false)));
+                let direct = if k.direct_init.is_empty() { &k.parents } else { &k.direct_init };
+                todo.extend(direct.iter().rev().map(|&p| (p, false)));
             }
         }
         order
@@ -1049,7 +1058,7 @@ impl Loader {
                 rt.classes.insert(obj, SomClass {
                     name: name.to_string(), name_addr, parents, meta: c, slots, own_methods: own, parts,
                     data_size: if obj == o { 4 } else { 0 }, instance_size: 4, mtab: 0, ready: false,
-                    version: ROOT_VERSION,
+                    version: ROOT_VERSION, direct_init: Vec::new(),
                 });
                 rt.by_name.insert(name.to_string(), obj);
             }
@@ -1198,6 +1207,48 @@ impl Loader {
         if let Some(last) = flags.last_mut() { *last = 0; }
         let _ = self.guest_write_bytes(mask, &flags);
         ctrl
+    }
+
+    /// Copy object `from`'s instance data over object `to`'s: both SOM
+    /// objects, `from` of `to`'s class or a descendant; what follows the
+    /// method-table pointer, `to`'s instance size. Nothing otherwise.
+    fn som_shallow_copy(&self, to: u32, from: u32) {
+        // The classes first: som_class_of takes the runtime's lock too.
+        let (Some(tc), Some(fc)) = (self.som_class_of(to), self.som_class_of(from)) else { return };
+        let size = {
+            let rt = self.shared.som.lock_or_recover();
+            if to == from || !rt.instances.contains(&to) || !rt.instances.contains(&from) { return; }
+            if !rt.descends(fc, tc) { return; }
+            rt.classes.get(&tc).map_or(0, |c| c.instance_size)
+        };
+        let Some(len) = size.checked_sub(4).filter(|&n| n > 0 && n <= MAX_INSTANCE_DATA + 4) else { return };
+        if let Some(bytes) = self.guest_read_bytes(from + 4, len as usize) {
+            let _ = self.guest_write_bytes(to + 4, &bytes);
+        }
+    }
+
+    /// `WrpSomSetDirectInitClasses`: the classes `names` (`n` somIds),
+    /// each an ancestor of `cls`, become its direct-init classes; an
+    /// unknown name or a non-ancestor leaves them as they were (0 for
+    /// success, 1 otherwise). Its initializer table is made again.
+    fn som_set_direct_init(&self, cls: u32, n: u32, names: u32) -> u32 {
+        if n as usize > MAX_PARENTS { return 1; }
+        let mut found = Vec::new();
+        for i in 0..n {
+            let Some(id) = names.checked_add(4 * i).and_then(|at| self.guest_read::<u32>(at)) else { return 1 };
+            match self.som_class_named(id) {
+                Some(c) if c != cls && self.shared.som.lock_or_recover().descends(cls, c) => found.push(c),
+                _ => { log::warn!("SOM: directinitclasses: entry {i} is not an ancestor"); return 1; }
+            }
+        }
+        let old = {
+            let mut rt = self.shared.som.lock_or_recover();
+            let Some(k) = rt.classes.get_mut(&cls) else { return 1 };
+            k.direct_init = found;
+            rt.init_tables.remove(&cls)
+        };
+        if let Some((table, _)) = old { self.som_free_mem(table); }
+        0
     }
 
     /// The kernel's walk of Warpine's initializer protocol (ADR-0122,
@@ -2096,6 +2147,7 @@ impl Loader {
             SOM_DATA_EXPORT => ok(self.som_data_address(a[0]).unwrap_or(0)),
             SOM_INIT_CTRL_NEW => ok(self.som_init_ctrl_new(a[0])),
             SOM_INIT_CTRL_FREE => { self.som_free_mem(a[0]); ok(0) }
+            SOM_SET_DIRECT_INIT_CLASSES => ok(self.som_set_direct_init(a[0], a[1], a[2])),
             SOM_INIT_WALK => match self.som_root_walk(a[0], false) {
                 Some((steps, ctrl)) => self.start_chain(CallChain::new(vcpu, steps, false,
                                                                        ChainThen::SomWalkDone { ctrl, obj: 0, result: 0 })),
@@ -2175,6 +2227,13 @@ impl Loader {
                 let then = if a[1] & 0xFF != 0 { ChainThen::SomFree { obj: a[0] } } else { ChainThen::Return(0) };
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(uninit, vec![a[0]], false)], false, then))
             }
+            // somDefault[Const][V]CopyInit(ctrl, fromObj) and
+            // somDefault[Const][V]Assign(ctrl, fromObj): SOMObject has no
+            // data, so as an entry of the protocol (a control block) they
+            // do nothing; called without one, a shallow copy of the whole
+            // instance (Warpine's default, ADR-0122). Assign returns self.
+            3214..=3217 => { if a[1] == 0 { self.som_shallow_copy(a[0], a[2]); } ok(0) }
+            3218..=3221 => { if a[1] == 0 { self.som_shallow_copy(a[0], a[2]); } ok(a[0]) }
             // ── SOMClass (the receiver is a class object) ──
             3300 | 3301 => {
                 let Some(obj) = self.som_new_instance(a[0]) else { return ok(0) };
@@ -2779,6 +2838,55 @@ mod tests {
         }
     }
 
+    /// Stage S3 (ADR-0122): SOMObject's copy and assign initializers copy
+    /// the instance shallowly when called without a control block (and
+    /// do nothing as an entry of the protocol); directinitclasses change
+    /// which ancestors a class's table visits.
+    #[test]
+    fn copy_assign_and_direct_init_classes() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let pt = new_class(&l, som_class, "Point", &[som_object], 8, &[]);
+        let (a, b) = (ok(call(&l, 3301, &[pt])), ok(call(&l, 3301, &[pt])));
+        l.guest_write::<u32>(b + 4, 7).unwrap();
+        l.guest_write::<u32>(b + 8, 9).unwrap();
+        let copy = named_token(&l, SOM_OBJECT_CLASS_DATA, "somDefaultCopyInit");
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[a, copy])), thunk(3214), "no longer NotImplementedYet");
+        assert_eq!(ok(call(&l, 3214, &[a, 0, b])), 0);
+        assert_eq!((l.guest_read::<u32>(a + 4), l.guest_read::<u32>(a + 8)), (Some(7), Some(9)));
+        l.guest_write::<u32>(b + 4, 1).unwrap();
+        assert_eq!(ok(call(&l, 3218, &[a, 0, b])), a, "somDefaultAssign returns self");
+        assert_eq!(l.guest_read::<u32>(a + 4), Some(1));
+        l.guest_write::<u32>(b + 4, 2).unwrap();
+        assert_eq!(ok(call(&l, 3218, &[a, 0x3000, b])), a, "as a protocol entry: nothing");
+        assert_eq!(l.guest_read::<u32>(a + 4), Some(1));
+        // Only from an object of the class or a descendant.
+        let other = new_class(&l, som_class, "Other", &[som_object], 8, &[]);
+        let o = ok(call(&l, 3301, &[other]));
+        l.guest_write::<u32>(o + 4, 55).unwrap();
+        ok(call(&l, 3214, &[a, 0, o]));
+        assert_eq!(l.guest_read::<u32>(a + 4), Some(1), "an unrelated class: nothing");
+        ok(call(&l, 3214, &[a, 0, 0x3000]));
+        // directinitclasses: Bottom's initializers visit Right before Left.
+        let left = new_class(&l, som_class, "DLeft", &[som_object], 0, &[]);
+        let right = new_class(&l, som_class, "DRight", &[som_object], 0, &[]);
+        let bottom = new_class(&l, som_class, "DBottom", &[left, right], 0, &[]);
+        assert_eq!(l.shared.som.lock_or_recover().init_order(bottom), [som_object, left, right, bottom]);
+        let ctrl = ok(call(&l, SOM_INIT_CTRL_NEW, &[bottom]));
+        let id = |n: &str, at: u32| ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, at, n)]));
+        let (r, lf) = (id("DRight", 0x3600), id("DLeft", 0x3620));
+        l.guest_write::<u32>(0x3700, r).unwrap();
+        l.guest_write::<u32>(0x3704, lf).unwrap();
+        assert_eq!(ok(call(&l, SOM_SET_DIRECT_INIT_CLASSES, &[bottom, 2, 0x3700])), 0);
+        assert_eq!(l.shared.som.lock_or_recover().init_order(bottom), [som_object, right, left, bottom]);
+        // The table is made again: Right's entry before Left's.
+        let info = l.guest_read::<u32>(ok(call(&l, SOM_INIT_CTRL_NEW, &[bottom])) + 4).unwrap();
+        assert_eq!(l.guest_read::<u32>(info + SOM_INIT_INFO_SIZE), Some(right));
+        assert_ne!(ctrl, 0);
+        l.guest_write::<u32>(0x3700, id("Point", 0x3640)).unwrap();
+        assert_eq!(ok(call(&l, SOM_SET_DIRECT_INIT_CLASSES, &[bottom, 1, 0x3700])), 1, "not an ancestor");
+    }
+
     /// somUnregisterClass forgets a class; somUnloadClassFile forgets the
     /// classes of the module that made one, withdraws their method tables
     /// (their objects resolve nothing) and frees the module.
@@ -3139,8 +3247,8 @@ mod tests {
         // somFindClsInFile comes first in SOMClassMgr's.
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, root_token(&l, SOM_CLASS_MGR_CLASS_DATA, 0)])), thunk(3403));
         // A method Warpine lacks: a warning through SOMError, then 0.
-        let copy = named_token(&l, SOM_OBJECT_CLASS_DATA, "somDefaultCopyInit");
-        let proc = ok(call(&l, SOM_RESOLVE, &[mgr, copy]));
+        let dispatch = named_token(&l, SOM_OBJECT_CLASS_DATA, "somDispatch");
+        let proc = ok(call(&l, SOM_RESOLVE, &[mgr, dispatch]));
         assert_eq!(proc, thunk(SOM_METHOD_NOT_IMPLEMENTED));
         assert_eq!(ok(call(&l, SOM_METHOD_NOT_IMPLEMENTED, &[mgr])), 0);
         // Every token is distinct and resolves to a procedure.

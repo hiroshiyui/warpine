@@ -166,7 +166,7 @@ int main( void )
 
     /* A method Warpine lacks: SOMERROR_NotImplementedYet as a warning. */
     SOMError = catch_error;
-    lacking = (lacking_proc *)somResolve( mgr, SOMObjectClassData.somDefaultCopyInit );
+    lacking = (lacking_proc *)somResolve( mgr, SOMObjectClassData.somResetObj );
     check( "a lacking method returns 0", lacking( mgr, 0, mgr ), 0 );
     check( "... after SOMError 20171", last_error, 20171 );
 

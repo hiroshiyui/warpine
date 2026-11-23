@@ -117,6 +117,12 @@ typedef somTP_SOMObject_somDumpSelf     *somTD_SOMObject_somDumpSelf;
 typedef somTP_SOMObject_somDumpSelfInt  *somTD_SOMObject_somDumpSelfInt;
 typedef somTP_SOMObject_somDefaultInit  *somTD_SOMObject_somDefaultInit;
 typedef somTP_SOMObject_somDestruct     *somTD_SOMObject_somDestruct;
+/* The copy and assign initializers: without a control block, SOMObject's
+ * copy the whole instance shallowly (Warpine's default, ADR-0122). */
+typedef void       SOMLINK somTP_SOMObject_somDefaultCopyInit( SOMObject *, somInitCtrl *, SOMObject * );
+typedef SOMObject *SOMLINK somTP_SOMObject_somDefaultAssign( SOMObject *, somAssignCtrl *, SOMObject * );
+typedef somTP_SOMObject_somDefaultCopyInit *somTD_SOMObject_somDefaultCopyInit;
+typedef somTP_SOMObject_somDefaultAssign   *somTD_SOMObject_somDefaultAssign;
 
 #define _somInit( o )           SOM_Resolve( o, SOMObject, somInit )( (SOMObject *)(o) )
 #define _somUninit( o )         SOM_Resolve( o, SOMObject, somUninit )( (SOMObject *)(o) )
@@ -132,6 +138,10 @@ typedef somTP_SOMObject_somDestruct     *somTD_SOMObject_somDestruct;
 #define _somDumpSelfInt( o, l ) SOM_Resolve( o, SOMObject, somDumpSelfInt )( (SOMObject *)(o), (l) )
 #define _somDefaultInit( o, c ) SOM_Resolve( o, SOMObject, somDefaultInit )( (SOMObject *)(o), (c) )
 #define _somDestruct( o, f, c ) SOM_Resolve( o, SOMObject, somDestruct )( (SOMObject *)(o), (f), (c) )
+#define _somDefaultCopyInit( o, c, from ) \
+    SOM_Resolve( o, SOMObject, somDefaultCopyInit )( (SOMObject *)(o), (c), (SOMObject *)(from) )
+#define _somDefaultAssign( o, c, from ) \
+    SOM_Resolve( o, SOMObject, somDefaultAssign )( (SOMObject *)(o), (c), (SOMObject *)(from) )
 /* The long names of SOM 2.x C bindings. */
 #define SOMObject_somInit( o )         _somInit( o )
 #define SOMObject_somUninit( o )       _somUninit( o )

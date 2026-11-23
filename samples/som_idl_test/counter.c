@@ -86,3 +86,47 @@ SOM_Scope void SOMLINK d_somDestruct( Doubler *somSelf, octet doFree, somDestruc
     note( 'd' );
     SOM_DestructEnd( ctrl, doFree );
 }
+
+/* Tagged: a second base class with data and an initializer. */
+SOM_Scope long SOMLINK t_tag( Tagged *somSelf, Environment *ev )
+{
+    TaggedData *somThis = TaggedGetData( somSelf );
+    (void)ev;
+    return( _t );
+}
+
+SOM_Scope void SOMLINK t_somDefaultInit( Tagged *somSelf, somInitCtrl *ctrl )
+{
+    TaggedData *somThis = TaggedGetData( somSelf );
+    SOM_InitBegin( ctrl, _Tagged );
+    _t = 42;
+    note( 'T' );
+    SOM_InitEnd();
+}
+
+/* Both: two parents; its initializers visit Tagged before Counter. */
+SOM_Scope void SOMLINK b_withStart( Both *somSelf, Environment *ev, somInitCtrl *ctrl, long start )
+{
+    BothData *somThis = BothGetData( somSelf );
+    (void)ev;
+    SOM_InitBegin( ctrl, _Both );
+    _s = start;
+    note( 'W' );
+    SOM_InitEnd();
+}
+
+SOM_Scope long SOMLINK b_start( Both *somSelf, Environment *ev )
+{
+    BothData *somThis = BothGetData( somSelf );
+    (void)ev;
+    return( _s );
+}
+
+SOM_Scope void SOMLINK b_somDefaultInit( Both *somSelf, somInitCtrl *ctrl )
+{
+    BothData *somThis = BothGetData( somSelf );
+    SOM_InitBegin( ctrl, _Both );
+    _s = -1;
+    note( 'B' );
+    SOM_InitEnd();
+}

@@ -2,7 +2,8 @@
 //
 // counter.idl - classes for somidl's C bindings (ADR-0122): instance data,
 // a class derived from another of the file, an override calling its
-// parent's, and initializers / destructors in Warpine's protocol.
+// parent's, and initializers / destructors in Warpine's protocol; then
+// stage S3: a class with two parents, directinitclasses and an init method.
 #include <somobj.idl>
 
 interface Counter : SOMObject
@@ -40,6 +41,39 @@ interface Doubler : Counter
         add: override;
         somDefaultInit: override;
         somDestruct: override;
+    };
+#endif
+};
+
+interface Tagged : SOMObject
+{
+    long tag();
+    // The tag its initializer set.
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: tag;
+        functionprefix = t_;
+        long t;
+        somDefaultInit: override;
+    };
+#endif
+};
+
+interface Both : Counter, Tagged
+{
+    void withStart(inout somInitCtrl ctrl, in long start);
+    // An initializer: the ancestors' default ones, then start.
+    long start();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: withStart, start;
+        functionprefix = b_;
+        directinitclasses = "Tagged, Counter";
+        long s;
+        withStart: init;
+        somDefaultInit: override;
     };
 #endif
 };

@@ -64,6 +64,10 @@ SOMEXTERN SOMClass      * SOMLINK somBuildClass( long inheritVars, somStaticClas
 SOMEXTERN SOMClass      * SOMLINK SOMObjectNewClass( integer4 majorVersion, integer4 minorVersion );
 SOMEXTERN SOMClass      * SOMLINK SOMClassNewClass( integer4 majorVersion, integer4 minorVersion );
 SOMEXTERN SOMClass      * SOMLINK SOMClassMgrNewClass( integer4 majorVersion, integer4 minorVersion );
+/* The ancestors class `cls`'s initializers visit, in that order, instead
+ * of its parents (`directinitclasses`; `n` somIds): 0 for success. */
+SOMEXTERN long          SOMLINK WrpSomSetDirectInitClasses( SOMClass *cls, long n, somId *names );
+
 
 /* A parent's implementation of a method: in the `n`th parent's table of a
  * class's <Class>CClassData.parentMtab. */

@@ -133,6 +133,10 @@ SOMEXTERN void          SOMLINK WrpSomInitCtrlFree( somInitCtrl *ctrl );
  * initializer or destructor the class inherited hands over to these. */
 SOMEXTERN void          SOMLINK WrpSomInitWalk( SOMObject *obj );
 SOMEXTERN void          SOMLINK WrpSomDestructWalk( SOMObject *obj, octet doFree );
+/* The ancestors class `cls`'s initializers visit, in that order, instead
+ * of its parents (`directinitclasses`; `n` somIds): 0 for success. */
+SOMEXTERN long          SOMLINK WrpSomSetDirectInitClasses( SOMClass *cls, long n, somId *names );
+
 
 /* What somBuildClass takes (layout version 1, as somidl's bindings fill
  * it): a class's static methods and overrides, its parents and metaclass

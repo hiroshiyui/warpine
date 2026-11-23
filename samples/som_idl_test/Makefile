@@ -5,7 +5,9 @@
 # Build the tools first: cargo build --bin lx_link --bin somidl.
 include ../../sdk/os2.mk
 
-BUILD  ?= .
+# Generated headers must not sit beside counter.c (its quoted #include
+# would find a stale copy there first), so the default is a subdirectory.
+BUILD  ?= build
 CFLAGS  = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -I$(BUILD)
 
 # Open Watcom's SOM samples, their C sources unchanged, when its tree is
@@ -22,6 +24,7 @@ endif
 
 # The bindings: counter.h (usage) and counter.ih (implementation).
 $(BUILD)/counter.h $(BUILD)/counter.ih &: counter.idl $(SOMIDL) $(wildcard $(WARPINE_SDK)/include/*.idl)
+	mkdir -p $(BUILD)
 	$(SOMIDL) -I $(WARPINE_SDK)/include -s h,ih -o $(BUILD) counter.idl
 
 $(BUILD)/counter.o: counter.c $(BUILD)/counter.ih $(wildcard $(WARPINE_SDK)/include/*.h)
@@ -63,7 +66,6 @@ $(BUILD)/ow_%.exe: $(BUILD)/ow_%_impl.o $(BUILD)/ow_%_main.o $(OS2_CRT0) $(OS2_L
 	$(LX_LINK) --gc-sections $(OS2_CRT0) $(BUILD)/ow_$*_impl.o $(BUILD)/ow_$*_main.o $(OS2_LIBC) -o $@
 
 clean:
-	rm -f *.o *.exe counter.h counter.ih
-	rm -rf hello animals hellocpp
+	rm -rf build
 
 .PHONY: all clean

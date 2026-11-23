@@ -51,6 +51,30 @@ int main( void )
     _somFree( d );
     check( "destructors: Doubler's, then Counter's", strcmp( counter_trail, "dc" ) == 0 );
 
+    /* Stage S3: two parents, directinitclasses, an init method. */
+    {
+        Both *b, *copy;
+        counter_trail[0] = '\0';
+        b = BothNew();
+        check( "two parents: directinitclasses order (Tagged, then Counter)", strcmp( counter_trail, "TCB" ) == 0 );
+        check( "the first parent's method and data", _add( b, ev, 1 ) == 101 );
+        check( "the second parent's method and data", _tag( b, ev ) == 42 );
+        check( "its own data", _start( b, ev ) == -1 );
+        check( "Both descends from both", _somIsA( b, _Counter ) && _somIsA( b, _Tagged ) );
+        counter_trail[0] = '\0';
+        copy = (Both *)_somNewNoInit( _Both );
+        Both_withStart( copy, ev, 0, 7 );
+        check( "an init method: the ancestors' initializers, then its own", strcmp( counter_trail, "TCW" ) == 0 );
+        check( "the init method's argument", _start( copy, ev ) == 7 );
+        _somDefaultCopyInit( copy, 0, b );
+        check( "somDefaultCopyInit copies the instance", _start( copy, ev ) == -1 && _peek( copy, ev, &calls ) == 101 );
+        _add( b, ev, 9 );
+        check( "somDefaultAssign returns the object", _somDefaultAssign( copy, 0, b ) == (SOMObject *)copy );
+        check( "... with the other's data", _peek( copy, ev, &calls ) == 110 );
+        _somFree( copy );
+        _somFree( b );
+    }
+
     printf( "som_idl_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );
 }

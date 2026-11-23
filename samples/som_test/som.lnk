@@ -33,3 +33,4 @@ import somParentNumResolve     SOM.somParentNumResolve
 import SOMObjectNewClass       SOM.SOMObjectNewClass
 import SOMClassNewClass        SOM.SOMClassNewClass
 import SOMClassMgrNewClass     SOM.SOMClassMgrNewClass
+import WrpSomSetDirectInitClasses SOM.WrpSomSetDirectInitClasses
