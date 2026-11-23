@@ -546,6 +546,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             3076 => "somSetOutChar",
             3077 => "somParentNumResolve",
             3078 => "somBuildClass",
+            3079 => "somDataResolveChk",
             3080 => "WrpSomMalloc",
             3081 => "WrpSomCalloc",
             3082 => "WrpSomRealloc",

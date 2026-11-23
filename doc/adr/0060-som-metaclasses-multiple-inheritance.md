@@ -96,3 +96,7 @@ Stage 1's tokens could not serve two parents:
   - IBM's ordinals and layouts;
   - `SOMU`, the interface repository, DSOM;
   - the Workplace Shell classes.
+
+## Addendum (2026-11-23): `somDataResolve` and an unknown token
+
+IBM's SOM Programming Reference contradicts "an unknown token gives 0": `somDataResolve` treats an object without the token's data as a runtime error, and `somDataResolveChk` is the form that returns NULL. Warpine now raises `SOMERROR_BadArgument` (20199, fatal) through `SOMError`; the code is Warpine's choice, as the Reference names none. `somDataResolveChk` is exported by name at Warpine's ordinal 3079 (ADR-0071), since IBM's is unknown.

@@ -87,3 +87,7 @@ osFree is credited in the README's sources, in this record, and in source commen
     - `prefixed_and_va_list_printing`;
   - `samples/som_ordinal_test`: 26 checks of imports by number;
   - `test_som_samples_run_on_the_som_runtime`: the by-name samples, unchanged.
+
+## Addendum (2026-11-23): a replaced `SOMClassInitFuncName`
+
+Class loading now calls the procedure in `SOMClassInitFuncName`, a program's replacement included, and passes the name it returns to `SOMLoadModule` (ADR-0062, addendum). The limitation above and its unverified entry no longer apply.

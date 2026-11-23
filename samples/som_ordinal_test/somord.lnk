@@ -39,3 +39,4 @@ import somDataResolve          SOM.47
 import somSetOutChar           SOM.somSetOutChar
 import somClassResolve         SOM.somClassResolve
 import somIsObj                SOM.somIsObj
+import somDataResolveChk       SOM.somDataResolveChk

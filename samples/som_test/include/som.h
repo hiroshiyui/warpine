@@ -84,6 +84,7 @@ SOMEXTERN somMethodProc * SOMLINK somResolve( SOMObject *obj, somMToken method )
 SOMEXTERN somMethodProc * SOMLINK somResolveByName( SOMObject *obj, char *name );
 SOMEXTERN somMethodProc * SOMLINK somClassResolve( SOMClass *cls, somMToken method );
 SOMEXTERN void          * SOMLINK somDataResolve( SOMObject *obj, somDToken data );
+SOMEXTERN void          * SOMLINK somDataResolveChk( SOMObject *obj, somDToken data );
 SOMEXTERN Environment   * SOMLINK somGetGlobalEnvironment( void );
 SOMEXTERN somId           SOMLINK somIdFromString( zString s );
 SOMEXTERN zString         SOMLINK somStringFromId( somId id );

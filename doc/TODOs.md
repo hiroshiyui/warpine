@@ -53,9 +53,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 
 - [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
 - [ ] **Bugs: Warpine contradicts the Reference**:
-  - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: no major / minor version check (the rule of `somCheckVersion`); the init function is always "SOMInitModule" rather than the `SOMClassInitFuncName` variable (through `somGetInitFunction`); internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
-  - the default `SOMLoadModule` succeeds when a DLL has neither `SOMInitModule` nor `<Class>NewClass`; it must fail;
-  - `somDataResolve` with an unknown token returns 0; it must raise an error (`somDataResolveChk` is the quiet variant);
+  - `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: internal calls instead of the `somLocateClassFile` → `somFindClsInFile` → `somLoadClassFile` methods, so a class manager's overrides never run;
   - `somBuildClass` calls `somClassReady`, `somNew` and `somRegisterClass` internally, so a metaclass's or class manager's overrides never run;
   - `somPrintSelf` and `somDumpSelf` write to standard output, not through `SOMOutCharRoutine`; `somDumpSelf`'s layout is an opening line, the `somDumpSelfInt` lines and a closing `}`, each indented 2 blanks per level;
   - `somUnregisterClass` and `somUnloadClassFile` do not free the class object; `somUnloadClassFile` on an unregistered class must raise an error, and `somUnregisterClass` of a loaded class unloads its group;
@@ -67,7 +65,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - `somInitMIClass` does not record the class's version.
 - [ ] **Missing, documented by the Reference**:
   - environments and exceptions: `somSetException`, `somExceptionId` / `somExceptionValue` / `somExceptionFree`, `somEnvironmentEnd`, `somMainProgram`;
-  - `somDataResolveChk`;
   - the `somRenew` family (`somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero`): objects in the caller's memory;
   - introspection: `somGetParents`, `_get_somInstanceDataOffsets`, `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetNthMethodData`, `somGetMethodData`, `somGetMethodDescriptor`;
   - the class manager: `somGetInitFunction`, `somGetRelatedClasses`, `somSubstituteClass`, `somMergeInto`;
@@ -77,7 +74,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - the SDK has no SOM headers: the `SOM_*` macros (`SOM_MainProgram`, `SOM_InitEnvironment`, `SOM_UninitEnvironment`, `SOM_Expect`, `SOM_WarnMsg`, …) for GCC / clang programs.
 - [ ] **Settled by the Reference — update the ADRs and `doc/unverified.md`**:
   - confirmed: 2 blanks per `somPrefixLevel` level; the `<Class>NewClass` fallback after `SOMInitModule`; `SOMInitModule(major, minor, className)`; a class descends from itself; `somNew` = `somNewNoInit` + `somDefaultInit`; a requested version 0.0 matches any; the default `SOMError` ends the process on severity 9 (only its message text and exit code stay Warpine's); `somPrintSelf`'s text; `somGetSize`; `somLocateClassFile` returning the class name without `dllname`;
-  - to correct: `SOMERROR_NotImplementedYet` (20171) ends in 1, the *Ignore* severity, not a warning; ADR-0060's "unknown data token gives 0" and ADR-0070's "SOMInitModule even after a replaced `SOMClassInitFuncName`" are contradicted.
+  - to correct: `SOMERROR_NotImplementedYet` (20171) ends in 1, the *Ignore* severity, not a warning; (ADR-0060's "unknown data token gives 0" and ADR-0070's "SOMInitModule even after a replaced `SOMClassInitFuncName`" are corrected in their addenda).
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
   - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; Free Pascal's LGPL `som.pas` (not used so far) or the rights holders are the routes left;
   - Stage B2/B3 is on hold (decided 2026-11-20) until IBM-built binaries can load (ordinals 48+) or a source describes the control-block protocol; neither the OS/2 Reference nor the SOMobjects 3.0 *Programmer's Guide* Vol. I does (checked 2026-11-23: semantics and the generated stubs' use only, no fields or macro expansions), so it may need a design of Warpine's own (an ADR): the SOM Programming Guide ("Initializing and Uninitializing Objects") gives the semantics — each class's initializer exactly once, in a left-to-right visit of `directinitclasses` (default: the parents); `somDefaultInit` calls a legacy `somInit`; `somDestruct` runs the class's own clean-up, then its ancestors' — and the Toolkit headers give `somInitCtrl` / `somInitInfo` / `somDestructInfo` / `somAssignInfo`, but neither shows how generated `BeginInitializer` / `Init_<Ancestor>_…` / `EndDestructor` code indexes the mask and info arrays or turns a null `ctrl` into a block;

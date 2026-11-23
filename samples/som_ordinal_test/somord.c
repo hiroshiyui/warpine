@@ -222,6 +222,15 @@ int main( void )
     _somOverrideSMethod( tidy, somIdFromString( "somDestruct" ), (somMethodProc *)tidy_destruct );
     _somClassReady( tidy );
     obj = _somNew( tidy );
+    /* somDataResolveChk: NULL for data the object lacks (somDataResolve
+     * would raise an error); somFindClass checks the version. */
+    check( "somDataResolveChk: its own data",
+           somDataResolveChk( obj, _somGetInstanceToken( tidy ) ) != NULL, 1 );
+    check( "somDataResolveChk: a SOMClass part it lacks",
+           somDataResolveChk( obj, _somGetInstanceToken( SOMClassClassData.classObject ) ) == NULL, 1 );
+    check( "somFindClass: the version met", _somFindClass( mgr, somIdFromString( "Tidy" ), 1, 0 ) == tidy, 1 );
+    check( "somFindClass: a newer major version",
+           _somFindClass( mgr, somIdFromString( "Tidy" ), 2, 0 ) == NULL, 1 );
     _somFree( obj );
     check( "somFree calls the class's somDestruct", destruct_calls, 1 );
     check( "... with doFree set", destruct_free, 1 );

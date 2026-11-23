@@ -818,7 +818,7 @@ What they do:
 - Functions (`_System`):
   - `somEnvironmentNew()` starts the runtime and returns `SOMClassMgrObject`;
   - `somResolve(obj, token)` / `somResolveByName(obj, name)` return the procedure of a method for an object, `somClassResolve(class, token)` for a class (parent calls);
-  - `somDataResolve(obj, token)` the address of a class's instance data in an object;
+  - `somDataResolve(obj, token)` the address of a class's instance data in an object (an object without that data raises `SOMERROR_BadArgument`, 20199); `somDataResolveChk(obj, token)` (Warpine's 3079, by name) returns 0 instead;
   - `somGetGlobalEnvironment()`, `somIdFromString` / `somStringFromId` / `somCompareIds`, `somIsObj`;
   - `somPrintf(fmt, …)` formats as C's `printf` to standard output (at most nine argument words, 64 KB);
   - `<Class>NewClass(major, minor)` for `SOMObject`, `SOMClass` and `SOMClassMgr` returns the class object (made with the runtime; every version is accepted);
@@ -837,7 +837,7 @@ What they do:
   - `SOMMalloc`, `SOMCalloc`, `SOMRealloc`, `SOMFree`: variables holding the runtime's allocation procedures (zeroed blocks from the runtime's heap), called through as `SOMMalloc(n)`;
   - `SOM_TraceLevel`, `SOM_WarnLevel`, `SOM_AssertLevel` (`long`, 0);
   - `SOMOutCharRoutine(c)` — `somPrintf` writes its output through it, one character per call; `somSetOutChar(routine)` sets it (0: the default, which writes to standard output);
-  - `SOMLoadModule(className, fileName, functionName, major, minor, &handle)` — loads a class's DLL, runs its `_DLL_InitTerm`, calls its `functionName` (`SOMInitModule(major, minor, className)`) or else `<className>NewClass(major, minor)`, stores the module handle and returns 0 (`ERROR_MOD_NOT_FOUND`, `ERROR_INIT_ROUTINE_FAILED`);
+  - `SOMLoadModule(className, fileName, functionName, major, minor, &handle)` — loads a class's DLL, runs its `_DLL_InitTerm`, calls its `functionName` (`SOMInitModule(major, minor, className)`) or else `<className>NewClass(major, minor)`, stores the module handle and returns 0 (`ERROR_MOD_NOT_FOUND`, `ERROR_INIT_ROUTINE_FAILED`, or `ERROR_PROC_NOT_FOUND` when the DLL has neither entry point; it stays loaded);
   - `SOMDeleteModule(handle)` — `DosFreeModule`;
   - `SOMError(code, file, line)` — writes `SOM error <code> in file <file>, line <line>` to standard error and ends the process when the code's last digit is 9.
 
@@ -845,7 +845,7 @@ What they do:
 - Root classes:
   - `SOMObject`: `somInit`, `somUninit`, `somFree`, `somGetClass`, `somGetClassName`, `somGetSize`, `somIsA`, `somIsInstanceOf`, `somRespondsTo`, `somPrintSelf` (`{An instance of class C at address A}`), `somDumpSelf(level)` (that line, then `somDumpSelfInt`), `somDumpSelfInt`, `somDefaultInit(ctrl)` (calls `somInit`; the control block is not used), `somDestruct(doFree, ctrl)` (calls `somUninit`, then frees the object if `doFree`);
   - `SOMClass`: `somNew`, `somNewNoInit`, `somGetName`, `somGetParent`, `somGetInstanceSize`, `somGetInstancePartSize`, `somGetInstanceToken`, `somGetNumMethods`, `somGetNumStaticMethods`, `somDescendedFrom`, `somInitClass`, `somAddStaticMethod`, `somOverrideSMethod`, `somClassReady`, `somGetMethodToken`, `somSupportsMethod`, `somInitMIClass` (several parents, given as a sequence);
-  - `SOMClassMgr`: `somFindClass(id, major, minor)` (a registered class, else its DLL loaded through `SOMLoadModule`: the file named after the class), `somFindClsInFile(id, major, minor, file)`, `somLocateClassFile` (the class's name), `somLoadClassFile` (loads even a registered class), `somClassFromId` (registered classes only), `somRegisterClass`, `somUnregisterClass(cls)` (forgets the class: 0, or 1 if it was not registered), `somUnloadClassFile(cls)` (forgets every class the module of `cls` made, whose objects then resolve no method, and frees the module through `SOMDeleteModule`; 1 for a class no module loaded by the class manager made).
+  - `SOMClassMgr`: `somFindClass(id, major, minor)` (a registered class, else its DLL loaded through `SOMLoadModule`: the file named after the class, the function the one `SOMClassInitFuncName` returns — a program's replacement is called; either way NULL when the class does not meet the version, by `somCheckVersion`'s rule), `somFindClsInFile(id, major, minor, file)`, `somLocateClassFile` (the class's name), `somLoadClassFile` (loads even a registered class), `somClassFromId` (registered classes only), `somRegisterClass`, `somUnregisterClass(cls)` (forgets the class: 0, or 1 if it was not registered), `somUnloadClassFile(cls)` (forgets every class the module of `cls` made, whose objects then resolve no method, and frees the module through `SOMDeleteModule`; 1 for a class no module loaded by the class manager made).
 - Building a class (as the C bindings of `samples/som_test` do):
   1. `_somNew(WrpSomMetaclassFor(requestedMetaclass, parent))` — a class object is an instance of its metaclass and carries the metaclass's instance data; the metaclass's `somInit` runs on it;
   2. `_somInitClass(cls, name, parent, instanceDataSize, maxMethods, major, minor)` or `_somInitMIClass`;
@@ -857,7 +857,7 @@ What they do:
 - `somBuildClass(inheritVars, sci, major, minor)` (by name; ADR-0073) builds the class a `somStaticClassInfo` describes, as code from IBM's SOM compiler asks: layout versions 1–4; returns the class `ClassData.classObject` already names; parents and an explicit metaclass by name (`SOMERROR_NoParentClass` 20219, `SOMERROR_NoMetaClass` 20229; a malformed structure `SOMERROR_BadArgument` 20199); static methods (`smt`, and `mt`'s static, dynamic and nonstatic ones) with their tokens written into `ClassData`; overrides by name (`omt`, a scoped `Class::method` by its last part) and by token (`mt` action 6); a parent's implementation (`imt`, parents from 1); public data tokens (`nit`: the field at `basisForDataOffset − nitReferenceBase`, resolved by `somDataResolve`); procedure and `va_list` entries (`pmt`, `vft`); then `ClassData.classObject`, `CClassData.parentMtab` (a `somParentMtabStruct`) and `instanceDataToken`, and last the class init function. `inheritVars`, initializers, direct-init classes, DirectToSOM classes, migrated methods and `somDynamicSCI` are not used yet.
 - C++ (`samples/som_test/include/som.xh`, ADR-0061): a SOM class is a C++ class without virtual functions; `new Cls` makes the object with `somNewNoInit` and its constructor initializes it once with `somDefaultInit`; `delete` calls `somDestruct(1)`. Methods dispatch through SOM, so an override is reached through a base-class pointer. Objects on the stack or in static storage are not SOM objects.
 
-- Tokens: a method token names a method and its introducing class, and works on every descendant; `somGetInstanceToken` returns the class itself, and `somDataResolve(obj, cls)` finds that class's data in any descendant's object (0 if it has none).
+- Tokens: a method token names a method and its introducing class, and works on every descendant; `somGetInstanceToken` returns the class itself, and `somDataResolve(obj, cls)` finds that class's data in any descendant's object (`somDataResolveChk`: 0 if it has none).
 - Multiple inheritance: a class's methods start with its first parent's; later parents add what it lacks, and a later parent's override replaces an implementation the earlier ones left at the introducer's. Each ancestor's data appears once. `somGetParent` returns the first parent.
 
 Module names: imports and plain names given to `DosLoadModule` or SOM are searched beside the program and in `C:\OS2\DLL`; a full OS/2 path (`C:\LIBS\X.DLL`) is resolved through Warpine's drives, inside them only, and the module is named after its file (`X`). Exports by name are found in both names tables of a DLL. A program whose DLL's `_DLL_InitTerm` fails at start ends with `ERROR_INIT_ROUTINE_FAILED` (295) before it runs. Programs run at ring 3, as on OS/2, 32-bit and 16-bit alike (ADR-0113): privileged instructions (`CLI`, `HLT`, port I/O, moves to control registers …) raise `XCPT_PRIVILEGED_INSTRUCTION`, and a program cannot reach its page tables, the GDT, IDT or its TSS (`XCPT_ACCESS_VIOLATION`), nor have an API call write them for it (the call fails as with any address it cannot write). A process can have at most 738 threads at once (ADR-0115); `DosCreateThread` beyond that fails with `ERROR_MAX_THRDS_REACHED` (164), as at the session's `THREADS=` limit. `DosAllocMem` memory is zero, also when reused. It follows OS/2's page states (ADR-0114): without `PAG_COMMIT` its pages are reserved and fault until `DosSetMem` commits them (zeroed); `PAG_READ` without `PAG_WRITE` makes them read-only; `PAG_DECOMMIT` takes them back; `PAG_GUARD` makes guard pages, whose first touch raises `XCPT_GUARD_PAGE_VIOLATION` (continuable; with no handler the program goes on). `DosQueryMem` reports the run of pages with one state, `PAG_BASE` on an allocation's first page; on other memory it reports what the page tables hold: `PAG_FREE` for free pages, committed, read-only and `PAG_EXECUTE` for a program's code. A program's or DLL's object without the LX write flag (its code, its resources) is read-only: writing it raises `XCPT_ACCESS_VIOLATION`, also at ring 0. Memory freed with `DosFreeMem`, and memory never allocated, raises `XCPT_ACCESS_VIOLATION` when touched. `DosSetMem` on memory `DosAllocMem` did not allocate changes nothing. A thread's stack is sparse (`STACK_SPARSE`, the default): committed as it is used, and `XCPT_UNABLE_TO_GROW_STACK` near its bottom; `STACK_COMMITTED` commits it whole. The main thread's stack, the LX header's `STACKSIZE` below the entry ESP, is sparse the same way, and its TIB holds its bounds; `DosFreeModule` of a handle of no loaded module returns `ERROR_INVALID_HANDLE`.
@@ -1160,7 +1160,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 479 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 480 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1181,13 +1181,13 @@ Counts are taken from the static registry (`api_registry.rs`, 479 entries) and t
 | PMCTLS (standard dialogs, circular slider) | registry | 6 | 0 | 6 |
 | WARPINE (Warpine's own extensions) | registry | 10 | 0 | 10 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
-| SOM (the SOM runtime kernel) | registry | 113 | 3 | 116 |
+| SOM (the SOM runtime kernel) | registry | 114 | 3 | 117 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **873** | **21** | **894** |
+| **Total** | | **874** | **21** | **895** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

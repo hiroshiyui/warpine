@@ -346,6 +346,10 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - every version accepted by `<Class>NewClass`;
   - two blanks per `somPrefixLevel` level;
   - `somConstructClass`, `somSaveMetrics`, `somWriteMetrics` doing nothing.
+- **SOM class loading and data resolution** (ADR-0060, ADR-0062 addenda):
+  - `SOMERROR_BadArgument` (20199) as `somDataResolve`'s error for an object without the token's data; `somDataResolveChk` at ordinal 3079;
+  - `ERROR_PROC_NOT_FOUND` from the default `SOMLoadModule` for a DLL with neither entry point, the DLL staying loaded;
+  - an empty or unreadable name from a replaced `SOMClassInitFuncName` falling back to "SOMInitModule".
 - **`somBuildClass`** (ADR-0073): `inheritVars` unused; dynamic / nonstatic methods added as static; scoped override names by their last part; `imt` parents from 1; only the first parent's metaclass considered; the field data token's form; `dataAlignment` / `somDynamicSCI` unused; the class init function called last.
 - **SOM layouts** (ADR-0072):
   - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;

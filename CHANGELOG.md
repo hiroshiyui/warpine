@@ -28,9 +28,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **The experimental modern theme** (ADR-0121, withdrawing ADR-0118): `WARPINE_THEME`, rounded and shadowed frames, menus and controls and their compositor shaping leave `main` until the PM widgets are done; the code is kept on the branch `feature/modern-theme`. The desktop protocol drops `Item::rounded` (version 12).
 
 ### Fixed
+- **SOM's `somFindClass` checks versions and asks `SOMClassInitFuncName`**: a class, registered or just loaded, that does not meet the major / minor version asked for gives NULL (by `somCheckVersion`'s rule); a program's own `SOMClassInitFuncName` is called and the name it returns is the initialization function `SOMLoadModule` calls. `somFindClsInFile` and `somLoadClassFile` do the same.
+- **The default `SOMLoadModule` fails a DLL with neither entry point**: without `SOMInitModule` (or the named function) and `<Class>NewClass` it returns `ERROR_PROC_NOT_FOUND`; it returned success.
+- **SOM's `somDataResolve` raises an error** (`SOMERROR_BadArgument`) for an object without the token's data, as the Reference says; it returned 0. `somDataResolveChk` (SOM 3079, by name) is the quiet form that returns 0. `som_ordinal_test` checks `somDataResolveChk` and the version check (38 checks).
 - **SOM's `somFree` runs the class's destructor**: it calls the object's `somDestruct` (doFree set, no control block), as the SOM Programming Reference says; a class that overrides `somDestruct` had its clean-up skipped. `somDeallocate` of an object (a destructor freeing it) also ends it as an object.
 - **SOM's `somIdFromString` gives the caller an id of its own**, which the caller owns and may free with `SOMFree`; it handed out the registry's shared id, so freeing it as the Reference allows corrupted later lookups.
-- **SOM's `somGetNumStaticMethods` counts inherited methods**, as the Reference says; it counted only the class's own. `som_ordinal_test` checks all three (34 checks).
+- **SOM's `somGetNumStaticMethods` counts inherited methods**, as the Reference says; it counted only the class's own. `som_ordinal_test` checks all three.
 
 ## [0.0.14] - 2026-11-23
 

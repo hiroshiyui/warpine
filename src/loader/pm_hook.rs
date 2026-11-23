@@ -353,11 +353,16 @@ pub(crate) enum ChainThen {
     /// return from RexxStart.
     Rexx { session: u32 },
     /// `somFindClass` (or a sibling) loaded the file of class `id`
-    /// (`som.rs`): free the strings at `block`, return the class.
-    SomClassLoaded { id: u32, block: u32, inits: u32, first: u32 },
+    /// (`som.rs`): free the strings at `block`, return the class if it
+    /// meets version `major`.`minor`; `how` the file was loaded.
+    SomClassLoaded { id: u32, block: u32, how: super::som::SomLoad, first: u32, major: u32, minor: u32 },
     /// The default `SOMLoadModule` loaded module `hmod`: its handle to
-    /// `phandle` when its `inits` `_DLL_InitTerm`s succeeded.
-    SomModuleLoaded { hmod: u32, phandle: u32, inits: u32 },
+    /// `phandle` when its `inits` `_DLL_InitTerm`s succeeded and it has an
+    /// entry point (`entry`).
+    SomModuleLoaded { hmod: u32, phandle: u32, inits: u32, entry: bool },
+    /// The program's `SOMClassInitFuncName` returned the initialization
+    /// function's name: go on finding class `id` (`som.rs`).
+    SomFindClassNamed { id: u32, major: u32, minor: u32, file: u32 },
     /// `WM_HITTEST` asked of `hwnd` for the pointer event at the head of
     /// the input queue (`pm_input.rs`): record the answer, then go on as
     /// `after` says.
@@ -481,8 +486,12 @@ impl Loader {
             ChainThen::FreeLibrary { hmod } => ChainEnd::Return(self.free_library_done(hmod)),
             ChainThen::Rexx { session } => self.rexx_handler_returned(session, chain.last),
             ChainThen::StartProcess => self.start_inits_done(chain),
-            ChainThen::SomClassLoaded { id, block, inits, first } => ChainEnd::Return(self.som_class_loaded(id, block, inits, first, chain)),
-            ChainThen::SomModuleLoaded { hmod, phandle, inits } => ChainEnd::Return(self.som_module_loaded(hmod, phandle, inits, chain)),
+            ChainThen::SomClassLoaded { id, block, how, first, major, minor } =>
+                ChainEnd::Return(self.som_class_loaded(id, block, how, first, (major, minor), chain)),
+            ChainThen::SomModuleLoaded { hmod, phandle, inits, entry } =>
+                ChainEnd::Return(self.som_module_loaded(hmod, phandle, inits, entry, chain)),
+            ChainThen::SomFindClassNamed { id, major, minor, file } =>
+                self.som_find_class_named(chain, id, major, minor, file),
             ChainThen::HitTest { hwnd, after } => self.hit_test_done(hwnd, after, chain),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
                 self.sent_done(id, hwnd, after, finish, calls, chain),

@@ -153,6 +153,9 @@ pub const SOM_SET_OUT_CHAR: u32 = 3076;
 pub const SOM_PARENT_NUM_RESOLVE: u32 = 3077;
 /// `somBuildClass(inheritVars, sci, major, minor)` (SOM 2.x; ADR-0073).
 pub const SOM_BUILD_CLASS: u32 = 3078;
+/// `somDataResolveChk(obj, dToken)`: `somDataResolve` that returns NULL
+/// instead of raising an error.
+pub const SOM_DATA_RESOLVE_CHK: u32 = 3079;
 /// The procedures the runtime variables `SOMMalloc` … `SOMFree` hold.
 pub const SOM_MALLOC: u32 = 3080;
 pub const SOM_CALLOC: u32 = 3081;
@@ -287,6 +290,16 @@ pub const MAX_ALLOC: u32 = 64 << 20;
 pub const MAX_BLOCKS: usize = 1 << 20;
 /// Longest `somPrintf` output, in bytes.
 pub const MAX_PRINT: usize = 65536;
+/// How a class's file was loaded, and so how to read the calls' results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SomLoad {
+    /// The default `SOMLoadModule`: `inits` `_DLL_InitTerm`s first, then
+    /// the entry point, if the module has one (`entry`).
+    Default { inits: u32, entry: bool },
+    /// A program's own `SOMLoadModule`: its result last, 0 for success.
+    Program,
+}
+
 /// The initialization function `somFindClass` asks `SOMLoadModule` to
 /// call in a class's DLL (else `<Class>NewClass`).
 pub const SOM_INIT_MODULE: &str = "SOMInitModule";
@@ -627,6 +640,9 @@ const DATA_ALIGNMENT: u32 = 4;
 /// The SOM error codes the kernel raises (SOM Programming Guide, "SOM
 /// Kernel Error Codes": 20000 + 10 × number + severity).
 pub const SOMERROR_METHOD_NOT_FOUND: u32 = 20039;
+/// `SOMERROR_BadVersion`: a class's version does not meet the one asked
+/// for (*SOMobjects Messages, Codes and Diagnosis*).
+pub const SOMERROR_BAD_VERSION: u32 = 20079;
 pub const SOMERROR_TEST_OBJECT_FAILURE: u32 = 20109;
 /// `SOMERROR_NotImplementedYet` (20179) as a warning: Warpine's choice,
 /// so a program calling a method Warpine lacks goes on.
@@ -1064,8 +1080,9 @@ impl Loader {
         })
     }
 
-    /// `somDataResolve`: where class `token`'s instance data lies in `obj`.
-    fn som_data_resolve(&self, obj: u32, token: u32) -> u32 {
+    /// `somDataResolve` / `somDataResolveChk`: where class `token`'s
+    /// instance data lies in `obj`; `None` when it has none there.
+    fn som_data_resolve(&self, obj: u32, token: u32) -> Option<u32> {
         let cls = self.som_class_of(obj);
         let off = cls.and_then(|c| {
             let rt = self.shared.som.lock_or_recover();
@@ -1076,13 +1093,16 @@ impl Loader {
                 None => k.offset_of(token),
             }
         });
-        match off {
-            Some(off) => obj.wrapping_add(off),
-            None => {
-                log::warn!("SOM: no instance data {token:#x} in object {obj:#x}");
-                0
-            }
-        }
+        if off.is_none() { log::warn!("SOM: no instance data {token:#x} in object {obj:#x}"); }
+        off.map(|off| obj.wrapping_add(off))
+    }
+
+    /// Whether class `cls` meets version `major`.`minor`: the same major
+    /// version and at least the minor one; 0.0 asks for none, and a class
+    /// without a version accepts any (ADR-0072).
+    fn som_version_ok(&self, cls: u32, (major, minor): (u32, u32)) -> bool {
+        let v = self.shared.som.lock_or_recover().classes.get(&cls).map_or((0, 0), |c| c.version);
+        (major == 0 && minor == 0) || v == (0, 0) || (v.0 == major && v.1 >= minor)
     }
 
     /// `somIdFromString`: the one `somId` of `name` (a pointer to a pointer
@@ -1631,10 +1651,12 @@ impl Loader {
     /// the module, the `_DLL_InitTerm`s of it and the modules loaded with
     /// it, then its initialization function `func(major, minor,
     /// class_ptr)` or, without one, `<class>NewClass(major, minor)`.
-    /// Gives the module, the calls to make and how many of them are
-    /// `_DLL_InitTerm`s; or an OS/2 error.
+    /// Gives the module, the calls to make, how many of them are
+    /// `_DLL_InitTerm`s, and whether the module has either entry point
+    /// (without one the load fails, SOM Programming Reference); or an
+    /// OS/2 error.
     fn som_module_steps(&self, file: &str, func: Option<&str>, class: &str, class_ptr: u32,
-                        major: u32, minor: u32) -> Result<(u32, Vec<CallStep>, u32), u32> {
+                        major: u32, minor: u32) -> Result<(u32, Vec<CallStep>, u32, bool), u32> {
         let Some((module, path)) = self.find_module_file(file) else {
             log::warn!("SOM: no class file {file} for class {class}");
             return Err(super::constants::ERROR_MOD_NOT_FOUND);
@@ -1650,28 +1672,74 @@ impl Loader {
             let dlls = self.shared.dll_mgr.lock_or_recover();
             dlls.find_by_handle(hmod)?.exports_by_name.get(&name.to_ascii_uppercase()).copied()
         };
-        if let Some(addr) = func.and_then(export) {
+        let entry = if let Some(addr) = func.and_then(export) {
             steps.push(CallStep::hook(addr, vec![major, minor, class_ptr], false));
+            true
         } else if let Some(addr) = export(&format!("{class}NewClass")) {
             steps.push(CallStep::hook(addr, vec![major, minor], false));
-        }
-        Ok((hmod, steps, inits))
+            true
+        } else {
+            log::warn!("SOM: {file} has neither {} nor {class}NewClass", func.unwrap_or(SOM_INIT_MODULE));
+            false
+        };
+        Ok((hmod, steps, inits, entry))
     }
 
     /// `somFindClass` / `somFindClsInFile` / `somLoadClassFile`: class
-    /// `id` if it is registered (unless `load`), else loaded from `file`
-    /// (none: the class's name) through `SOMLoadModule`.
+    /// `id` if it is registered (unless `load`) and meets version
+    /// `major`.`minor`, else loaded from `file` (none: the class's name)
+    /// through `SOMLoadModule`. The initialization function is the one
+    /// `SOMClassInitFuncName` names: a program's own replacement is asked
+    /// first (SOM Programming Reference, `somGetInitFunction`).
     fn som_find_class(&self, vcpu: u32, id: u32, major: u32, minor: u32, file: Option<u32>, load: bool) -> ApiResult {
         let Some(name) = self.som_id_name(id) else { return ApiResult::Normal(0) };
-        if !load && let Some(&cls) = self.shared.som.lock_or_recover().by_name.get(&name) {
-            return ApiResult::Normal(cls);
+        // The lock is released before the version check takes it again.
+        let registered = if load { None } else { self.shared.som.lock_or_recover().by_name.get(&name).copied() };
+        if let Some(cls) = registered {
+            return ApiResult::Normal(self.som_version_checked(cls, &name, (major, minor)));
         }
-        let file = match file {
-            Some(p) => match self.som_name(p) { Some(f) => f, None => return ApiResult::Normal(0) },
-            None => name.clone(),
+        let file = file.unwrap_or(0);
+        let init_name = self.som_var(SOM_VAR_CLASS_INIT_FUNC_NAME);
+        if init_name != 0 && init_name != thunk(SOM_DEFAULT_CLASS_INIT_FUNC_NAME) {
+            let step = CallStep::hook(init_name, Vec::new(), false);
+            return self.start_chain(CallChain::new(vcpu, vec![step], false,
+                                                   ChainThen::SomFindClassNamed { id, major, minor, file }));
+        }
+        self.som_load_class(vcpu, id, &name, (major, minor), file, SOM_INIT_MODULE)
+    }
+
+    /// The program's `SOMClassInitFuncName` returned the name of the
+    /// initialization function (its result, a string): go on loading.
+    pub(crate) fn som_find_class_named(&self, chain: &CallChain, id: u32, major: u32, minor: u32, file: u32)
+        -> super::pm_hook::ChainEnd {
+        use super::pm_hook::ChainEnd;
+        let Some(name) = self.som_id_name(id) else { return ChainEnd::Return(0) };
+        let func = self.som_name(chain.last).filter(|f| !f.is_empty()).unwrap_or_else(|| SOM_INIT_MODULE.to_string());
+        match self.som_load_class(chain.tid, id, &name, (major, minor), file, &func) {
+            ApiResult::CallChain(c) => ChainEnd::Next(c),
+            ApiResult::Normal(v) => ChainEnd::Return(v),
+            other => { log::warn!("SOM: unexpected {other:?} loading {name}"); ChainEnd::Return(0) }
+        }
+    }
+
+    /// `cls`, found as class `name`, if it meets the version asked for;
+    /// else NULL (SOM Programming Reference, `somFindClass`).
+    fn som_version_checked(&self, cls: u32, name: &str, version: (u32, u32)) -> u32 {
+        if self.som_version_ok(cls, version) { return cls; }
+        log::warn!("SOM: class {name} does not meet version {}.{}", version.0, version.1);
+        0
+    }
+
+    /// Load the file of class `id` (`name`; `file`: a guest string, 0 for
+    /// the class's name) through `SOMLoadModule`, the initialization
+    /// function being `func`.
+    fn som_load_class(&self, vcpu: u32, id: u32, name: &str, (major, minor): (u32, u32), file: u32,
+                      func: &str) -> ApiResult {
+        let file = if file == 0 { name.to_string() } else {
+            match self.som_name(file) { Some(f) => f, None => return ApiResult::Normal(0) }
         };
         // A block for the strings and the module handle SOMLoadModule takes.
-        let strings = [name.as_str(), file.as_str(), SOM_INIT_MODULE];
+        let strings = [name, file.as_str(), func];
         let size = 4 + strings.iter().map(|s| s.len() as u32 + 1).sum::<u32>();
         let Some(block) = self.som_malloc(size) else { return ApiResult::Normal(0) };
         let mut at = block + 4;
@@ -1685,10 +1753,11 @@ impl Loader {
         let loader = self.som_var(SOM_VAR_LOAD_MODULE);
         let first = self.shared.som.lock_or_recover().ready_order.len() as u32;
         if loader == thunk(SOM_DEFAULT_LOAD_MODULE) {
-            match self.som_module_steps(&file, Some(SOM_INIT_MODULE), &name, ptrs[0], major, minor) {
-                Ok((hmod, steps, inits)) => {
+            match self.som_module_steps(&file, Some(func), name, ptrs[0], major, minor) {
+                Ok((hmod, steps, inits, entry)) => {
                     let _ = self.guest_write::<u32>(block, hmod);
-                    self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::SomClassLoaded { id, block, inits, first }))
+                    self.start_chain(CallChain::new(vcpu, steps, false,
+                        ChainThen::SomClassLoaded { id, block, how: SomLoad::Default { inits, entry }, first, major, minor }))
                 }
                 Err(_) => { self.som_free_mem(block); ApiResult::Normal(0) }
             }
@@ -1697,19 +1766,22 @@ impl Loader {
             // handle in the block's first word.
             let step = CallStep::hook(loader, vec![ptrs[0], ptrs[1], ptrs[2], major, minor, block], false);
             self.start_chain(CallChain::new(vcpu, vec![step], false,
-                                            ChainThen::SomClassLoaded { id, block, inits: u32::MAX, first }))
+                ChainThen::SomClassLoaded { id, block, how: SomLoad::Program, first, major, minor }))
         }
     }
 
     /// The calls loading a class's file returned: the class, if the
-    /// loading succeeded and made it (`inits` `_DLL_InitTerm`s first, or
-    /// `u32::MAX`: a program's `SOMLoadModule`, its result last).
+    /// loading succeeded (`how`) and made it.
     /// The classes that became ready since `first` came from the module
     /// whose handle is in the block's first word.
-    pub(crate) fn som_class_loaded(&self, id: u32, block: u32, inits: u32, first: u32, chain: &CallChain) -> u32 {
+    pub(crate) fn som_class_loaded(&self, id: u32, block: u32, how: SomLoad, first: u32, version: (u32, u32),
+                                   chain: &CallChain) -> u32 {
         let hmod = self.guest_read::<u32>(block).unwrap_or(0);
         self.som_free_mem(block);
-        let loaded = if inits == u32::MAX { chain.last == 0 } else { som_inits_ok(&chain.results, inits) };
+        let loaded = match how {
+            SomLoad::Program => chain.last == 0,
+            SomLoad::Default { inits, entry } => entry && som_inits_ok(&chain.results, inits),
+        };
         if loaded && hmod != 0 {
             let mut rt = self.shared.som.lock_or_recover();
             let made: Vec<u32> = rt.ready_order.iter().skip(first as usize).copied().collect();
@@ -1718,7 +1790,7 @@ impl Loader {
         let Some(name) = self.som_id_name(id) else { return 0 };
         let cls = self.shared.som.lock_or_recover().by_name.get(&name).copied();
         match (loaded, cls) {
-            (true, Some(cls)) => cls,
+            (true, Some(cls)) => self.som_version_checked(cls, &name, version),
             (true, None) => { log::warn!("SOM: the class file of {name} did not make the class"); 0 }
             (false, _) => { log::warn!("SOM: loading the class file of {name} failed"); 0 }
         }
@@ -1726,10 +1798,13 @@ impl Loader {
 
     /// The default `SOMLoadModule` made its calls: the module handle goes
     /// to `phandle` and 0 is returned when every `_DLL_InitTerm` succeeded.
-    pub(crate) fn som_module_loaded(&self, hmod: u32, phandle: u32, inits: u32, chain: &CallChain) -> u32 {
+    pub(crate) fn som_module_loaded(&self, hmod: u32, phandle: u32, inits: u32, entry: bool, chain: &CallChain) -> u32 {
         if !som_inits_ok(&chain.results, inits) {
             return super::constants::ERROR_INIT_ROUTINE_FAILED;
         }
+        // Neither the initialization function nor <Class>NewClass: the
+        // load fails (the module stays loaded, Warpine's choice).
+        if !entry { return super::constants::ERROR_PROC_NOT_FOUND; }
         if phandle != 0 { let _ = self.guest_write::<u32>(phandle, hmod); }
         0
     }
@@ -1760,7 +1835,14 @@ impl Loader {
                 ok(rt.token_of(cls, &name).and_then(|t| rt.class_method(cls, t)).unwrap_or(0))
             }
             SOM_CLASS_RESOLVE => ok(self.shared.som.lock_or_recover().class_method(a[0], a[1]).unwrap_or_else(|| thunk(SOM_METHOD_ERROR))),
-            SOM_DATA_RESOLVE => ok(self.som_data_resolve(a[0], a[1])),
+            // somDataResolve: an object without the token's data is a
+            // runtime error (SOM Programming Reference); which error is
+            // Warpine's choice. somDataResolveChk returns NULL instead.
+            SOM_DATA_RESOLVE => match self.som_data_resolve(a[0], a[1]) {
+                Some(at) => ok(at),
+                None => self.som_raise(vcpu, SOMERROR_BAD_ARGUMENT, 0, 0, 0),
+            },
+            SOM_DATA_RESOLVE_CHK => ok(self.som_data_resolve(a[0], a[1]).unwrap_or(0)),
             SOM_GET_GLOBAL_ENVIRONMENT => ok(self.shared.som.lock_or_recover().env),
             SOM_ID_FROM_STRING => ok(self.som_name(a[0]).map_or(0, |n| self.som_caller_id(&n))),
             SOM_STRING_FROM_ID => ok(if a[0] == 0 { 0 } else { self.guest_read::<u32>(a[0]).unwrap_or(0) }),
@@ -1780,8 +1862,8 @@ impl Loader {
                 };
                 let func = if a[2] == 0 { None } else { self.som_name(a[2]) };
                 match self.som_module_steps(&file, func.as_deref(), &class, a[0], a[3], a[4]) {
-                    Ok((hmod, steps, inits)) => self.start_chain(CallChain::new(vcpu, steps, false,
-                        ChainThen::SomModuleLoaded { hmod, phandle: a[5], inits })),
+                    Ok((hmod, steps, inits, entry)) => self.start_chain(CallChain::new(vcpu, steps, false,
+                        ChainThen::SomModuleLoaded { hmod, phandle: a[5], inits, entry })),
                     Err(e) => ok(e),
                 }
             }
@@ -1962,13 +2044,7 @@ impl Loader {
                 if let Some(c) = self.shared.som.lock_or_recover().classes.get_mut(&a[0]) { c.version = (a[5], a[6]); }
                 ok(r)
             }
-            3317 => {
-                // somCheckVersion(major, minor): the same major version and
-                // at least the minor one; 0.0 asks for none, and a class
-                // without a version accepts any (ADR-0072).
-                let v = self.shared.som.lock_or_recover().classes.get(&a[0]).map_or((0, 0), |c| c.version);
-                ok(((a[1] == 0 && a[2] == 0) || v == (0, 0) || (v.0 == a[1] && v.1 >= a[2])) as u32)
-            }
+            3317 => ok(self.som_version_ok(a[0], (a[1], a[2])) as u32), // somCheckVersion(major, minor)
             3318 => {
                 // somGetVersionNumbers(&major, &minor).
                 let v = self.shared.som.lock_or_recover().classes.get(&a[0]).map_or((0, 0), |c| c.version);
@@ -2194,7 +2270,12 @@ mod tests {
         let obj = finish(&l, r);
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, tok])), 0x0060_0000);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, cls])), obj + 4);
-        assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, som_class])), 0, "not its ancestor");
+        assert!(
+            matches!(call(&l, SOM_DATA_RESOLVE, &[obj, som_class]), ApiResult::ExitProcess(SOMERROR_BAD_ARGUMENT)),
+            "not its ancestor: SOMError"
+        );
+        assert_eq!(ok(call(&l, SOM_DATA_RESOLVE_CHK, &[obj, som_class])), 0, "the checking form answers NULL");
+        assert_eq!(ok(call(&l, SOM_DATA_RESOLVE_CHK, &[obj, cls])), obj + 4);
         assert_eq!(ok(call(&l, SOM_CLASS_RESOLVE, &[som_object, TOKEN_SOM_INIT])), thunk(3200), "the parent's somInit");
         assert_eq!(l.read_guest_string(ok(call(&l, 3204, &[obj]))), "Hello");
         let id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3100, "sayHello")]));
@@ -2356,6 +2437,72 @@ mod tests {
         assert!(!som_inits_ok(&[1, 0, 7], 2));
     }
 
+    /// somFindClass answers NULL for a class that does not meet the
+    /// version asked for, registered or just loaded; a program's own
+    /// SOMClassInitFuncName names the initialization function; the default
+    /// SOMLoadModule fails a module with neither entry point.
+    #[test]
+    fn class_loading_checks_versions_and_init_names() {
+        use super::super::pm_hook::ChainEnd;
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
+        let id = |n: &str, at: u32| ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, at, n)]));
+        // A class of version major.minor, made as somInitClass gives it.
+        let versioned = |name: &str, major: u32, minor: u32| {
+            let cls = finish(&l, call(&l, 3300, &[som_class]));
+            ok(call(&l, 3310, &[cls, put(&l, 0x3400, name), som_object, 0, 0, major, minor]));
+            ok(call(&l, 3313, &[cls]));
+            cls
+        };
+        let known = versioned("Versioned", 1, 2);
+        let vid = id("Versioned", 0x3600);
+        assert_eq!(ok(call(&l, 3400, &[mgr, vid, 0, 0])), known);
+        assert_eq!(ok(call(&l, 3400, &[mgr, vid, 1, 1])), known, "1.2 meets 1.1");
+        assert_eq!(ok(call(&l, 3400, &[mgr, vid, 1, 3])), 0, "registered, too old: NULL");
+        assert_eq!(ok(call(&l, 3400, &[mgr, vid, 2, 0])), 0, "another major version: NULL");
+        // A program's SOMLoadModule makes a class too old for the request.
+        let file = put(&l, 0x3640, "OLDFILE");
+        l.guest_write::<u32>(l.som_data_address(SOM_VAR_LOAD_MODULE).unwrap(), 0x0064_0000).unwrap();
+        let old = id("Old", 0x3660);
+        let r = call(&l, 3405, &[mgr, old, 3, 0, file]);
+        versioned("Old", 2, 0);
+        assert_eq!(finish(&l, r), 0, "loaded, too old: NULL");
+        // A program's SOMClassInitFuncName is asked first; the name it
+        // returns goes to SOMLoadModule.
+        l.guest_write::<u32>(l.som_data_address(SOM_VAR_CLASS_INIT_FUNC_NAME).unwrap(), 0x0066_0000).unwrap();
+        let fresh = id("Fresh", 0x3680);
+        let ApiResult::CallChain(mut c) = call(&l, 3400, &[mgr, fresh, 0, 0]) else { panic!() };
+        assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0066_0000, .. })));
+        c.steps.pop_front();
+        c.returned(put(&l, 0x36A0, "MyClassInit"), false);
+        let ChainEnd::Next(next) = l.finish_chain(&c) else { panic!() };
+        let Some(CallStep::Guest { proc_addr: 0x0064_0000, args, .. }) = next.steps.front() else { panic!() };
+        assert_eq!(l.read_guest_string(args[0]), "Fresh");
+        assert_eq!(l.read_guest_string(args[2]), "MyClassInit");
+        // An empty name falls back to SOMInitModule.
+        let ApiResult::CallChain(mut c) = call(&l, 3400, &[mgr, fresh, 0, 0]) else { panic!() };
+        c.steps.pop_front();
+        c.returned(put(&l, 0x36C0, ""), false);
+        let ChainEnd::Next(next) = l.finish_chain(&c) else { panic!() };
+        let Some(CallStep::Guest { args, .. }) = next.steps.front() else { panic!() };
+        assert_eq!(l.read_guest_string(args[2]), SOM_INIT_MODULE);
+        // The default SOMLoadModule: no entry point is ERROR_PROC_NOT_FOUND,
+        // a failing _DLL_InitTerm ERROR_INIT_ROUTINE_FAILED, else the handle.
+        let chain = |results: &[u32]| {
+            let mut c = CallChain::new(0, Vec::new(), false, ChainThen::Return(0));
+            for &r in results { c.returned(r, false); }
+            c
+        };
+        assert_eq!(l.som_module_loaded(0x55, 0x3700, 1, false, &chain(&[1])),
+                   crate::loader::constants::ERROR_PROC_NOT_FOUND);
+        assert_eq!(l.som_module_loaded(0x55, 0x3700, 1, true, &chain(&[0])),
+                   crate::loader::constants::ERROR_INIT_ROUTINE_FAILED);
+        assert_eq!(l.guest_read::<u32>(0x3700), Some(0), "no handle on failure");
+        assert_eq!(l.som_module_loaded(0x55, 0x3700, 1, true, &chain(&[1])), 0);
+        assert_eq!(l.guest_read::<u32>(0x3700), Some(0x55));
+    }
+
     /// somUnregisterClass forgets a class; somUnloadClassFile forgets the
     /// classes of the module that made one, withdraws their method tables
     /// (their objects resolve nothing) and frees the module.
@@ -2513,7 +2660,8 @@ mod tests {
         // somFree of something that is not an object frees nothing.
         assert_eq!(ok(call(&l, 3202, &[0x3000])), 0);
         assert_eq!(l.som_data_address(55), None);
-        assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[0x3000, som_class])), 0, "not an object");
+        assert!(matches!(call(&l, SOM_DATA_RESOLVE, &[0x3000, som_class]), ApiResult::ExitProcess(SOMERROR_BAD_ARGUMENT)));
+        assert_eq!(ok(call(&l, SOM_DATA_RESOLVE_CHK, &[0x3000, som_class])), 0, "not an object");
     }
 
     /// IBM's SOM 1.0 exports as osFree lists them (`SOM/som/makefile` in

@@ -90,3 +90,11 @@ Running a DLL of Open Watcom's showed two loader gaps:
   - the interface repository's `dllname`;
   - `somBuildClass`;
   - IBM's ordinals and layouts.
+
+## Addendum (2026-11-23): versions, the initialization function's name, and a DLL without an entry point
+
+The same check against the Reference corrected class loading:
+
+- **Versions.** `somFindClass`, `somFindClsInFile` and `somLoadClassFile` return NULL when the class, registered or just loaded, does not meet the version asked for ("a NULL pointer is returned if the class's version is not compatible"). The rule is `somCheckVersion`'s: the same major version and at least the minor one, 0.0 asking for nothing.
+- **`SOMClassInitFuncName`.** The name of the initialization function passed to `SOMLoadModule` is the one the procedure in `SOMClassInitFuncName` returns (`somGetInitFunction`). Warpine's default still returns "SOMInitModule"; a program's replacement is called on the program's thread before the module is loaded, and an empty or unreadable name falls back to "SOMInitModule" (Warpine's choice).
+- **No entry point.** The default `SOMLoadModule` fails when the DLL has neither the initialization function nor `<className>NewClass`. Which error it returns, `ERROR_PROC_NOT_FOUND`, is Warpine's choice; the DLL stays loaded, as after a failed initialization function.
