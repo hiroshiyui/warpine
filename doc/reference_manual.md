@@ -733,7 +733,7 @@ mciSendCommand (10241), mciSendString (10242), mciFreeBlock (10243), mciGetLastE
 
 Device type: `waveaudio` (WAV files: uncompressed 8/16/24/32-bit PCM or 32-bit float). Constants, parameter blocks and error codes follow `<mcios2.h>` / `<meerror.h>`.
 
-- **`mciSendCommand`:** `MCI_OPEN` (`MCI_OPEN_ELEMENT`, `MCI_OPEN_ALIAS`, `MCI_OPEN_TYPE_ID`), `MCI_CLOSE`, `MCI_PLAY` (`MCI_FROM`, `MCI_WAIT`, `MCI_NOTIFY` → `MM_MCINOTIFY`), `MCI_STOP`, `MCI_SEEK`, `MCI_SET` (`MCI_SET_AUDIO | MCI_SET_VOLUME`, also changes a playing sound), `MCI_STATUS` (mode, length, position); `MCI_RECORD` returns `MCIERR_UNSUPPORTED_FUNCTION`.
+- **`mciSendCommand`:** `MCI_OPEN` (`MCI_OPEN_ELEMENT`, `MCI_OPEN_ALIAS`, `MCI_OPEN_TYPE_ID`), `MCI_CLOSE`, `MCI_PLAY` (`MCI_FROM`, `MCI_WAIT`, `MCI_NOTIFY` → `MM_MCINOTIFY`: mp1 = the notify code and the command's user parameter, mp2 = the device and `MCI_PLAY`), `MCI_STOP`, `MCI_SEEK`, `MCI_SET` (`MCI_SET_AUDIO | MCI_SET_VOLUME`, also changes a playing sound), `MCI_STATUS` (mode, length, position); `MCI_RECORD` returns `MCIERR_UNSUPPORTED_FUNCTION`.
 - **`mciSendString`:** `open <file | waveaudio> [type t] [alias a] [wait]`, `play <a> [wait] [notify]`, `stop`, `close`, `seek <a> to <ms>`, `set <a> audio volume to <n>`, `status <a> mode`; devices are named by alias, element name or device ID.
 - **Output:** sound is played by the main-thread SDL3 loop; headless runs (`WARPINE_HEADLESS=1`, or a CLI program whose stdout is not a terminal) are silent, and `DosBeep` then returns at once.
 
@@ -751,7 +751,7 @@ VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioWrtCellStr
 The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which programs built with the standard headers call through a 16-bit thunk. `VioCheckCharType` is `VIO16CHECKCHARTYPE` (75); its type values (0 SBCS, 2 DBCS lead, 3 DBCS trail) are not in the public reference page. `VioWrtCellStr` writes 2-byte cells, continues on the next row and stops at the end of the screen. The VIO screen's codepage follows `DosSetProcessCp` (`VioSetCp` is still a stub).
 
 
-**ANSI.** `VioWrtTTY` and `DosWrite` to the screen interpret ANSI escape sequences while ANSI is on (the default; `VioSetAnsi` / `VioGetAnsi`): cursor position and movement, save / restore (`ESC[s` / `ESC[u`), `ESC[2J`, `ESC[K`, colours and attributes (`ESC[…m`) and wrap mode (`ESC[=7h` / `ESC[=7l`). `ESC[6n` and key reassignment are not implemented; unknown sequences are swallowed.
+**ANSI.** `VioWrtTTY` and `DosWrite` to the screen interpret ANSI escape sequences while ANSI is on (the default; `VioSetAnsi` / `VioGetAnsi`): cursor position and movement, save / restore (`ESC[s` / `ESC[u`), `ESC[2J`, `ESC[K`, colours and attributes (`ESC[…m`) wrap mode (`ESC[=7h` / `ESC[=7l`) and the text display modes `ESC[=0h` … `ESC[=3h` (40 or 80 columns by 25 rows, cleared; the graphics modes 4–6 are ignored). Text written to a host pipe or file goes out as UTF-8 of the process codepage. `ESC[6n` and key reassignment are not implemented; unknown sequences are swallowed.
 
 **Stubs:**
 VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
@@ -762,9 +762,9 @@ KbdCharIn (4), KbdStringIn (9), KbdGetStatus (10)
 
 On a host terminal or pipe (headless): a waiting `KbdCharIn` / `KbdStringIn` at the end of piped standard input ends the process with exit code 0 (Warpine's choice; the KBD reference lists no end-of-input error).
 
-### MOUCALLS (20 APIs)
+### MOUCALLS (27 APIs)
 
-MouGetPtrShape (1), MouSetPtrShape (2), MouGetNumMickeys (3), MouGetScaleFact (6), MouFlushQue (7), MouGetNumButtons (8), MouClose (9), MouSetScaleFact (11), MouGetNumQueEl (13), MouGetEventMask (15), MouSetEventMask (16), MouOpen (17), MouRemovePtr (18), MouGetPtrPos (19), MouReadEventQue (20), MouSetPtrPos (21), MouGetDevStatus (22), MouSynch (23, no operation), MouSetDevStatus (25), MouDrawPtr (26). Positions are text cells. Events come from the VIO window or the full-screen text window; one mouse handle, a queue of 64 events, 3 buttons. `MouOpen` fails with `ERROR_MOUSE_NO_DEVICE` without a display (terminal sessions). In a PM window the desktop pointer is used; full screen, `MouDrawPtr` draws the text-mode pointer as an inverted cell. Not implemented: MouGetHotKey / MouSetHotKey, MouRegister / MouDeRegister, MouInitReal, MouGetThreshold / MouSetThreshold (`ERROR_INVALID_FUNCTION`).
+MouGetPtrShape (1), MouSetPtrShape (2), MouGetNumMickeys (3), MouGetScaleFact (6), MouFlushQue (7), MouGetNumButtons (8), MouClose (9), MouSetScaleFact (11), MouGetNumQueEl (13), MouGetEventMask (15), MouSetEventMask (16), MouOpen (17), MouRemovePtr (18), MouGetPtrPos (19), MouReadEventQue (20), MouSetPtrPos (21), MouGetDevStatus (22), MouGetHotKey (4), MouSetHotKey (10), MouDeRegister (14), MouSynch (23, no operation), MouRegister (24), MouSetDevStatus (25), MouDrawPtr (26), MouInitReal (27), MouGetThreshold (29), MouSetThreshold (30). Positions are text cells. Events come from the VIO window or the full-screen text window; one mouse handle, a queue of 64 events, 3 buttons. `MouOpen` fails with `ERROR_MOUSE_NO_DEVICE` without a display (terminal sessions). In a PM window the desktop pointer is used; full screen, `MouDrawPtr` draws the text-mode pointer as an inverted cell. The hot key is a set of buttons 1–3 (`ERROR_MOUSE_INV_PARMS` for other bits). `MouGetThreshold` / `MouSetThreshold` keep a `THRESHOLD` (its `usLength` must be at least its size; the device handle 0 or the open one); the levels change nothing, as the host accelerates the pointer. `MouRegister` checks the names (9 and 33 bytes with the NUL, `ERROR_MOUSE_INVALID_ASCIIZ`), the mask (`ERROR_MOUSE_INVALID_MASK`) and that none is registered (`ERROR_MOUSE_REGISTER`), and records the registration, but calls are not passed to the subsystem; `MouDeRegister` without one is `ERROR_MOUSE_DEREGISTER`. `MouInitReal` returns `ERROR_MOUSE_SMG_ONLY` (the Base Video Subsystem's call).
 
 ### PMSHAPI — profiles (8 APIs)
 
@@ -1157,7 +1157,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 478 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 408 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 479 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1171,7 +1171,7 @@ Counts are taken from the static registry (`api_registry.rs`, 478 entries) and t
 | TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
 | VIOCALLS | sub-dispatcher | 18 | 4 | 22 |
 | KBDCALLS | sub-dispatcher | 3 | 0 | 3 |
-| MOUCALLS | sub-dispatcher | 20 | 0 | 20 |
+| MOUCALLS | sub-dispatcher | 27 | 0 | 27 |
 | PMSHAPI (profiles, applications, switch list) | registry | 18 | 0 | 18 |
 | HELPMGR (no viewer) | registry | 6 | 0 | 6 |
 | PMSPL (no printers) | registry | 15 | 0 | 15 |
@@ -1184,7 +1184,7 @@ Counts are taken from the static registry (`api_registry.rs`, 478 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **866** | **21** | **887** |
+| **Total** | | **873** | **21** | **894** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

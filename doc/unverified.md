@@ -304,7 +304,10 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - errors for short buffers and reserved bits;
   - text pointer limits, 3 buttons, 79 mickeys/cm;
   - the default masks;
-  - the PM pointer in a window.
+  - the PM pointer in a window;
+  - the hot key as button bits 1, 2, 4, none at first;
+  - `MouGetThreshold` / `MouSetThreshold` taking the open handle as well as the reserved 0, `usLength` checked, Warpine's default levels, levels changing nothing;
+  - `MouRegister`'s checks (name lengths 9 / 33 with the NUL, the mask bits 0–14H, one registration per process), the calls not passed on, `MouInitReal` always `ERROR_MOUSE_SMG_ONLY`.
 - **ANSI** (sources: OS/2 FAQ 5.12, REXX Tips & Tricks, `VioWrtTTY`):
   - `ESC[J` / `ESC[1J` ignored;
   - unknown sequences swallowed;
@@ -317,7 +320,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - TAB to the next multiple of 8;
   - `ERROR_VIO_INVALID_PARMS` from `VioSetAnsi`;
   - one state per process;
-  - LF returning to column 0.
+  - LF returning to column 0;
+  - display modes 0–3 as 40 / 80 × 25 text (mono and colour alike), set and cleared; 4–6 ignored.
 - **Console handles**:
   - `ERROR_INVALID_HANDLE` writing to a closed standard handle;
   - `DosSetFilePtr` on the console (OS/2 may say `ERROR_SEEK_ON_DEVICE`).

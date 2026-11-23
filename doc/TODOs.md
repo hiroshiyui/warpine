@@ -235,16 +235,11 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - keyboard marking, and autoscroll while marking;
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).
-- [ ] **MOUCALLS**:
-  - `MouGetHotKey` / `MouSetHotKey`, `MouRegister` / `MouDeRegister`, `MouInitReal`, `MouGetThreshold` / `MouSetThreshold`;
-  - MOUCALLS for NE programs;
-  - argument names of Pascal-order calls in `api_trace`.
-- [ ] **ANSI**: `ESC[6n` (cursor position report), keyboard reassignment `ESC[…p`, display modes `ESC[=nh`.
-- [ ] **Console handles**: console output to a host pipe or file is converted from CP437, whatever the process codepage.
+- [ ] **MOUCALLS**: MOUCALLS for NE programs; calls passed to a registered subsystem (`MouRegister` records it only).
+- [ ] **ANSI**: `ESC[6n` (cursor position report), keyboard reassignment `ESC[…p`.
 - [ ] **Audio**:
   - sound in headless runs (no main-thread loop now);
   - `MCI_RECORD` from an SDL3 recording device;
-  - the high words of `MM_MCINOTIFY`;
   - MIDI (FluidSynth / SDL3_mixer / ALSA; deferred).
 
 ---
