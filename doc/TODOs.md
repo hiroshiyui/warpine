@@ -76,7 +76,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
 - [ ] **Menus**:
   - a redraw of an owner-drawn item when the mouse highlights it (the keyboard highlight does), `MIA_NODISMISS`.
 - [ ] **Sliders and value sets**:
-  - dragging the arm with button 2, `WC_CIRCULARSLIDER`;
+  - dragging the arm with button 2; the circular slider's `CSN_QUERYBACKGROUNDCOLOR`, button pictures (`CSM_SETBITMAPDATA`) and held buttons repeating;
   - value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`;
   - a `wrc` dialog with `CTLDATA` in a sample.
 - [ ] **Text controls**:
@@ -96,7 +96,7 @@ Most valuable to unblock: the SOM ordinals (Stage B2/B3, much of the Workplace S
   - a default error box when `FDM_ERROR` returns 0;
   - filtering the style list, `FNTM_COLORCHANGED` / `FNTM_UPDATEPREVIEW`;
   - the read-only check box, overwrite confirmation on Save As, emphasis in the font sample;
-  - `WinRegisterCircularSlider` (PMCTLS 24), and a PMCTLS section in `doc/os2_ordinals.md`.
+  - a PMCTLS section in `doc/os2_ordinals.md`.
 - [ ] **Help viewer**:
   - an INF / HLP reader (IPF is unpublished: check the osFree / NewView descriptions first);
   - `RT_HELPTABLE` / `RT_HELPSUBTABLE`, and the help-table panel for the `WM_HELP` F1 posts;

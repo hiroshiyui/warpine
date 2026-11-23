@@ -164,7 +164,7 @@ modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
   "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
   "loader/pm_static.rs", "loader/pm_notebook.rs", "loader/pm_container.rs", "loader/pm_drag.rs",
-  "loader/pm_slider.rs", "loader/pm_valueset.rs",
+  "loader/pm_slider.rs", "loader/pm_circslider.rs", "loader/pm_valueset.rs",
 ]
 
 [[layer]]
