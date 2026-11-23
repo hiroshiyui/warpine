@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// somobj.idl - the SOM IDL of SOMObject for somidl (ADR-0122)
+//
+// Written for Warpine from IBM's public System Object Model Programming
+// Reference (the methods and their arguments) and the release order ADR-0072
+// records; nothing is copied from IBM's IDL. Methods marked private are
+// not documented: they only hold their place in the release order, which
+// fixes the tokens' places in SOMObjectClassData. A test in src/loader/som.rs
+// checks the release order against the kernel's.
+#ifndef somobj_idl
+#define somobj_idl
+
+#include <somtypes.idl>
+
+interface SOMClass;
+
+interface SOMObject
+{
+    void somInit();
+    void somUninit();
+    void somFree();
+    void somDefaultVCopyInit(inout somInitCtrl ctrl, in SOMObject fromObj);
+    string somGetClassName();
+    SOMClass somGetClass();
+    boolean somIsA(in SOMClass aClassObj);
+    boolean somRespondsTo(in somId mId);
+    boolean somIsInstanceOf(in SOMClass aClassObj);
+    long somGetSize();
+    void somDumpSelf(in long level);
+    void somDumpSelfInt(in long level);
+    SOMObject somPrintSelf();
+    void somDefaultConstVCopyInit(inout somInitCtrl ctrl, in SOMObject fromObj);
+    void somDispatchV(in somId methodId, in somId descriptor, in va_list ap);
+    long somDispatchL(in somId methodId, in somId descriptor, in va_list ap);
+    somToken somDispatchA(in somId methodId, in somId descriptor, in va_list ap);
+    double somDispatchD(in somId methodId, in somId descriptor, in va_list ap);
+    boolean somDispatch(out somToken retValue, in somId methodId, in va_list ap);
+    boolean somClassDispatch(in SOMClass clsObj, out somToken retValue, in somId methodId, in va_list ap);
+    boolean somCastObj(in SOMClass cls);
+    boolean somResetObj();
+    void somDefaultInit(inout somInitCtrl ctrl);
+    void somDestruct(in octet doFree, inout somDestructCtrl ctrl);
+    void somPrivate1();  // private: not documented
+    void somPrivate2();  // private: not documented
+    void somDefaultCopyInit(inout somInitCtrl ctrl, in SOMObject fromObj);
+    void somDefaultConstCopyInit(inout somInitCtrl ctrl, in SOMObject fromObj);
+    SOMObject somDefaultAssign(inout somAssignCtrl ctrl, in SOMObject fromObj);
+    SOMObject somDefaultConstAssign(inout somAssignCtrl ctrl, in SOMObject fromObj);
+    SOMObject somDefaultVAssign(inout somAssignCtrl ctrl, in SOMObject fromObj);
+    SOMObject somDefaultConstVAssign(inout somAssignCtrl ctrl, in SOMObject fromObj);
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: somInit, somUninit, somFree, somDefaultVCopyInit, somGetClassName,
+                      somGetClass, somIsA, somRespondsTo, somIsInstanceOf, somGetSize, somDumpSelf,
+                      somDumpSelfInt, somPrintSelf, somDefaultConstVCopyInit, somDispatchV,
+                      somDispatchL, somDispatchA, somDispatchD, somDispatch, somClassDispatch,
+                      somCastObj, somResetObj, somDefaultInit, somDestruct, somPrivate1,
+                      somPrivate2, somDefaultCopyInit, somDefaultConstCopyInit, somDefaultAssign,
+                      somDefaultConstAssign, somDefaultVAssign, somDefaultConstVAssign;
+        callstyle = idl;
+        dllname = "som.dll";
+    };
+#endif
+};
+
+#endif

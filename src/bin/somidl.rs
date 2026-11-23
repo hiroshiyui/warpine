@@ -215,16 +215,17 @@ mod tests {
     }
 
     /// Open Watcom's SOM samples parse in place (read, never copied), with
-    /// stand-ins for the root classes' IDL, which the SDK gains in a later
-    /// batch.
+    /// the SDK's root classes' IDL, which parse too.
     #[test]
     fn open_watcom_s_sample_idl_parses() {
         let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/watcom/samples/os2/som");
         if !samples.is_dir() { return; }
-        let roots = tempfile::tempdir().expect("tempdir");
-        std::fs::write(roots.path().join("somobj.idl"), "#ifndef somobj_idl\n#define somobj_idl\ninterface SOMObject {};\n#endif\n").unwrap();
-        std::fs::write(roots.path().join("somcls.idl"), "#ifndef somcls_idl\n#define somcls_idl\ninterface SOMClass : SOMObject {};\n#endif\n").unwrap();
-        let inc = [roots.path().to_path_buf()];
+        let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/include");
+        let inc = [sdk.clone()];
+        for root in ["somobj.idl", "somcls.idl", "somcm.idl"] {
+            let text = somidl::dump::dump(&somidl::parse_file(&sdk.join(root), &inc, &[]).expect(root));
+            assert!(text.contains("    releaseorder somInit, somUninit, somFree,") || !root.starts_with("somobj"), "{text}");
+        }
         let hello = somidl::parse_file(&samples.join("helloc/hello.idl"), &inc, &[]).expect("hello.idl");
         let text = somidl::dump::dump(&hello);
         assert!(text.contains("interface Hello : SOMObject\n  operation void sayHello()\n  implementation\n    releaseorder sayHello\n"), "{text}");

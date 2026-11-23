@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// somcm.idl - the SOM IDL of SOMClassMgr for somidl (ADR-0122)
+//
+// Written for Warpine from IBM's public System Object Model Programming
+// Reference (the methods and their arguments) and the release order ADR-0072
+// records; nothing is copied from IBM's IDL. Methods marked private are
+// not documented: they only hold their place in the release order, which
+// fixes the tokens' places in SOMClassMgrClassData. A test in src/loader/som.rs
+// checks the release order against the kernel's.
+#ifndef somcm_idl
+#define somcm_idl
+
+#include <somcls.idl>
+
+interface SOMClassMgr : SOMObject
+{
+    SOMClass somFindClsInFile(in somId classId, in long majorVersion, in long minorVersion, in string file);
+    SOMClass somFindClass(in somId classId, in long majorVersion, in long minorVersion);
+    SOMClass somClassFromId(in somId classId);
+    void somRegisterClass(in SOMClass classObj);
+    long somUnregisterClass(in SOMClass classObj);
+    string somLocateClassFile(in somId classId, in long majorVersion, in long minorVersion);
+    SOMClass somLoadClassFile(in somId classId, in long majorVersion, in long minorVersion, in string file);
+    long somUnloadClassFile(in SOMClass classObj);
+    string somGetInitFunction();
+    void somMergeInto(in SOMObject targetObj);
+    SOMClassSequence somGetRelatedClasses(in SOMClass classObj);
+    long somSubstituteClass(in string origClassName, in string newClassName);
+    attribute Repository somInterfaceRepository;
+    readonly attribute SOMClassSequence somRegisteredClasses;
+    void somBeginPersistentClasses();
+    void somEndPersistentClasses();
+    void somcmPrivate1();  // private: not documented
+    void somcmPrivate2();  // private: not documented
+    void somRegisterClassLibrary(in string libraryName, in somMethodPtr libraryInitRtn);
+    boolean somJoinAffinityGroup(in SOMClass newClass, in SOMClass affClass);
+    void somUnregisterClassLibrary(in string libraryName);
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: somFindClsInFile, somFindClass, somClassFromId, somRegisterClass,
+                      somUnregisterClass, somLocateClassFile, somLoadClassFile, somUnloadClassFile,
+                      somGetInitFunction, somMergeInto, somGetRelatedClasses, somSubstituteClass,
+                      _get_somInterfaceRepository, _set_somInterfaceRepository,
+                      _get_somRegisteredClasses, somBeginPersistentClasses,
+                      somEndPersistentClasses, somcmPrivate1, somcmPrivate2,
+                      somRegisterClassLibrary, somJoinAffinityGroup, somUnregisterClassLibrary;
+        callstyle = idl;
+        dllname = "som.dll";
+    };
+#endif
+};
+
+#endif

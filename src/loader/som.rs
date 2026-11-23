@@ -171,6 +171,28 @@ pub const SOM_DEFAULT_DELETE_MODULE: u32 = 3086;
 pub const SOM_DEFAULT_ERROR: u32 = 3087;
 pub const SOM_DEFAULT_OUT_CHAR: u32 = 3088;
 pub const SOM_DEFAULT_CLASS_INIT_FUNC_NAME: u32 = 3089;
+/// `WrpSomDataExport(ordinal)`: the address of SOM data export
+/// `ordinal` (1–19), for programs linked by lx-link, whose imports are
+/// call thunks (the SDK's `som.h` reaches `SOMObjectClassData` & co.
+/// through it; ADR-0122).
+pub const SOM_DATA_EXPORT: u32 = 3090;
+/// `WrpSomInitCtrlNew(cls)` / `WrpSomInitCtrlFree(ctrl)`: a control block
+/// of Warpine's initializer / destructor protocol for an instance of
+/// `cls`, and its release (ADR-0122).
+pub const SOM_INIT_CTRL_NEW: u32 = 3091;
+pub const SOM_INIT_CTRL_FREE: u32 = 3092;
+/// `WrpSomInitWalk(obj)` / `WrpSomDestructWalk(obj, doFree)`: run the
+/// protocol for `obj`'s class from the kernel — what an initializer or
+/// destructor a class inherited hands over to (ADR-0122). `SOMObject`'s
+/// own `somDefaultInit` / `somDestruct` stay as SOM 1.x code expects.
+pub const SOM_INIT_WALK: u32 = 3093;
+pub const SOM_DESTRUCT_WALK: u32 = 3094;
+/// The size of a `somInitInfo` entry: class, own `somDefaultInit`, own
+/// `somDestruct`, the class's data offset in the instance.
+pub const SOM_INIT_INFO_SIZE: u32 = 16;
+/// The size of a `somInitCtrl` header: mask, info, info size, count;
+/// the mask's bytes follow it.
+pub const SOM_INIT_CTRL_SIZE: u32 = 16;
 /// What an unknown method token resolves to: a procedure returning 0.
 pub const SOM_METHOD_ERROR: u32 = 3199;
 /// The procedure of root methods Warpine does not implement yet: it
@@ -434,6 +456,9 @@ pub struct SomRuntime {
     /// Classes in the order they became ready (to tell which a module's
     /// loading made).
     pub ready_order: Vec<u32>,
+    /// Each class's table of `somInitInfo` entries, made when first asked
+    /// for: its address and number of entries (ADR-0122).
+    pub init_tables: HashMap<u32, (u32, u32)>,
     /// Classes made while the class manager loaded a module: its handle.
     pub modules: HashMap<u32, u32>,
     /// The guest copy of "SOMInitModule" the default
@@ -457,6 +482,36 @@ impl SomRuntime {
             if let Some(k) = self.classes.get(&c) { todo.extend(&k.parents); }
         }
         false
+    }
+
+    /// The ancestors of `cls` that its initializers visit, each once:
+    /// parents left to right, each one's ancestors before it, `cls` last
+    /// (ADR-0122; `directinitclasses` are the parents until stage S3).
+    pub fn init_order(&self, cls: u32) -> Vec<u32> {
+        let mut order = Vec::new();
+        let mut seen = HashSet::new();
+        // (class, whether its parents have been pushed)
+        let mut todo = vec![(cls, false)];
+        while let Some((c, expanded)) = todo.pop() {
+            if expanded {
+                order.push(c);
+                continue;
+            }
+            if seen.len() >= MAX_CLASSES || !seen.insert(c) { continue; }
+            todo.push((c, true));
+            if let Some(k) = self.classes.get(&c) {
+                todo.extend(k.parents.iter().rev().map(|&p| (p, false)));
+            }
+        }
+        order
+    }
+
+    /// `cls`'s own procedure of method `token`: one none of its parents
+    /// has (it introduced or overrode the method), else 0.
+    pub fn own_method(&self, cls: u32, token: u32) -> u32 {
+        let Some(p) = self.class_method(cls, token) else { return 0 };
+        let parents = self.classes.get(&cls).map(|k| k.parents.as_slice()).unwrap_or_default();
+        if parents.iter().any(|&q| self.class_method(q, token) == Some(p)) { 0 } else { p }
     }
 
     /// The procedure of method `token` of class `cls`.
@@ -1097,6 +1152,92 @@ impl Loader {
         off.map(|off| obj.wrapping_add(off))
     }
 
+    /// The table of `somInitInfo` entries of ready class `cls` (made once):
+    /// its address and number of entries, or `None`.
+    fn som_init_table(&self, cls: u32) -> Option<(u32, u32)> {
+        let entries: Vec<[u32; 4]> = {
+            let rt = self.shared.som.lock_or_recover();
+            if let Some(&t) = rt.init_tables.get(&cls) { return Some(t); }
+            let k = rt.classes.get(&cls).filter(|k| k.ready)?;
+            rt.init_order(cls).into_iter().map(|c| [
+                c,
+                rt.own_method(c, TOKEN_SOM_DEFAULT_INIT),
+                rt.own_method(c, TOKEN_SOM_DESTRUCT),
+                k.offset_of(c).unwrap_or(0),
+            ]).collect()
+        };
+        let count = entries.len() as u32;
+        let table = self.som_malloc(count.checked_mul(SOM_INIT_INFO_SIZE)?)?;
+        for (i, e) in entries.iter().enumerate() {
+            for (j, w) in e.iter().enumerate() {
+                let _ = self.guest_write::<u32>(table + i as u32 * SOM_INIT_INFO_SIZE + 4 * j as u32, *w);
+            }
+        }
+        // Another thread may have made it meanwhile: keep the first.
+        let mut rt = self.shared.som.lock_or_recover();
+        if let Some(&t) = rt.init_tables.get(&cls) {
+            drop(rt);
+            self.som_free_mem(table);
+            return Some(t);
+        }
+        rt.init_tables.insert(cls, (table, count));
+        Some((table, count))
+    }
+
+    /// `WrpSomInitCtrlNew(cls)`: a `somInitCtrl` for initializing (or
+    /// destroying) an instance of `cls`: every ancestor's flag set but
+    /// `cls`'s own (it is the one running). 0 for a class not ready.
+    fn som_init_ctrl_new(&self, cls: u32) -> u32 {
+        let Some((table, count)) = self.som_init_table(cls) else { return 0 };
+        let Some(ctrl) = self.som_malloc(SOM_INIT_CTRL_SIZE + count) else { return 0 };
+        let mask = ctrl + SOM_INIT_CTRL_SIZE;
+        for (i, w) in [mask, table, SOM_INIT_INFO_SIZE, count].into_iter().enumerate() {
+            let _ = self.guest_write::<u32>(ctrl + 4 * i as u32, w);
+        }
+        let mut flags = vec![1u8; count as usize];
+        if let Some(last) = flags.last_mut() { *last = 0; }
+        let _ = self.guest_write_bytes(mask, &flags);
+        ctrl
+    }
+
+    /// The kernel's walk of Warpine's initializer protocol (ADR-0122,
+    /// `WrpSomInitWalk` / `WrpSomDestructWalk`): for an object whose class
+    /// table has an initializer (destructor) of its own besides
+    /// `SOMObject`'s, handed over by one the class inherited. The calls,
+    /// in order (destructors last
+    /// first), with a new control block whose flags are all cleared (the
+    /// root makes every call itself), and that block; `None` when only
+    /// `SOMObject`'s would run (its `somInit` / `somUninit`, as before).
+    fn som_root_walk(&self, obj: u32, destruct: bool) -> Option<(Vec<CallStep>, u32)> {
+        let cls = self.som_class_of(obj)?;
+        let (table, count) = self.som_init_table(cls)?;
+        let (root, field) = if destruct { (thunk(3213), 8) } else { (thunk(3212), 4) };
+        let mut procs: Vec<u32> = (0..count)
+            .filter_map(|i| self.guest_read::<u32>(table + i * SOM_INIT_INFO_SIZE + field))
+            .filter(|&p| p != 0)
+            .collect();
+        if procs.iter().all(|&p| p == root) { return None; }
+        let ctrl = self.som_init_ctrl_new(cls);
+        if ctrl == 0 { return None; }
+        let _ = self.guest_write_bytes(ctrl + SOM_INIT_CTRL_SIZE, &vec![0u8; count as usize]);
+        if destruct { procs.reverse(); }
+        let steps = procs.into_iter().map(|p| match (p == root, destruct) {
+            (true, false) => CallStep::hook(self.som_resolve(obj, TOKEN_SOM_INIT), vec![obj], false),
+            (true, true) => CallStep::hook(self.som_resolve(obj, TOKEN_SOM_UNINIT), vec![obj], false),
+            (false, false) => CallStep::hook(p, vec![obj, ctrl], false),
+            (false, true) => CallStep::hook(p, vec![obj, 0, ctrl], false),
+        }).collect();
+        Some((steps, ctrl))
+    }
+
+    /// The root's walk is done: free its control block, then `obj` (when
+    /// not 0, a destructor's doFree), and return `result`.
+    pub(crate) fn som_walk_done(&self, ctrl: u32, obj: u32, result: u32) -> u32 {
+        self.som_free_mem(ctrl);
+        if obj != 0 { self.som_free_done(obj); }
+        result
+    }
+
     /// Whether class `cls` meets version `major`.`minor`: the same major
     /// version and at least the minor one; 0.0 asks for none, and a class
     /// without a version accepts any (ADR-0072).
@@ -1239,12 +1380,15 @@ impl Loader {
     /// module. Nonzero if the class did not come from a module the class
     /// manager loaded.
     fn som_unload_class_file(&self, vcpu: u32, cls: u32) -> ApiResult {
+        let mut tables = Vec::new();
         let hmod = {
             let mut rt = self.shared.som.lock_or_recover();
             let Some(&hmod) = rt.modules.get(&cls) else { return ApiResult::Normal(1) };
             let made: Vec<u32> = rt.modules.iter().filter(|&(_, &m)| m == hmod).map(|(&c, _)| c).collect();
             for c in made {
                 rt.modules.remove(&c);
+                // Its initializer table names the module's code.
+                tables.extend(rt.init_tables.remove(&c).map(|t| t.0));
                 let Some((name, mtab)) = rt.classes.get(&c).map(|k| (k.name.clone(), k.mtab)) else { continue };
                 if rt.by_name.get(&name) == Some(&c) { rt.by_name.remove(&name); }
                 rt.mtabs.remove(&mtab);
@@ -1252,6 +1396,7 @@ impl Loader {
             }
             hmod
         };
+        for t in tables { self.som_free_mem(t); }
         let deleter = self.som_var(SOM_VAR_DELETE_MODULE);
         if deleter == thunk(SOM_DEFAULT_DELETE_MODULE) || deleter == 0 {
             return self.dos_free_module(hmod);
@@ -1948,6 +2093,24 @@ impl Loader {
                 self.som_output(vcpu, out)
             }
             SOM_DEFAULT_CLASS_INIT_FUNC_NAME => ok(self.som_init_func_name()),
+            SOM_DATA_EXPORT => ok(self.som_data_address(a[0]).unwrap_or(0)),
+            SOM_INIT_CTRL_NEW => ok(self.som_init_ctrl_new(a[0])),
+            SOM_INIT_CTRL_FREE => { self.som_free_mem(a[0]); ok(0) }
+            SOM_INIT_WALK => match self.som_root_walk(a[0], false) {
+                Some((steps, ctrl)) => self.start_chain(CallChain::new(vcpu, steps, false,
+                                                                       ChainThen::SomWalkDone { ctrl, obj: 0, result: 0 })),
+                None => self.som_call(vcpu, 3212, &[a[0], 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            },
+            SOM_DESTRUCT_WALK => {
+                if !self.shared.som.lock_or_recover().instances.contains(&a[0]) { return ok(0); }
+                match self.som_root_walk(a[0], true) {
+                    Some((steps, ctrl)) => {
+                        let obj = if a[1] & 0xFF != 0 { a[0] } else { 0 };
+                        self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::SomWalkDone { ctrl, obj, result: 0 }))
+                    }
+                    None => self.som_call(vcpu, 3213, &[a[0], a[1], 0, 0, 0, 0, 0, 0, 0, 0]),
+                }
+            }
             // Entries no source describes (metrics), and somConstructClass,
             // left to the class-building stage: accepted, no effect.
             SOM_SAVE_METRICS | SOM_WRITE_METRICS | SOM_CONSTRUCT_CLASS => {
@@ -2501,6 +2664,119 @@ mod tests {
         assert_eq!(l.guest_read::<u32>(0x3700), Some(0), "no handle on failure");
         assert_eq!(l.som_module_loaded(0x55, 0x3700, 1, true, &chain(&[1])), 0);
         assert_eq!(l.guest_read::<u32>(0x3700), Some(0x55));
+    }
+
+    /// Warpine's initializer protocol (ADR-0122): a class's table lists its
+    /// ancestors once each, parents' ancestors first and the class last,
+    /// with the somDefaultInit / somDestruct each introduced or overrode
+    /// (0 for inherited ones) and its data offset; a control block flags
+    /// every entry but the class's own. WrpSomDataExport gives the data
+    /// exports' addresses.
+    #[test]
+    fn initializer_tables_follow_the_ancestry() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        // A diamond: Base; Left and Right from Base; Bottom from both.
+        let base = new_class(&l, som_class, "Base", &[som_object], 4,
+                             &[("somDefaultInit", 0x0061_0000), ("somDestruct", 0x0061_1000)]);
+        let left = new_class(&l, som_class, "Left", &[base], 8, &[("somDefaultInit", 0x0062_0000)]);
+        let right = new_class(&l, som_class, "Right", &[base], 4, &[]);
+        let bottom = new_class(&l, som_class, "Bottom", &[left, right], 0, &[("somDestruct", 0x0064_1000)]);
+        assert_eq!(l.shared.som.lock_or_recover().init_order(bottom), [som_object, base, left, right, bottom]);
+        let ctrl = ok(call(&l, SOM_INIT_CTRL_NEW, &[bottom]));
+        assert_ne!(ctrl, 0);
+        let word = |at: u32| l.guest_read::<u32>(at).unwrap();
+        let (mask, info) = (word(ctrl), word(ctrl + 4));
+        assert_eq!((mask, word(ctrl + 8), word(ctrl + 12)), (ctrl + SOM_INIT_CTRL_SIZE, SOM_INIT_INFO_SIZE, 5));
+        let entry = |i: u32| [0, 4, 8, 12].map(|o| word(info + i * SOM_INIT_INFO_SIZE + o));
+        assert_eq!(entry(0), [som_object, thunk(3212), thunk(3213), 0], "SOMObject introduces both");
+        assert_eq!(entry(1), [base, 0x0061_0000, 0x0061_1000, 4]);
+        assert_eq!(entry(2), [left, 0x0062_0000, 0, 8], "Left inherits Base's somDestruct");
+        assert_eq!(entry(3), [right, 0, 0, 16], "Right inherits both");
+        assert_eq!(entry(4), [bottom, 0, 0x0064_1000, 20]);
+        let flags: Vec<u8> = (0..5).map(|i| l.guest_read::<u8>(mask + i).unwrap()).collect();
+        assert_eq!(flags, [1, 1, 1, 1, 0], "every ancestor still to run, not the class itself");
+        // The table is made once and shared; each control block is new.
+        let other = ok(call(&l, SOM_INIT_CTRL_NEW, &[bottom]));
+        assert_ne!(other, ctrl);
+        assert_eq!(word(other + 4), info);
+        assert_eq!(ok(call(&l, SOM_INIT_CTRL_FREE, &[other])), 0);
+        assert_eq!(ok(call(&l, SOM_INIT_CTRL_NEW, &[0x3000])), 0, "not a class");
+        let unready = finish(&l, call(&l, 3300, &[som_class]));
+        assert_eq!(ok(call(&l, SOM_INIT_CTRL_NEW, &[unready])), 0, "not ready");
+        // SOMObject's own table: itself alone, nothing flagged.
+        let root_ctrl = ok(call(&l, SOM_INIT_CTRL_NEW, &[som_object]));
+        assert_eq!(word(root_ctrl + 12), 1);
+        assert_eq!(l.guest_read::<u8>(word(root_ctrl)), Some(0));
+        // The data exports.
+        assert_eq!(ok(call(&l, SOM_DATA_EXPORT, &[SOM_OBJECT_CLASS_DATA])), l.som_data_address(SOM_OBJECT_CLASS_DATA).unwrap());
+        assert_eq!(ok(call(&l, SOM_DATA_EXPORT, &[SOM_CLASS_MGR_NEW_CLASS])), 0, "a function, not data");
+    }
+
+    /// The kernel's walk (ADR-0122): WrpSomInitWalk / WrpSomDestructWalk
+    /// run every own initializer of the object's class
+    /// table in order (SOMObject's as its somInit), destructors last
+    /// first, each with a new control block whose flags are cleared; the
+    /// block is freed afterwards, and the object too for doFree. Classes
+    /// with nothing but SOMObject's keep the plain somInit / somUninit.
+    #[test]
+    fn the_kernel_walks_the_initializer_table() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let plain = new_class(&l, som_class, "Plain", &[som_object], 0, &[]);
+        let mixin = new_class(&l, som_class, "Mixin", &[som_object], 4,
+                              &[("somDefaultInit", 0x0065_0000), ("somDestruct", 0x0065_1000)]);
+        let combo = new_class(&l, som_class, "Combo", &[plain, mixin], 0, &[]);
+        let obj = ok(call(&l, 3301, &[combo]));
+        // As Mixin's inherited initializer hands over: the walk.
+        let ApiResult::CallChain(c) = call(&l, SOM_INIT_WALK, &[obj]) else { panic!() };
+        let procs: Vec<(u32, Vec<u32>)> = c.steps.iter().map(|s| match s {
+            CallStep::Guest { proc_addr, args, .. } => (*proc_addr, args.clone()),
+            other => panic!("{other:?}"),
+        }).collect();
+        let ctrl = procs[1].1[1];
+        assert_eq!(procs, [(thunk(3200), vec![obj]), (0x0065_0000, vec![obj, ctrl])], "SOMObject's somInit, then Mixin's");
+        let flags: Vec<u8> = (0..4).map(|i| l.guest_read::<u8>(ctrl + SOM_INIT_CTRL_SIZE + i).unwrap()).collect();
+        assert_eq!(flags, [0, 0, 0, 0], "the root makes every call");
+        assert_eq!(finish(&l, ApiResult::CallChain(c)), 0);
+        assert!(!l.shared.som.lock_or_recover().heap.blocks.contains_key(&ctrl), "the block is freed");
+        // SOMObject's own, without a block, stay SOM 1.x's: somInit only
+        // (a class's destructor may call its parent's with the null block
+        // it got).
+        let ApiResult::CallChain(c) = call(&l, 3212, &[obj, 0]) else { panic!() };
+        assert_eq!(c.steps.len(), 1);
+        // somFree calls the somDestruct Combo has (Mixin's, the later
+        // parent's override); handing over, the walk runs the destructors
+        // last first, then frees the memory.
+        let ApiResult::CallChain(c) = call(&l, 3202, &[obj]) else { panic!() };
+        assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0065_1000, args, .. }) if args == &vec![obj, 1, 0]));
+        let ApiResult::CallChain(c) = call(&l, SOM_DESTRUCT_WALK, &[obj, 1]) else { panic!() };
+        let procs: Vec<u32> = c.steps.iter().map(|s| match s { CallStep::Guest { proc_addr, .. } => *proc_addr, _ => 0 }).collect();
+        assert_eq!(procs, [0x0065_1000, thunk(3201)], "Mixin's somDestruct, then SOMObject's somUninit");
+        assert_eq!(finish(&l, ApiResult::CallChain(c)), 0);
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0, "freed");
+        // Nothing but SOMObject's: the walk is SOMObject's somDefaultInit.
+        let lone = ok(call(&l, 3301, &[plain]));
+        let ApiResult::CallChain(c) = call(&l, SOM_INIT_WALK, &[lone]) else { panic!() };
+        assert!(matches!(c.then, ChainThen::Return(0)));
+        assert_eq!(c.steps.len(), 1);
+    }
+
+    /// The SDK's root IDL (sdk/include/somobj.idl, somcls.idl, somcm.idl;
+    /// ADR-0122) has the kernel's release orders, so the ClassData a
+    /// somidl-built class reads its parents' tokens from match.
+    #[test]
+    fn the_sdk_root_idl_has_the_kernel_s_release_orders() {
+        let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/include");
+        for (file, table) in [("somobj.idl", SOMOBJECT_METHODS), ("somcls.idl", SOMCLASS_METHODS),
+                              ("somcm.idl", SOMCLASSMGR_METHODS)] {
+            let text = std::fs::read_to_string(sdk.join(file)).expect(file);
+            let start = text.find("releaseorder:").expect("a release order") + "releaseorder:".len();
+            let order: Vec<&str> = text[start..].split(';').next().unwrap_or("")
+                .split(',').map(str::trim).collect();
+            let kernel: Vec<&str> = table.iter().map(|m| m.1).collect();
+            assert_eq!(order, kernel, "{file}");
+        }
     }
 
     /// somUnregisterClass forgets a class; somUnloadClassFile forgets the

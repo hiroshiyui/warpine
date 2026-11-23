@@ -884,8 +884,9 @@ fn leading_ident(s: &str) -> &str {
     &s[..end]
 }
 
-/// The calls a header declares: `ret APIENTRY Name(`, `ret EXPENTRY Name(`
-/// and `OS2_PASCAL_API(ret, Name, ...`. Preprocessor lines, typedefs (function
+/// The calls a header declares: `ret APIENTRY Name(`, `ret EXPENTRY Name(`,
+/// `ret SOMLINK Name(` (the SOM kernel, ADR-0122) and
+/// `OS2_PASCAL_API(ret, Name, ...`. Preprocessor lines, typedefs (function
 /// pointer types) and comments are not declarations.
 fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
     let mut decls = Vec::new();
@@ -902,7 +903,8 @@ fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
                     decls.push(HeaderDecl { name: name.to_owned(), pascal: true, origin });
                 }
             }
-        } else if let Some((_, after)) = line.split_once("APIENTRY ").or_else(|| line.split_once("EXPENTRY ")) {
+        } else if let Some((_, after)) = line.split_once("APIENTRY ").or_else(|| line.split_once("EXPENTRY "))
+            .or_else(|| line.split_once("SOMLINK ")) {
             let name = leading_ident(after);
             if !name.is_empty() && after.trim_start()[name.len()..].trim_start().starts_with('(') {
                 decls.push(HeaderDecl { name: name.to_owned(), pascal: false, origin });
@@ -1040,6 +1042,12 @@ fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -
             return false;
         }
     };
+    // The SOM headers (som.h, somapi.h, somcdev.h; ADR-0122) sit beside os2.h.
+    if let Ok(read) = fs::read_dir(include_dir) {
+        files.extend(read.flatten().map(|e| e.path()).filter(|p| {
+            p.extension().is_some_and(|e| e == "h") && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("som"))
+        }));
+    }
     files.sort();
     let mut decls = Vec::new();
     let mut constants = Vec::new();
@@ -1556,11 +1564,14 @@ mod tests {
                     void   APIENTRY DosExit (ULONG action, ULONG result);\n\
                     MRESULT EXPENTRY WinDefWindowProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2);\n\
                     /* APIENTRY Commented(void); */\n\
+                    SOMEXTERN somId SOMLINK somIdFromString( zString s );\n\
+                    typedef void SOMLINK somMethodProc( void );\n\
                     OS2_PASCAL_API(APIRET16, VioWrtTTY, (PCCH pch, USHORT cb, HVIO hvio),\n\
                     \x20              (ULONG hvio, ULONG cb, PCCH pch), (hvio, cb, pch))\n";
         let decls = parse_header_decls(text, "x.h");
         let found: Vec<(&str, bool)> = decls.iter().map(|d| (d.name.as_str(), d.pascal)).collect();
-        assert_eq!(found, [("DosWrite", false), ("DosExit", false), ("WinDefWindowProc", false), ("VioWrtTTY", true)]);
+        assert_eq!(found, [("DosWrite", false), ("DosExit", false), ("WinDefWindowProc", false), ("somIdFromString", false),
+                           ("VioWrtTTY", true)]);
         assert_eq!(decls[0].origin, "x.h:4");
     }
 

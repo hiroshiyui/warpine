@@ -829,6 +829,9 @@ What they do:
   - `somParentNumResolve(parentMtab, n, token)` (by name) resolves in the `n`th parent, from 1;
   - `somConstructClass`, `somSaveMetrics` and `somWriteMetrics` are stubs returning 0;
   - `WrpSomMetaclassFor(requested, parent)` (Warpine's) returns the metaclass for a new class: `requested` (0: the parent's metaclass) if it descends from the parent's metaclass, the parent's if that descends from `requested`, else a metaclass derived from both, made once.
+  - `WrpSomDataExport(ordinal)` (Warpine's, 3090) returns the address of SOM data export `ordinal` (1–19; 0 otherwise): programs linked by `lx-link`, whose imports are call thunks, reach the data exports through it (the SDK's `somapi.h` makes each name a macro for the variable);
+  - `WrpSomInitCtrlNew(cls)` / `WrpSomInitCtrlFree(ctrl)` (Warpine's, 3091 / 3092): a control block of Warpine's initializer protocol for an instance of ready class `cls` (0 otherwise), and its release;
+  - `WrpSomInitWalk(obj)` / `WrpSomDestructWalk(obj, doFree)` (Warpine's, 3093 / 3094): the protocol run by the kernel for `obj`'s class (below).
 - Data:
   - `SOMObjectClassData`, `SOMClassClassData` and `SOMClassMgrClassData`, the root classes' `ClassData`: the class object, then one token per method in IBM's release order (32, 76 and 22 tokens, ADR-0072), as programs built with IBM's SOM headers read them;
   - `SOMObjectCClassData`, `SOMClassCClassData` and `SOMClassMgrCClassData`: `parentMtab`, a `somParentMtabStruct` (the class's own method table, `next` → the list of its parents' tables, the class object, the renew thunk 0, the instance size, the rest 0), then the instance-data token; `SOMObjectCClassData` then holds six `somDispatch*` procedures (not implemented);
@@ -855,6 +858,12 @@ What they do:
 - Method tables (ADR-0072) have IBM's `somMethodTab` header — `classObject`, `classInfo` (0), `className`, `instanceSize`, `dataAlignment` (4), `mtabSize` (bytes, header included), `protectedDataOffset`, `protectedDataToken`, `embeddedObjs` (0) — then the procedures in token order.
 - Root methods of the release order Warpine does not implement (the copy, assign, dispatch, cast, reset and renew families, the private slots, the class manager's repository and class-library methods) raise `SOMERROR_NotImplementedYet` as a warning (20171) through `SOMError` and return 0. `SOMClass` also has `somCheckVersion` (same major version, at least the minor one; 0.0 asks for nothing; the root classes are 1.5), `somGetVersionNumbers`, `somFindMethod` / `somFindMethodOk`, `somFindSMethod` / `somFindSMethodOk`, `somLookupMethod` (the `…Ok` forms and `somLookupMethod` raise `SOMERROR_MethodNotFound`, 20039), `somGetClassMtab`, `somGetInstanceOffset`, `somAllocate` / `somDeallocate`. Errors the kernel raises go to a program's own `SOMError` (file `som.dll`), else to the default one.
 - `somBuildClass(inheritVars, sci, major, minor)` (by name; ADR-0073) builds the class a `somStaticClassInfo` describes, as code from IBM's SOM compiler asks: layout versions 1–4; returns the class `ClassData.classObject` already names; parents and an explicit metaclass by name (`SOMERROR_NoParentClass` 20219, `SOMERROR_NoMetaClass` 20229; a malformed structure `SOMERROR_BadArgument` 20199); static methods (`smt`, and `mt`'s static, dynamic and nonstatic ones) with their tokens written into `ClassData`; overrides by name (`omt`, a scoped `Class::method` by its last part) and by token (`mt` action 6); a parent's implementation (`imt`, parents from 1); public data tokens (`nit`: the field at `basisForDataOffset − nitReferenceBase`, resolved by `somDataResolve`); procedure and `va_list` entries (`pmt`, `vft`); then `ClassData.classObject`, `CClassData.parentMtab` (a `somParentMtabStruct`) and `instanceDataToken`, and last the class init function. `inheritVars`, initializers, direct-init classes, DirectToSOM classes, migrated methods and `somDynamicSCI` are not used yet.
+- Warpine's initializer and destructor protocol (ADR-0122; not IBM's, whose control-block layout is unpublished):
+  - each ready class has a table of `somInitInfo` entries (`somapi.h`; 16 bytes: the class, the `somDefaultInit` it introduced or overrode or 0, the same for `somDestruct`, its data's offset in the instance): its ancestors once each, parents left to right with each one's ancestors first, the class itself last;
+  - a `somInitCtrl` (16 bytes: the mask, the table, the entry size, the count; the mask's bytes follow) flags every entry but the class's own;
+  - the SDK's `SOM_InitBegin` runs a class's flagged ancestors before it, in order; `SOM_DestructEnd` runs those before it last first, then frees the object when doFree is set. An initializer or destructor called without a control block for an object of a descendant class (one inherited) hands the walk to `WrpSomInitWalk` / `WrpSomDestructWalk`;
+  - those run every entry's own initializer in order (`SOMObject`'s as the object's `somInit`), or destructor last first (`SOMObject`'s as `somUninit`), with a new block whose flags are cleared, then free it (and the object for doFree). With nothing but `SOMObject`'s in the table they are `SOMObject`'s `somDefaultInit` / `somDestruct`;
+  - `SOMObject`'s own `somDefaultInit` / `somDestruct` are unchanged (`somInit`; `somUninit`, then the memory for doFree), so a class's destructor may still call its parent's with the null block it got.
 - C++ (`samples/som_test/include/som.xh`, ADR-0061): a SOM class is a C++ class without virtual functions; `new Cls` makes the object with `somNewNoInit` and its constructor initializes it once with `somDefaultInit`; `delete` calls `somDestruct(1)`. Methods dispatch through SOM, so an override is reached through a base-class pointer. Objects on the stack or in static storage are not SOM objects.
 
 - Tokens: a method token names a method and its introducing class, and works on every descendant; `somGetInstanceToken` returns the class itself, and `somDataResolve(obj, cls)` finds that class's data in any descendant's object (`somDataResolveChk`: 0 if it has none).
@@ -1160,7 +1169,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 480 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 485 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1181,13 +1190,13 @@ Counts are taken from the static registry (`api_registry.rs`, 480 entries) and t
 | PMCTLS (standard dialogs, circular slider) | registry | 6 | 0 | 6 |
 | WARPINE (Warpine's own extensions) | registry | 10 | 0 | 10 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
-| SOM (the SOM runtime kernel) | registry | 114 | 3 | 117 |
+| SOM (the SOM runtime kernel) | registry | 119 | 3 | 122 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **874** | **21** | **895** |
+| **Total** | | **879** | **21** | **900** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

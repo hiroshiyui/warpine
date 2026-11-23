@@ -352,6 +352,10 @@ pub(crate) enum ChainThen {
     /// give its result to the interpreter and make its next call, or
     /// return from RexxStart.
     Rexx { session: u32 },
+    /// The SOM root's initializer (destructor) walk ran (`som.rs`,
+    /// ADR-0122): free control block `ctrl`, then object `obj` unless 0,
+    /// and return `result`.
+    SomWalkDone { ctrl: u32, obj: u32, result: u32 },
     /// `somFindClass` (or a sibling) loaded the file of class `id`
     /// (`som.rs`): free the strings at `block`, return the class if it
     /// meets version `major`.`minor`; `how` the file was loaded.
@@ -482,6 +486,7 @@ impl Loader {
             ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
             ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
+            ChainThen::SomWalkDone { ctrl, obj, result } => ChainEnd::Return(self.som_walk_done(ctrl, obj, result)),
             ChainThen::LoadLibrary { hmod, scratch } => ChainEnd::Return(self.load_library_done(hmod, scratch, chain)),
             ChainThen::FreeLibrary { hmod } => ChainEnd::Return(self.free_library_done(hmod)),
             ChainThen::Rexx { session } => self.rexx_handler_returned(session, chain.last),

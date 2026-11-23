@@ -886,6 +886,11 @@ SOM.3086   WrpSomDeleteModule
 SOM.3087   WrpSomError
 SOM.3088   WrpSomOutChar
 SOM.3089   WrpSomClassInitFuncName
+SOM.3090   WrpSomDataExport
+SOM.3091   WrpSomInitCtrlNew
+SOM.3092   WrpSomInitCtrlFree
+SOM.3093   WrpSomInitWalk
+SOM.3094   WrpSomDestructWalk
 SOM.3198   WrpSomMethodNotImplemented
 SOM.3199   WrpSomMethodError
 SOM.3200   WrpSOMObject_somInit

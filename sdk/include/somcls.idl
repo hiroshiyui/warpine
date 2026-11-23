@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// somcls.idl - the SOM IDL of SOMClass for somidl (ADR-0122)
+//
+// Written for Warpine from IBM's public System Object Model Programming
+// Reference (the methods and their arguments) and the release order ADR-0072
+// records; nothing is copied from IBM's IDL. Methods marked private are
+// not documented: they only hold their place in the release order, which
+// fixes the tokens' places in SOMClassClassData. A test in src/loader/som.rs
+// checks the release order against the kernel's.
+#ifndef somcls_idl
+#define somcls_idl
+
+#include <somobj.idl>
+
+typedef sequence<SOMClass> SOMClassSequence;
+
+interface SOMClass : SOMObject
+{
+    SOMObject somNew();
+    SOMObject somRenew(in somToken obj);
+    void somInitClass(in string className, in SOMClass parentClass, in long dataSize, in long maxStaticMethods, in long majorVersion, in long minorVersion);
+    void somClassReady();
+    string somGetName();
+    SOMClass somGetParent();
+    boolean somDescendedFrom(in SOMClass aClassObj);
+    boolean somCheckVersion(in long majorVersion, in long minorVersion);
+    boolean somFindMethod(in somId methodId, out somMethodPtr m);
+    boolean somFindMethodOk(in somId methodId, out somMethodPtr m);
+    boolean somSupportsMethod(in somId mId);
+    long somGetNumMethods();
+    long somGetInstanceSize();
+    long somGetInstanceOffset();
+    long somGetInstancePartSize();
+    long somGetMethodIndex(in somId id);
+    long somGetNumStaticMethods();
+    somMethodTabs somGetPClsMtab();
+    somMethodTab somGetClassMtab();
+    somMToken somAddStaticMethod(in somId methodId, in somId methodDescriptor, in somMethodPtr method, in somMethodPtr redispatchStub, in somMethodPtr applyStub);
+    void somOverrideSMethod(in somId methodId, in somMethodPtr method);
+    void somAddDynamicMethod(in somId methodId, in somId methodDescriptor, in somMethodPtr method, in somMethodPtr applyStub);
+    void somcPrivate0();  // private: not documented
+    somMethodPtr somGetApplyStub(in somId methodId);
+    somMethodPtr somFindSMethod(in somId methodId);
+    somMethodPtr somFindSMethodOk(in somId methodId);
+    somId somGetMethodDescriptor(in somId methodId);
+    somId somGetNthMethodInfo(in long n, out somId descriptor);
+    void somSetClassData(in somClassDataStructure cds);
+    somClassDataStructure somGetClassData();
+    SOMObject somNewNoInit();
+    SOMObject somRenewNoInit(in somToken obj);
+    somDToken somGetInstanceToken();
+    somDToken somGetMemberToken(in long memberOffset, in somDToken instanceToken);
+    void somcPrivate1();  // private: not documented
+    boolean somGetMethodData(in somId methodId, out somMethodData md);
+    void somOverrideMtab();
+    somMToken somGetMethodToken(in somId methodId);
+    SOMClassSequence somGetParents();
+    somMethodTabs somGetPClsMtabs();
+    void somInitMIClass(in long inherit_vars, in string className, in SOMClassSequence parentClasses, in long dataSize, in long dataAlignment, in long maxStaticMethods, in long majorVersion, in long minorVersion);
+    void somGetVersionNumbers(out long majorVersion, out long minorVersion);
+    somMethodPtr somLookupMethod(in somMToken methodToken);
+    readonly attribute somOffsets somInstanceDataOffsets;
+    SOMObject somRenewNoZero(in somToken obj);
+    SOMObject somRenewNoInitNoZero(in somToken obj);
+    string somAllocate(in long size);
+    void somDeallocate(in string memptr);
+    somMethodProc somGetRdStub(in somId methodId);
+    boolean somGetNthMethodData(in long n, out somMethodData md);
+    void somcPrivate2();  // private: not documented
+    void somcPrivate3();  // private: not documented
+    readonly attribute SOMClassSequence somDirectInitClasses;
+    void somcPrivate5();  // private: not documented
+    void somcPrivate6();  // private: not documented
+    void somcPrivate7();  // private: not documented
+    void somcPrivate8();  // private: not documented
+    void somcPrivate9();  // private: not documented
+    void somcPrivate10();  // private: not documented
+    void somcPrivate11();  // private: not documented
+    void somcPrivate12();  // private: not documented
+    somMethodPtr somDefinedMethod(in somMToken method);
+    void somcPrivate13();  // private: not documented
+    void somcPrivate14();  // private: not documented
+    void somcPrivate15();  // private: not documented
+    void somcPrivate16();  // private: not documented
+    void somcPrivate17();  // private: not documented
+    void somcPrivate18();  // private: not documented
+    void somcPrivate19();  // private: not documented
+    void somcPrivate20();  // private: not documented
+    readonly attribute long somDataAlignment;
+    void somcPrivate21();  // private: not documented
+    void somcPrivate22();  // private: not documented
+    void somcPrivate23();  // private: not documented
+    void somcPrivate24();  // private: not documented
+    void somcPrivate25();  // private: not documented
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: somNew, somRenew, somInitClass, somClassReady, somGetName, somGetParent,
+                      somDescendedFrom, somCheckVersion, somFindMethod, somFindMethodOk,
+                      somSupportsMethod, somGetNumMethods, somGetInstanceSize,
+                      somGetInstanceOffset, somGetInstancePartSize, somGetMethodIndex,
+                      somGetNumStaticMethods, somGetPClsMtab, somGetClassMtab, somAddStaticMethod,
+                      somOverrideSMethod, somAddDynamicMethod, somcPrivate0, somGetApplyStub,
+                      somFindSMethod, somFindSMethodOk, somGetMethodDescriptor,
+                      somGetNthMethodInfo, somSetClassData, somGetClassData, somNewNoInit,
+                      somRenewNoInit, somGetInstanceToken, somGetMemberToken, somcPrivate1,
+                      somGetMethodData, somOverrideMtab, somGetMethodToken, somGetParents,
+                      somGetPClsMtabs, somInitMIClass, somGetVersionNumbers, somLookupMethod,
+                      _get_somInstanceDataOffsets, somRenewNoZero, somRenewNoInitNoZero,
+                      somAllocate, somDeallocate, somGetRdStub, somGetNthMethodData, somcPrivate2,
+                      somcPrivate3, _get_somDirectInitClasses, somcPrivate5, somcPrivate6,
+                      somcPrivate7, somcPrivate8, somcPrivate9, somcPrivate10, somcPrivate11,
+                      somcPrivate12, somDefinedMethod, somcPrivate13, somcPrivate14, somcPrivate15,
+                      somcPrivate16, somcPrivate17, somcPrivate18, somcPrivate19, somcPrivate20,
+                      _get_somDataAlignment, somcPrivate21, somcPrivate22, somcPrivate23,
+                      somcPrivate24, somcPrivate25;
+        callstyle = idl;
+        dllname = "som.dll";
+    };
+#endif
+};
+
+#endif

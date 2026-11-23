@@ -357,7 +357,10 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - which SOM IDL modifiers are accepted, ignored or refused at each stage;
   - `__SOMIDL__` and any other predefined macros;
   - `--dump`'s format, the nesting limit (32), constants resolved by the last part of a scoped name, and the implementation section read by shape;
-  - the shared preprocessor's 16 MB limit on the text one run reads.
+  - the shared preprocessor's 16 MB limit on the text one run reads;
+  - `WrpSomDataExport` (SOM 3090) and the data exports as macros over it; `WrpSomInitCtrlNew` / `WrpSomInitCtrlFree` / `WrpSomInitWalk` / `WrpSomDestructWalk` (3091–3094);
+  - the table's order (post-order, parents left to right), and the hand-over of an inherited initializer or destructor to the kernel's walk;
+  - the root IDL's signatures for methods the Reference does not document (marked private), `somtypes.idl`, and `somParentMtabStruct` declared only up to `instanceSize`.
 - **SOM layouts** (ADR-0072):
   - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;
   - lacking root methods warning (20171) instead of IBM's fatal `SOMERROR_NotImplementedYet`;

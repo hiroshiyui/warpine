@@ -35,7 +35,7 @@ fn sample_path(path: impl AsRef<Path>) -> String {
     let compiler = cc.strip_prefix("ci-").unwrap_or(&cc);
     let compiler = compiler.strip_suffix("-pinned").unwrap_or(compiler);
     assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
-    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "cxx_test",
+    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "c_som_test", "cxx_test",
                                   "rust_hello", "shapes", "som_test", "wcxx_throw_test"];
     let Some(rest) = path.strip_prefix("samples/") else { return path };
     let Some((dir, _)) = rest.split_once('/') else { return path };
@@ -2332,6 +2332,41 @@ fn dos_get_message_reads_bound_and_drive_message_files() {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
         assert!(text.contains("c_msg_test: done 12/12"), "{compiler}:\n{text}");
+        assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
+    }
+}
+
+/// c_som_test (ADR-0122): SOM from GCC and clang with the SDK's som.h —
+/// the data exports through WrpSomDataExport, and Warpine's initializer
+/// protocol over a diamond, a class that inherits its initializer and a
+/// multiple-inheritance merge.
+#[test]
+fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
+    if !kvm_available() || Command::new("make").arg("--version").output().is_err() { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_som_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+        let out = Command::new("make").args(["-s", "-C", "samples/c_som_test"]).args(&vars).output().expect("run make");
+        assert!(out.status.success(), "make ({compiler}):\n{}{}",
+                String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("timeout").arg("30").arg(warpine()).arg(dir.path().join("c_som_test.exe"))
+            .env("WARPINE_HEADLESS", "1")
+            .env("XDG_DATA_HOME", dir.path())
+            .env("XDG_STATE_HOME", dir.path())
+            .env("XDG_RUNTIME_DIR", dir.path())
+            .envs(PINNED_ENV.iter().copied())
+            .env("RUST_LOG", "error")
+            .stdin(Stdio::null())
+            .output().expect("run warpine");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
+        assert!(text.contains("c_som_test: done 10/10"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
     }
 }
@@ -4933,7 +4968,7 @@ fn gui_layered_compositor_resizes_windows() {
 /// somidl (ADR-0122, the front end): Open Watcom's SOM sample IDL files,
 /// read in place, preprocess and parse; `--dump` prints their syntax
 /// trees, and a run without it reports that the emitters are still to
-/// come. The root classes' IDL are stand-ins until the SDK has its own.
+/// come. The root classes' IDL are the SDK's.
 /// Skips when Open Watcom is not installed.
 #[test]
 fn somidl_parses_open_watcom_s_som_samples() {
@@ -4942,20 +4977,18 @@ fn somidl_parses_open_watcom_s_som_samples() {
         eprintln!("skipping somidl_parses_open_watcom_s_som_samples: Open Watcom not installed (vendor/setup_watcom.sh)");
         return;
     }
-    let roots = tempfile::tempdir().unwrap();
-    std::fs::write(roots.path().join("somobj.idl"), "#ifndef somobj_idl\n#define somobj_idl\ninterface SOMObject {};\n#endif\n").unwrap();
-    std::fs::write(roots.path().join("somcls.idl"),
-                   "#ifndef somcls_idl\n#define somcls_idl\ninterface SOMClass : SOMObject {};\n#endif\n").unwrap();
+    // The SDK's root IDL (somobj.idl, somcls.idl).
+    let roots = std::path::Path::new("sdk/include");
     for (idl, want) in [("helloc/hello.idl", "interface Hello : SOMObject\n"),
                         ("hellocpp/hello.idl", "interface Hello : SOMObject\n"),
                         ("animals/animals.idl", "  interface Kennel : SOMClass\n")] {
-        let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots.path()).arg("--dump")
+        let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots).arg("--dump")
             .arg(samples.join(idl)).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{idl}: {}", String::from_utf8_lossy(&out.stderr));
         assert!(text.contains(want), "{idl}:\n{text}");
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots.path())
+    let out = Command::new(env!("CARGO_BIN_EXE_somidl")).arg("-I").arg(roots)
         .arg(samples.join("helloc/hello.idl")).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented yet"));

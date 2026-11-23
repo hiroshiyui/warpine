@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// somtypes.idl - the C types the root classes' IDL names (ADR-0122)
+//
+// Each stands for the somapi.h type of the same name; somidl's emitters
+// use the name as it is and never emit these declarations.
+#ifndef somtypes_idl
+#define somtypes_idl
+
+typedef unsigned long somToken;
+typedef unsigned long somId;
+typedef unsigned long somMToken;
+typedef unsigned long somDToken;
+typedef unsigned long somMethodPtr;
+typedef unsigned long somMethodProc;
+typedef unsigned long somMethodTab;
+typedef unsigned long somMethodTabs;
+typedef unsigned long somMethodData;
+typedef unsigned long somClassDataStructure;
+typedef unsigned long somOffsets;
+typedef unsigned long somInitCtrl;
+typedef unsigned long somDestructCtrl;
+typedef unsigned long somAssignCtrl;
+typedef unsigned long va_list;
+typedef unsigned long Repository;
+
+#endif
