@@ -402,7 +402,7 @@
 <text xml:space="preserve" text-anchor="start" x="1633.25" y="-578.74" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_controls.rs, loader/pm_button.rs, loader/pm_list.rs, loader/pm_edit.rs</text>
 <text xml:space="preserve" text-anchor="start" x="1624.62" y="-570.74" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_scrollbar.rs, loader/pm_combo.rs, loader/pm_spin.rs, loader/pm_owner.rs</text>
 <text xml:space="preserve" text-anchor="start" x="1619.38" y="-562.74" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_static.rs, loader/pm_notebook.rs, loader/pm_container.rs, loader/pm_drag.rs</text>
-<text xml:space="preserve" text-anchor="start" x="1657.62" y="-554.74" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_slider.rs, loader/pm_circslider.rs, loader/pm_valueset.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1611.5" y="-554.74" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_dragimage.rs, loader/pm_slider.rs, loader/pm_circslider.rs, loader/pm_valueset.rs</text>
 </g>
 <!-- pmwin&#45;&gt;controls -->
 <g id="edge27" class="edge">

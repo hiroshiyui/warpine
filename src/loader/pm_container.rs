@@ -78,6 +78,7 @@ pub const CM_EXPANDTREE: u32 = 0x034f;
 pub const CM_QUERYRECORDINFO: u32 = 0x0350;
 pub const CM_INSERTRECORDARRAY: u32 = 0x0351;
 
+pub const CN_DRAGAFTER: u32 = 101;
 pub const CN_DRAGLEAVE: u32 = 102;
 pub const CN_DRAGOVER: u32 = 103;
 pub const CN_DROP: u32 = 104;
@@ -116,6 +117,8 @@ pub const CA_DRAWBITMAP: u32 = 0x0002_0000;
 pub const CA_DRAWICON: u32 = 0x0004_0000;
 pub const CA_OWNERDRAW: u32 = 0x0000_4000;
 pub const CA_TITLEREADONLY: u32 = 0x0008_0000;
+pub const CA_ORDEREDTARGETEMPH: u32 = 0x0001_0000;
+pub const CA_MIXEDTARGETEMPH: u32 = 0x0020_0000;
 
 pub const CFA_RIGHT: u32 = 0x0000_0002;
 pub const CFA_CENTER: u32 = 0x0000_0004;
@@ -132,6 +135,7 @@ pub const CFA_FITITLEREADONLY: u32 = 0x0001_0000;
 pub const CFA_ULONG: u32 = 0x0002_0000;
 
 pub const CRA_SELECTED: u32 = 0x0000_0001;
+pub const CRA_TARGET: u32 = 0x0000_0002;
 pub const CRA_CURSORED: u32 = 0x0000_0004;
 pub const CRA_FILTERED: u32 = 0x0000_0010;
 pub const CRA_RECORDREADONLY: u32 = 0x0000_0040;
@@ -271,6 +275,9 @@ const COLUMN_GAP: i32 = 12;
 const LINE_H: i32 = 16;
 const BORDER_COLOR: u32 = 0x0080_8080;
 const FIELD_COLOR: u32 = 0x00FF_FFFF;
+/// Target emphasis: its colour and the insertion line's width.
+const TARGET_COLOR: u32 = 0x0000_0000;
+const TARGET_LINE: i32 = 2;
 const SELECT_COLOR: u32 = 0x0000_0080;
 const SELECT_TEXT_COLOR: u32 = 0x00FF_FFFF;
 const DISABLED_TEXT_COLOR: u32 = 0x0080_8080;
@@ -484,6 +491,34 @@ pub struct CnrState {
     pub erased: HashSet<u32>,
     /// The icon view's grid square (`CM_SETGRIDINFO`); `None`: Warpine's.
     pub grid: Option<(i32, i32)>,
+    /// The target emphasis of a drag over the container whose owner
+    /// accepts the drop.
+    pub target: Option<TargetEmph>,
+}
+
+/// The target emphasis a container draws while a drag it accepts is over
+/// it: around the whole container (no record under the pointer), around a
+/// record, or a line after a record (`CN_DRAGAFTER`; `CMA_FIRST`: before
+/// the first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetEmph { Whole, Record(u32), After(u32) }
+
+/// Where a drop lands among rows shown top first (`(row index, bottom,
+/// height)`, container coordinates) for a pointer at height `y`, with
+/// ordered target emphasis: `Some(i)` on row `i` (only `mixed`, over the
+/// middle half of a row), `Err(None)` before the first row, `Err(Some(i))`
+/// after row `i`. The bands are Warpine's (unverified): a row's upper half
+/// puts the drop before it, the lower half after it.
+pub fn ordered_spot(rows: &[(usize, i32, i32)], y: i32, mixed: bool) -> Result<usize, Option<usize>> {
+    let Some(&(first, first_b, first_h)) = rows.first() else { return Err(None) };
+    if y >= first_b + first_h { return Err(first.checked_sub(1)); }
+    for &(i, b, h) in rows {
+        if y < b || y >= b + h { continue; }
+        let quarter = h / 4;
+        if mixed && y >= b + quarter && y < b + h - quarter { return Ok(i); }
+        return Err(if y >= b + h / 2 { i.checked_sub(1) } else { Some(i) });
+    }
+    Err(rows.last().map(|r| r.0))
 }
 
 /// A direct edit (`CNREDITDATA`): the record (0 for the container title
@@ -508,6 +543,7 @@ impl CnrState {
             info: CnrInfo { window_attr: CV_ICON, ..CnrInfo::default() },
             top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0, sort: None, next_sort_id: 0, filter: None, edit: None, edit_text: None,
             hscroll: [0; 2], split_drag: None, title_cell: 0, zorder: Vec::new(), erased: HashSet::new(), grid: None,
+            target: None,
         }
     }
 
@@ -2601,6 +2637,43 @@ impl Loader {
         self.snapshot(hwnd).and_then(|snap| self.record_at(hwnd, &snap, local).map(|i| snap.rows[i].0)).unwrap_or(0)
     }
 
+    /// What the owner of container `hwnd` is told of a drag at container
+    /// point `local`: the notification (`CN_DRAGOVER`, or `CN_DRAGAFTER`
+    /// with `CA_ORDEREDTARGETEMPH` / `CA_MIXEDTARGETEMPH` in the name, text
+    /// and details views), its record (after which the drop goes for
+    /// `CN_DRAGAFTER`; `CMA_FIRST` before the first), and the emphasis
+    /// drawn if the owner accepts.
+    pub(crate) fn container_drag_target(&self, hwnd: u32, local: (i32, i32)) -> (u32, u32, TargetEmph) {
+        let Some(snap) = self.snapshot(hwnd) else { return (CN_DRAGOVER, 0, TargetEmph::Whole) };
+        let attr = snap.info.window_attr;
+        let ordered = attr & (CA_ORDEREDTARGETEMPH | CA_MIXEDTARGETEMPH) != 0
+            && matches!(snap.view(), View::Name | View::Text | View::Detail);
+        if !ordered {
+            let rec = self.record_at(hwnd, &snap, local).map_or(0, |i| snap.rows[i].0);
+            return (CN_DRAGOVER, rec, if rec == 0 { TargetEmph::Whole } else { TargetEmph::Record(rec) });
+        }
+        let font = Painter::new(self, 0, hwnd).font();
+        let (_, placed) = self.placements(hwnd, &snap, font);
+        // A flowed view: the column of rows under the pointer.
+        let in_column = |r: &Rect| local.0 >= r.0 && local.0 < r.0 + r.2;
+        let column = placed.iter().any(|(_, r)| in_column(r));
+        let mut rows: Vec<(usize, i32, i32)> = placed.iter().filter(|(_, r)| !column || in_column(r))
+            .map(|&(i, r)| (i, r.1, r.3)).collect();
+        rows.sort_by_key(|r| r.0);
+        match ordered_spot(&rows, local.1, attr & CA_MIXEDTARGETEMPH != 0) {
+            Ok(i) => (CN_DRAGOVER, snap.rows[i].0, TargetEmph::Record(snap.rows[i].0)),
+            Err(Some(i)) => (CN_DRAGAFTER, snap.rows[i].0, TargetEmph::After(snap.rows[i].0)),
+            Err(None) => (CN_DRAGAFTER, CMA_FIRST, TargetEmph::After(CMA_FIRST)),
+        }
+    }
+
+    /// Show target emphasis `t` in container `hwnd` (`None`: take it away).
+    pub(crate) fn set_container_target(&self, hwnd: u32, t: Option<TargetEmph>) {
+        if self.with_cnr(hwnd, |s, _| std::mem::replace(&mut s.target, t) != t) == Some(true) {
+            self.repaint_control(hwnd);
+        }
+    }
+
     /// `CN_INITDRAG` for a drag starting at container point `mp1`: the
     /// record there (or NULL), the pointer in desktop coordinates and its
     /// offset to the record's origin.
@@ -2615,7 +2688,7 @@ impl Loader {
         let block = [hwnd, rec, (ox + at.0) as u32, (oy + at.1) as u32,
                      (origin.0 - at.0) as u32, (origin.1 - at.1) as u32];
         self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
-            control: hwnd, kind: OwnerCallKind::ContainerInitDrag { block },
+            control: hwnd, kind: OwnerCallKind::InitDrag { code: CN_INITDRAG, block },
         });
         true
     }
@@ -3162,6 +3235,23 @@ impl Loader {
             let cr = x + c.x + c.w;
             if in_pane(c, cr, cr).is_some() { rp.fill((cr, rows_clip.1, cr, rows_clip.3), SEPARATOR_COLOR); }
         }
+        // Target emphasis: the drag's (when its owner accepts) and records
+        // with CRA_TARGET, an outline; CN_DRAGAFTER's, a line.
+        let outline = |(l, b, r, t): (i32, i32, i32, i32)| {
+            for edge in [(l, b, r, b), (l, t, r, t), (l, b, l, t), (r, b, r, t)] { rp.fill(edge, TARGET_COLOR); }
+        };
+        let target = self.with_cnr(hwnd, |s, _| s.target).flatten();
+        for &(i, r) in &placed {
+            let rec = snap.rows[i].0;
+            if target == Some(TargetEmph::Record(rec)) || self.rec_attr(rec) & CRA_TARGET != 0 { outline(at(r)); }
+            let (l, b, rr, t) = at(r);
+            match target {
+                Some(TargetEmph::After(a)) if a == rec => rp.fill((l, b, rr, b + TARGET_LINE - 1), TARGET_COLOR),
+                Some(TargetEmph::After(CMA_FIRST)) if i == 0 => rp.fill((l, t - TARGET_LINE + 1, rr, t), TARGET_COLOR),
+                _ => {}
+            }
+        }
+        if target == Some(TargetEmph::Whole) { outline(rows_clip); }
         // The split bar between the panes.
         if let Some(sr) = snap.split_rect() {
             let (l, b, r, t) = at(sr);
@@ -3792,6 +3882,20 @@ mod tests {
         assert!(!picture_fields(CV_ICON | CA_DRAWBITMAP | CA_DRAWICON, false).1, "CA_DRAWICON wins");
         assert_eq!(picture_fields(CV_NAME | CA_DRAWBITMAP | CV_MINI, false).0, &[RC_HBMMINIBITMAP, RC_HBMBITMAP][..]);
         assert_eq!(picture_fields(CV_ICON | CA_DRAWBITMAP, true), (&[RC_HPTRICON][..], false));
+    }
+
+    #[test]
+    fn ordered_drops_go_between_rows_and_mixed_ones_onto_their_middle() {
+        // Rows 3, 4, 5 shown top first, 10 pels each, from y 30 down to 0.
+        let rows = [(3, 20, 10), (4, 10, 10), (5, 0, 10)];
+        assert_eq!(ordered_spot(&rows, 35, false), Err(Some(2)), "above: after the row before the first shown");
+        assert_eq!(ordered_spot(&rows, 27, false), Err(Some(2)), "upper half: before row 3");
+        assert_eq!(ordered_spot(&rows, 22, false), Err(Some(3)), "lower half: after row 3");
+        assert_eq!(ordered_spot(&rows, 15, true), Ok(4), "mixed: the middle is the row itself");
+        assert_eq!(ordered_spot(&rows, 11, true), Err(Some(4)));
+        assert_eq!(ordered_spot(&rows, -5, false), Err(Some(5)), "below: after the last");
+        assert_eq!(ordered_spot(&[(0, 0, 10)], 8, false), Err(None), "before the first record: CMA_FIRST");
+        assert_eq!(ordered_spot(&[], 8, true), Err(None));
     }
 
     #[test]

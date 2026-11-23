@@ -630,7 +630,10 @@ impl Loader {
         let reply = match finish {
             SentFinish::Reply if complete && calls > 0 => WinReply::Value(chain.last),
             SentFinish::Reply => WinReply::Failed,
-            SentFinish::Drag { .. } if complete && calls > 0 => WinReply::Value(chain.last),
+            SentFinish::Drag { msg } if complete && calls > 0 => {
+                if msg == DM_DRAGOVER { self.container_drag_reply(hwnd, chain.last); }
+                WinReply::Value(chain.last)
+            }
             SentFinish::Drag { msg } => WinReply::Value(if msg == DM_DRAGOVER { DOR_NEVERDROP } else { 0 }),
             SentFinish::HostDrop { stage, pdinfo, x, y } => {
                 let took_part = complete && calls > 0;

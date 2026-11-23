@@ -4473,25 +4473,29 @@ fn gui_pm_subclass_test_matches_golden() {
 /// pm_drag_test: drag and drop within a process. The guest checks the
 /// PMDRAG data calls (string handles, DRAGINFO items, DrgVerify*); the
 /// steps drag with button 2 from the client onto a container (WM_BEGINDRAG,
-/// DrgDrag, CN_DRAGOVER, CN_DROP inserting a record, DrgFreeDraginfo
-/// refused during the drop) and from that record onto the client's left
-/// half (CN_INITDRAG, DOR_NEVERDROP, DM_DRAGLEAVE, NULLHANDLE).
+/// DrgDrag, CN_DRAGAFTER with CMA_FIRST in its ordered text view,
+/// DrgSetDragImage, CN_DROP inserting a record, DrgFreeDraginfo refused
+/// during the drop), from that record onto the client's left half
+/// (CN_INITDRAG, DOR_NEVERDROP, DM_DRAGLEAVE, NULLHANDLE), and in a value set
+/// from its draggable item onto its droponable one (VN_INITDRAG,
+/// VN_DRAGOVER, VN_DROP with the items' rows and columns).
 const DRAG_STEPS: &str = "\
     1000 rdrag 152 467 352 467\n\
-    1800 rdrag 322 319 130 520\n";
+    1800 rdrag 322 319 130 520\n\
+    2400 rdrag 154 367 239 367\n";
 
 #[test]
 fn gui_pm_drag_test_drags_and_drops() {
-    let steps = format!("{DRAG_STEPS}2700 key alt+f4\n5000 quit\n");
-    assert_scripted_checks_pass("samples/pm_drag_test/pm_drag_test.exe", "pm_drag_test", 32, &steps);
+    let steps = format!("{DRAG_STEPS}3200 key alt+f4\n5500 quit\n");
+    assert_scripted_checks_pass("samples/pm_drag_test/pm_drag_test.exe", "pm_drag_test", 41, &steps);
 }
 
-/// pm_drag_test's picture: the dark source half of the client and the
-/// container holding the dropped "dropped.txt" record.
+/// pm_drag_test's picture: the dark source half of the client with the
+/// value set, and the container holding the dropped "dropped.txt" record.
 #[test]
 fn gui_pm_drag_test_matches_golden() {
     check_gui_golden("pm_drag_test", "samples/pm_drag_test/pm_drag_test.exe",
-        &format!("{DRAG_STEPS}2600 dump {{dump}}\n2700 quit\n"));
+        &format!("{DRAG_STEPS}3100 dump {{dump}}\n3200 quit\n"));
 }
 
 /// pm_dropfiles_test: files dragged and dropped (ADR-0068). The guest

@@ -24,6 +24,7 @@ mod pm_valueset;
 mod pm_notebook;
 mod pm_container;
 pub mod pm_drag;
+pub mod pm_dragimage;
 pub mod pm_scrollbar;
 pub mod pm_cursor;
 mod pm_destroy;

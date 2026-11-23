@@ -313,6 +313,11 @@ pub struct DragTable {
     /// `DRAGTRANSFER` arrays: address → count.
     pub transfers: HashMap<u32, u32>,
     pub session: Option<DragSession>,
+    /// The running drag's picture (`pm_dragimage.rs`), if it has one.
+    pub image: Option<super::pm_dragimage::DragImage>,
+    /// The container the last `CN_DRAGOVER` / `CN_DRAGAFTER` went to and
+    /// the target emphasis it draws if its owner answers `DOR_DROP`.
+    pub cnr_pending: Option<(u32, super::pm_container::TargetEmph)>,
     run: DragRun,
     /// Host files dropped on a window, waiting for its thread
     /// ([`Loader::host_drop_draginfo`]): OS/2 paths, whether each is a
@@ -814,7 +819,7 @@ impl Loader {
         let Some(pdinfo) = self.file_draginfo(vcpu, &items, hwnd) else {
             return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
         };
-        let r = self.start_drag(vcpu, hwnd, pdinfo, vk, true, hptr);
+        let r = self.start_drag(vcpu, hwnd, pdinfo, vk, true, hptr, None);
         // Refused, or over at once: the DRAGINFO goes (again: no harm).
         if matches!(r, ApiResult::Normal(0)) { self.discard_draginfo(pdinfo); }
         r
@@ -1105,7 +1110,10 @@ impl Loader {
     /// Show the drag's pointer: the illegal sign unless the window under
     /// it accepts the drop.
     fn drag_feedback(&self, accept: bool, pointer: u32) {
-        let shape = {
+        let image = self.shared.window_mgr.lock_or_recover().drag.image.clone();
+        let picture = image.filter(|_| !(accept && pointer != 0))
+            .map(|i| if accept { i.accepted } else { i.refused });
+        let shape = if let Some(p) = picture { p } else {
             let mgr = self.shared.pointers.lock_or_recover();
             if accept {
                 let h = if pointer != 0 { pointer } else { mgr.current() };
@@ -1121,13 +1129,33 @@ impl Loader {
     /// `DrgDrag(hwndSource, pdinfo, pdimg, cdimg, vkTerminate, pRsvd)`:
     /// start the drag and go on with it until the drop (see the module
     /// comment). Returns the target window, or NULLHANDLE.
-    pub(crate) fn drg_drag(&self, vcpu: u32, source: u32, pdinfo: u32, vk_terminate: u32) -> ApiResult {
-        self.start_drag(vcpu, source, pdinfo, vk_terminate, false, 0)
+    pub(crate) fn drg_drag(&self, vcpu: u32, source: u32, pdinfo: u32, pdimg: u32, cdimg: u32, vk_terminate: u32)
+        -> ApiResult {
+        let image = self.drag_image(pdimg, cdimg);
+        self.start_drag(vcpu, source, pdinfo, vk_terminate, false, 0, image)
+    }
+
+    /// `DrgSetDragImage(pdinfo, pdimg, cdimg, pRsvd)`: a new picture for
+    /// the running drag of `pdinfo`. Outside a drag only the `DRAGINFO` is
+    /// checked (unverified).
+    pub(crate) fn drg_set_drag_image(&self, vcpu: u32, pdinfo: u32, pdimg: u32, cdimg: u32) -> ApiResult {
+        let dragging = self.shared.window_mgr.lock_or_recover().drag.session.is_some_and(|s| s.pdinfo == pdinfo);
+        if !dragging { return self.drg_access_draginfo(vcpu, pdinfo); }
+        let image = self.drag_image(pdimg, cdimg);
+        let (reply, pointer) = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            wm.drag.image = image;
+            wm.drag.session.map_or((DOR_NODROP, 0), |s| (s.reply, s.pointer))
+        };
+        self.drag_feedback(reply == DOR_DROP, pointer);
+        ApiResult::Normal(1)
     }
 
     /// Start a drag (`DrgDrag`; `files`: `DrgDragFiles`'s, shown with
     /// pointer `pointer` over a target that accepts).
-    fn start_drag(&self, vcpu: u32, source: u32, pdinfo: u32, vk_terminate: u32, files: bool, pointer: u32) -> ApiResult {
+    #[allow(clippy::too_many_arguments)]
+    fn start_drag(&self, vcpu: u32, source: u32, pdinfo: u32, vk_terminate: u32, files: bool, pointer: u32,
+                  image: Option<super::pm_dragimage::DragImage>) -> ApiResult {
         let Some(button) = drag_button(vk_terminate) else {
             return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
         };
@@ -1142,6 +1170,7 @@ impl Loader {
             wm.drag.session = Some(DragSession { source, pdinfo, button, target: 0, reply: DOR_NODROP, never: false,
                                                  pointer, tid: vcpu, target_pid: 0, awaiting: false, files });
             wm.drag.run = DragRun::default();
+            wm.drag.image = image;
             // The drag loop takes the pointer from here on.
             wm.drop_pointer_input();
         }
@@ -1198,17 +1227,49 @@ impl Loader {
         if pfn != 0 {
             return Some(CallStep::send(pfn, target, msg, pdinfo, mp2));
         }
-        if class != super::pm_container::CLASS_CONTAINER || owner_proc == 0 || owner == target { return None; }
-        let code = match msg {
-            DM_DRAGOVER => super::pm_container::CN_DRAGOVER,
-            DM_DRAGLEAVE => super::pm_container::CN_DRAGLEAVE,
-            _ => super::pm_container::CN_DROP,
+        if owner_proc == 0 || owner == target { return None; }
+        if class == super::pm_valueset::CLASS_VALUESET {
+            // A value set asks its owner (VN_*) with a VSDRAGINFO.
+            let (code, at) = match msg {
+                DM_DRAGOVER => (VN_DRAGOVER, self.valueset_drop_item(target, local)),
+                DM_DRAGLEAVE => (VN_DRAGLEAVE, 0),
+                _ => (VN_DROP, self.valueset_drop_item(target, local)),
+            };
+            return Some(CallStep::Guest {
+                proc_addr: owner_proc, args: vec![owner, WM_CONTROL, (code << 16) | (id & 0xFFFF), 0],
+                block: vec![pdinfo, at], block_arg: 3, stop_on_true: false, window: owner,
+            });
+        }
+        if class != super::pm_container::CLASS_CONTAINER { return None; }
+        let (code, rec) = match msg {
+            DM_DRAGOVER => {
+                let (code, rec, emph) = self.container_drag_target(target, local);
+                self.shared.window_mgr.lock_or_recover().drag.cnr_pending = Some((target, emph));
+                (code, rec)
+            }
+            DM_DRAGLEAVE => {
+                self.set_container_target(target, None);
+                (super::pm_container::CN_DRAGLEAVE, 0)
+            }
+            _ => {
+                self.set_container_target(target, None);
+                (super::pm_container::CN_DROP, self.container_record_at(target, local))
+            }
         };
-        let rec = if msg == DM_DRAGLEAVE { 0 } else { self.container_record_at(target, local) };
         Some(CallStep::Guest {
             proc_addr: owner_proc, args: vec![owner, WM_CONTROL, (code << 16) | (id & 0xFFFF), 0],
             block: vec![pdinfo, rec], block_arg: 3, stop_on_true: false, window: owner,
         })
+    }
+
+    /// The owner of container `hwnd` answered its last `CN_DRAGOVER` /
+    /// `CN_DRAGAFTER` with `reply` (`DOR_*` in the low word): the container
+    /// shows the target emphasis when it is `DOR_DROP`.
+    pub(super) fn container_drag_reply(&self, hwnd: u32, reply: u32) {
+        let pending = self.shared.window_mgr.lock_or_recover().drag.cnr_pending.take();
+        if let Some((h, emph)) = pending.filter(|p| p.0 == hwnd) {
+            self.set_container_target(h, (reply & 0xFFFF == DOR_DROP).then_some(emph));
+        }
     }
 
     /// The window under desktop point `pos` that takes the drag, with the
@@ -1259,8 +1320,11 @@ impl Loader {
         let session = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             wm.drag.run = DragRun::default();
+            wm.drag.image = None;
+            wm.drag.cnr_pending = None;
             wm.drag.session.take()
         };
+        if let Some(s) = session { self.set_container_target(s.target, None); }
         *self.shared.drag_channel.feed.lock_or_recover() = DragFeed::default();
         self.drag_feedback(true, 0);
         // DrgDragFiles lets its DRAGINFO go and says whether it dropped.
@@ -1461,6 +1525,7 @@ impl Loader {
                     }
                     *s
                 };
+                self.container_drag_reply(s.target, s.reply);
                 self.drag_feedback(s.reply == DOR_DROP, s.pointer);
                 self.drag_continue()
             }
@@ -1724,7 +1789,7 @@ mod tests {
         // the button came up before DrgDrag looked.
         l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
         l.shared.drag_channel.released(DRAG_BUTTON, (ox + 160, oy + 60));
-        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, VK_ENDDRAG), &|c| {
+        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG), &|c| {
             if c[1] == DM_DRAGOVER { DOR_DROP | (0x10 << 16) } else { 0 }
         });
         assert_eq!(target, client);
@@ -1745,7 +1810,7 @@ mod tests {
         let pd = ok(l.drg_alloc_draginfo(0, 1));
         l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
         l.shared.drag_channel.released(DRAG_BUTTON, (ox + 150, oy + 50));
-        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, VK_ENDDRAG), &|_| DOR_NODROP);
+        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG), &|_| DOR_NODROP);
         assert_eq!(target, 0);
         assert_eq!(calls.iter().map(|c| c[1]).collect::<Vec<_>>(), vec![DM_DRAGOVER, DM_DRAGLEAVE]);
     }
@@ -1758,7 +1823,7 @@ mod tests {
         let pd = ok(l.drg_alloc_draginfo(0, 1));
         l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 20, oy + 20));
         l.shared.drag_channel.released(DRAG_BUTTON, (ox + 20, oy + 20));
-        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, VK_ENDDRAG), &|c| {
+        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG), &|c| {
             if c[2] >> 16 == super::super::pm_container::CN_DRAGOVER { DOR_DROP } else { 0 }
         });
         assert_eq!(target, cnr);
@@ -1769,17 +1834,88 @@ mod tests {
     }
 
     #[test]
+    fn an_accepting_container_shows_target_emphasis_until_the_drop() {
+        use super::super::pm_container::{TargetEmph, CN_DRAGAFTER, CN_DRAGOVER, CMA_FIRST, CA_ORDEREDTARGETEMPH, CV_NAME};
+        let l = Loader::new_mock();
+        let (frame, _client, cnr) = desk(&l);
+        let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(cnr).unwrap();
+        let emph = |l: &Loader| l.shared.window_mgr.lock_or_recover().get_window(cnr)
+            .and_then(|w| w.container.as_ref().and_then(|c| c.target));
+        let pd = ok(l.drg_alloc_draginfo(0, 1));
+        l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 20, oy + 20));
+        let overs = std::cell::Cell::new(0);
+        let seen = std::cell::Cell::new(None);
+        let (_, target) = run(&l, l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG), &|c| {
+            if c[2] >> 16 != CN_DRAGOVER { return 0; }
+            overs.set(overs.get() + 1);
+            if overs.get() == 1 {
+                l.shared.drag_channel.moved((ox + 30, oy + 30));
+            } else {
+                // The first reply accepted: the emphasis shows meanwhile.
+                seen.set(emph(&l));
+                l.shared.drag_channel.released(DRAG_BUTTON, (ox + 30, oy + 30));
+            }
+            DOR_DROP
+        });
+        assert_eq!(target, cnr);
+        assert_eq!(seen.get(), Some(TargetEmph::Whole), "no record under the pointer: the whole container");
+        assert_eq!(emph(&l), None, "gone with the drop");
+        // Ordered target emphasis in the name view: an empty container
+        // takes the drop before its first record.
+        l.shared.window_mgr.lock_or_recover().get_window_mut(cnr).unwrap().container.as_mut().unwrap()
+            .info.window_attr = CV_NAME | CA_ORDEREDTARGETEMPH;
+        assert_eq!(l.container_drag_target(cnr, (20, 20)), (CN_DRAGAFTER, CMA_FIRST, TargetEmph::After(CMA_FIRST)));
+        // A refusal shows none.
+        l.shared.window_mgr.lock_or_recover().drag.cnr_pending = Some((cnr, TargetEmph::Whole));
+        l.container_drag_reply(cnr, DOR_NODROP);
+        assert_eq!(emph(&l), None);
+    }
+
+    #[test]
+    fn a_value_set_target_asks_its_owner_with_the_item() {
+        use super::super::pm_valueset::CLASS_VALUESET;
+        let l = Loader::new_mock();
+        let (frame, client, _cnr) = desk(&l);
+        let vs = {
+            let mut wm = l.shared.window_mgr.lock_or_recover();
+            let hmq = wm.get_window(client).unwrap().hmq;
+            let vs = wm.create_window(CLASS_VALUESET.into(), client, hmq);
+            let w = wm.get_window_mut(vs).unwrap();
+            (w.x, w.y, w.cx, w.cy, w.visible, w.owner, w.id) = (150, 10, 100, 80, true, client, 7);
+            // VSCDATA: 1 row, 1 column.
+            let mut ctl = 8u32.to_le_bytes().to_vec();
+            ctl.extend_from_slice(&[1, 0, 1, 0]);
+            wm.build_slider_or_valueset(vs, &ctl);
+            vs
+        };
+        l.dispatch_builtin_control(vs, super::super::constants::VM_SETITEMATTR, 1 | (1 << 16),
+                                   (1 << 16) | u32::from(super::super::constants::VIA_DROPONABLE));
+        let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(vs).unwrap();
+        let pd = ok(l.drg_alloc_draginfo(0, 1));
+        l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 50, oy + 40));
+        l.shared.drag_channel.released(DRAG_BUTTON, (ox + 50, oy + 40));
+        let (calls, target) = run(&l, l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG), &|c| {
+            if c[2] >> 16 == VN_DRAGOVER { DOR_DROP } else { 0 }
+        });
+        assert_eq!(target, vs);
+        let seen: Vec<(u32, u32, u32, u32, u32)> = calls.iter().map(|c| (c[0], c[1], c[2], c[4], c[5])).collect();
+        let item = 1 | (1 << 16);
+        assert_eq!(seen, vec![(client, WM_CONTROL, (VN_DRAGOVER << 16) | 7, pd, item),
+                              (client, WM_CONTROL, (VN_DROP << 16) | 7, pd, item)], "VSDRAGINFO: pDragInfo, row 1, column 1");
+    }
+
+    #[test]
     fn the_draginfo_cannot_be_freed_during_the_drag() {
         let l = Loader::new_mock();
         let (frame, client, _cnr) = desk(&l);
         let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(client).unwrap();
         let pd = ok(l.drg_alloc_draginfo(0, 1));
         l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
-        let r = l.drg_drag(0, frame, pd, VK_ENDDRAG);
+        let r = l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG);
         assert!(matches!(r, ApiResult::CallChain(_)), "DM_DRAGOVER");
         assert_eq!(ok(l.drg_query_drag_status()), DGS_DRAGINPROGRESS);
         assert_eq!(ok(l.drg_free_draginfo(0, pd)), 0, "PMERR_SOURCE_SAME_AS_TARGET");
-        assert_eq!(ok(l.drg_drag(0, frame, pd, VK_ENDDRAG)), 0, "already dragging");
+        assert_eq!(ok(l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG)), 0, "already dragging");
         // Esc ends it.
         assert!(l.shared.drag_channel.cancel());
         let ApiResult::CallChain(mut chain) = r else { unreachable!() };
@@ -1791,6 +1927,46 @@ mod tests {
         leave.returned(0, false);
         assert_eq!(l.finish_chain(&leave), ChainEnd::Return(0));
         assert_eq!(ok(l.drg_free_draginfo(0, pd)), 1);
+    }
+
+    #[test]
+    fn the_drag_carries_its_picture_until_it_ends() {
+        use super::super::pm_dragimage::*;
+        let l = Loader::new_mock();
+        let (frame, client, _cnr) = desk(&l);
+        let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(client).unwrap();
+        let pd = ok(l.drg_alloc_draginfo(0, 1));
+        // One DRAGIMAGE: the information icon, 16 pels right of the hot spot.
+        let img = BUF + 0x100;
+        let hptr = super::super::pm_pointer::PointerManager::system_handle(SPTR_ICONINFORMATION);
+        l.guest_write_bytes(img, &[0; DRAGIMAGE_SIZE as usize]).unwrap();
+        l.guest_write::<u32>(img + DIM_HIMAGE, hptr).unwrap();
+        l.guest_write::<u32>(img + DIM_FL, DRG_ICON).unwrap();
+        l.guest_write::<i16>(img + DIM_CX_OFFSET, 16).unwrap();
+        // Polygons are not drawn: alone they make no picture.
+        l.guest_write::<u32>(img + DRAGIMAGE_SIZE + DIM_FL, DRG_POLYGON).unwrap();
+        assert!(l.drag_image(img + DRAGIMAGE_SIZE, 1).is_none());
+        l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
+        let r = l.drg_drag(0, frame, pd, img, 2, VK_ENDDRAG);
+        let image = l.shared.window_mgr.lock_or_recover().drag.image.clone().expect("a picture");
+        let crate::gui::pointer::PointerShape::Image(p) = &image.accepted else { panic!() };
+        assert_eq!((p.hot_x, p.width as i32), (0, 16 + super::super::pm_msgbox::MSGBOX_ICON_SIZE));
+        assert_ne!(image.accepted, image.refused);
+        // DrgSetDragImage replaces it; outside a drag it only checks the DRAGINFO.
+        assert_eq!(ok(l.drg_set_drag_image(0, pd, 0, 0)), 1);
+        assert!(l.shared.window_mgr.lock_or_recover().drag.image.is_none());
+        assert_eq!(ok(l.drg_set_drag_image(0, pd, img, 1)), 1);
+        assert!(l.shared.window_mgr.lock_or_recover().drag.image.is_some());
+        assert!(l.shared.drag_channel.cancel());
+        let ApiResult::CallChain(mut chain) = r else { panic!("{r:?}") };
+        chain.steps.clear();
+        chain.returned(DOR_DROP, false);
+        let ChainEnd::Next(mut leave) = l.finish_chain(&chain) else { panic!() };
+        leave.steps.clear();
+        leave.returned(0, false);
+        assert_eq!(l.finish_chain(&leave), ChainEnd::Return(0));
+        assert!(l.shared.window_mgr.lock_or_recover().drag.image.is_none(), "gone with the drag");
+        assert_eq!(ok(l.drg_set_drag_image(0, pd, img, 1)), 1, "a DRAGINFO, no drag");
     }
 
     #[test]
@@ -1985,7 +2161,7 @@ mod tests {
         l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
         l.shared.drag_channel.released(DRAG_BUTTON, (ox + 150, oy + 50));
         let seen = std::cell::Cell::new(0);
-        let (_, target) = run(&l, l.drg_drag(0, frame, pd, VK_ENDDRAG), &|c| {
+        let (_, target) = run(&l, l.drg_drag(0, frame, pd, 0, 0, VK_ENDDRAG), &|c| {
             if c[1] == DM_DRAGOVER {
                 seen.set(l.guest_read::<u16>(pd + DI_OPERATION).unwrap());
                 DOR_DROP

@@ -402,6 +402,7 @@ impl Loader {
                 ok(true)
             }
             WM_CHAR => ok(self.valueset_char(hwnd, style, &s, mp1, mp2)),
+            super::pm_drag::WM_BEGINDRAG if style & WS_DISABLED == 0 => ok(self.valueset_init_drag(hwnd, &lay, &s, mp1)),
             // mp2 = the item: a handle, colour or index, or a text item's PSZ.
             VM_SETITEM => {
                 let Some(item) = s.item(at) else { return Some(ok(false)) };
@@ -473,6 +474,34 @@ impl Loader {
             },
             _ => return None,
         })
+    }
+
+    /// `VN_INITDRAG` for a drag starting at value-set point `mp1` on a
+    /// `VIA_DRAGGABLE` item: a `VSDRAGINIT` with the pointer in desktop
+    /// coordinates and its offset to the item's origin (as `CNRDRAGINIT`'s;
+    /// unverified). FALSE elsewhere.
+    fn valueset_init_drag(&self, hwnd: u32, lay: &Layout, s: &ValueSetState, mp1: u32) -> bool {
+        let pos = mouse_pos(mp1);
+        let Some(at) = lay.item_at(pos).filter(|&at| s.item(at).is_some_and(|i| i.attr & VIA_DRAGGABLE != 0))
+        else { return false };
+        let (ix, iy, _, _) = lay.item_rect(at);
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let (ox, oy) = wm.window_origin(hwnd).unwrap_or((0, 0));
+        let block = [hwnd, (ox + pos.0) as u32, (oy + pos.1) as u32, (ix - pos.0) as u32, (iy - pos.1) as u32, rc(at)];
+        wm.queue_owner_call(super::pm_owner::OwnerCall {
+            control: hwnd, kind: super::pm_owner::OwnerCallKind::InitDrag { code: VN_INITDRAG, block },
+        });
+        true
+    }
+
+    /// The `MPFROM2SHORT(row, column)` of the `VIA_DROPONABLE` item of value
+    /// set `hwnd` at point `local` for a `VSDRAGINFO`; 0 for none (a drag
+    /// over other places is still told to the owner; unverified).
+    pub(super) fn valueset_drop_item(&self, hwnd: u32, local: (i32, i32)) -> u32 {
+        let Some((style, cx, cy, s)) = self.valueset_info(hwnd) else { return 0 };
+        Layout::new(&s, style, cx, cy).item_at(local)
+            .filter(|&at| s.item(at).is_some_and(|i| i.attr & VIA_DROPONABLE != 0))
+            .map_or(0, rc)
     }
 
     /// A key for the value set: the cursor keys move the selection, Enter
@@ -896,6 +925,32 @@ mod tests {
         assert_eq!(f.send(VM_SETITEMATTR, rc((1, 1)), (1 << 16) | VIA_DISABLED as u32), 1);
         assert_eq!(f.send(VM_QUERYITEMATTR, rc((1, 1)), 0), (VIA_RGB | VIA_DISABLED) as u32);
         assert_eq!(f.send(VM_QUERYITEMATTR, rc((5, 5)), 0), VSERR_INVALID_PARAMETERS as u32);
+    }
+
+    #[test]
+    fn draggable_items_start_drags_and_droponable_ones_take_drops() {
+        use super::super::pm_owner::OwnerCallKind;
+        let f = fixture(VS_RGB);
+        let (ix, iy, _, _) = {
+            let (style, cx, cy, s) = f.loader.valueset_info(f.vs).unwrap();
+            Layout::new(&s, style, cx, cy).item_rect((1, 2))
+        };
+        let inside = (ix + 3, iy + 4);
+        let begin = |f: &Fx| f.send(super::super::pm_drag::WM_BEGINDRAG, Fx::at(inside.0, inside.1), 0);
+        assert_eq!(begin(&f), 0, "not VIA_DRAGGABLE");
+        f.send(VM_SETITEMATTR, rc((1, 2)), (1 << 16) | VIA_DRAGGABLE as u32);
+        assert_eq!(begin(&f), 1);
+        let (ox, oy) = f.loader.shared.window_mgr.lock_or_recover().window_origin(f.vs).unwrap();
+        let calls: Vec<_> = f.loader.shared.window_mgr.lock_or_recover().owner_calls.iter()
+            .filter_map(|c| match c.kind { OwnerCallKind::InitDrag { code, block } => Some((c.control, code, block)), _ => None })
+            .collect();
+        assert_eq!(calls, vec![(f.vs, VN_INITDRAG,
+            [f.vs, (ox + inside.0) as u32, (oy + inside.1) as u32, (-3i32) as u32, (-4i32) as u32, rc((1, 2))])]);
+        // Drops: only on VIA_DROPONABLE items.
+        assert_eq!(f.loader.valueset_drop_item(f.vs, inside), 0);
+        f.send(VM_SETITEMATTR, rc((1, 2)), (1 << 16) | VIA_DROPONABLE as u32);
+        assert_eq!(f.loader.valueset_drop_item(f.vs, inside), rc((1, 2)));
+        assert_eq!(f.loader.valueset_drop_item(f.vs, (1, 1)), 0, "the border");
     }
 
     #[test]
