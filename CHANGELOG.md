@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-11-24
+
 ### Added
 - **The compatibility chart covers the modules outside os2386.lib** (ADR-0033 addendum): VIO / KBD / MOU, REXX, the SOM kernel, MSG, the standard dialogs (PMCTLS), Unicode (UCONV), MMPM/2 (MDM) and the TCP/IP sockets, each counted against its full documented export list dated from public sources (new `doc/compat/other_api_versions.tsv`, 318 dated exports, replacing the partial `extra_modules.tsv`; sources S20–S67 in `doc/compat/SOURCES.md`). Their exports are matched by name through `targets/os2api.def`, and SOM, REXX and VIO stubs no longer count. The headline row now sums all 1230 Warp 4 exports (63 %), and the os2386.lib row keeps its earlier numbers. A version that lacked a module shows a dash. `gen_compat` has 12 tests.
 - **The SOM entries IBM's Reference documents that the kernel lacked**: `SOMClass`'s `somRenew`, `somRenewNoInit`, `somRenewNoZero` and `somRenewNoInitNoZero` (objects in the caller's memory), `somGetMemberToken`, `somGetMethodIndex`, `somGetNthMethodInfo`, `somGetMethodData`, `somGetNthMethodData` and `somGetMethodDescriptor`; `SOMObject`'s `somCastObj` / `somResetObj`; `SOMClassMgr`'s `somGetInitFunction`; `somMainProgram` and `somEnvironmentEnd`. The SDK declares them, with the `SOM_MainProgram`, `SOM_Test`, `SOM_TestC`, `SOM_Expect`, `SOM_Assert` and `SOM_WarnMsg` macros; `c_som_test` grows to 20 checks.
