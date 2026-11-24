@@ -1,0 +1,8 @@
+# ne_arena_test.lnk — wlink directive file for the 16-bit arena probe
+format os2
+option nodefaultlibs
+option stack=0x400
+import DosWrite DOSCALLS.138
+import DosExit DOSCALLS.5
+file ne_arena_test.o
+name ne_arena_test.exe

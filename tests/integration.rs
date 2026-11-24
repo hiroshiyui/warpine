@@ -1949,6 +1949,22 @@ fn a_16_bit_program_runs_at_ring_3() {
     assert_ne!(code, 0, "{out}");
 }
 
+/// ne_arena_test: a 16-bit program reads its own data, then tries the
+/// session's shared arena through the GDT data tile that covers it; the
+/// arena's pages are present only for blocks the process holds (ADR-0049
+/// addendum), so the read traps and ends the program before it can say
+/// it got through.
+#[test]
+fn a_16_bit_program_cannot_reach_the_shared_arena() {
+    const SAMPLE: &str = "samples/ne_arena_test/ne_arena_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let (out, code) = run_sample(SAMPLE, 15);
+    assert!(out.contains("ne_arena_test: own data read: ok"), "{out}");
+    assert!(out.contains("ne_arena_test info: reading the arena"), "{out}");
+    assert!(!out.contains("read the arena: FAIL"), "the arena was reachable:\n{out}");
+    assert_ne!(code, 0, "{out}");
+}
+
 /// ne_hello: 16-bit NE format DosWrite + DosExit — pure assembly, no CRT.
 #[test]
 fn test_ne_hello() {
