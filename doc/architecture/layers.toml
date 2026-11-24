@@ -111,7 +111,7 @@ modules = [
   "loader/rexx/template.rs", "loader/rexx/trace.rs", "loader/rexx/embed.rs", "loader/rexx_vfs.rs",
   "loader/rexxapi.rs", "loader/rexxapi/host.rs", "loader/cmd/input.rs", "loader/cmd/parse.rs",
   "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/npipe_sem.rs", "loader/inherit.rs", "loader/msgcalls.rs", "loader/msgfile.rs",
-  "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/session_threads.rs", "loader/shared_arena.rs", "loader/shared_sem.rs",
+  "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/config_sys_parse.rs", "loader/session_threads.rs", "loader/shared_arena.rs", "loader/shared_sem.rs",
   "loader/clock.rs", "loader/warpine_api.rs", "loader/infoseg.rs",
 ]
 
@@ -181,7 +181,7 @@ modules = [
 id = "pmshell"
 zone = "host"
 label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), the switch list (the session's, ADR-0056), HELPMGR, the SOM runtime kernel (ADR-0059 to ADR-0063, ADR-0070 to ADR-0073)"
-modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs", "loader/pm_switch.rs", "loader/som.rs"]
+modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/profile_text.rs", "loader/helpmgr.rs", "loader/pm_switch.rs", "loader/som.rs"]
 
 [[layer]]
 id = "stddlg"

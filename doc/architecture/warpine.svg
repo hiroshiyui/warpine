@@ -199,8 +199,8 @@
 <text xml:space="preserve" text-anchor="start" x="3286.62" y="-705.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/rexxapi/host.rs, loader/cmd/input.rs, loader/cmd/parse.rs, loader/npipe.rs</text>
 <text xml:space="preserve" text-anchor="start" x="3290" y="-697.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe_dir.rs, loader/npipe_api.rs, loader/npipe_sem.rs, loader/inherit.rs</text>
 <text xml:space="preserve" text-anchor="start" x="3285.5" y="-689.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/msgcalls.rs, loader/msgfile.rs, loader/pm_startapp.rs, loader/config_sys.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3269" y="-681.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/session_threads.rs, loader/shared_arena.rs, loader/shared_sem.rs, loader/clock.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3357.5" y="-673.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/warpine_api.rs, loader/infoseg.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3246.88" y="-681.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/config_sys_parse.rs, loader/session_threads.rs, loader/shared_arena.rs, loader/shared_sem.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3329.75" y="-673.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/clock.rs, loader/warpine_api.rs, loader/infoseg.rs</text>
 </g>
 <!-- dispatch&#45;&gt;kernel -->
 <g id="edge10" class="edge">
@@ -277,8 +277,8 @@
 <title>pmshell</title>
 <path fill="#bbdefb" stroke="black" d="M5538.18,-748.38C5538.18,-748.38 4639.82,-748.38 4639.82,-748.38 4633.82,-748.38 4627.82,-742.38 4627.82,-736.38 4627.82,-736.38 4627.82,-721.86 4627.82,-721.86 4627.82,-715.86 4633.82,-709.86 4639.82,-709.86 4639.82,-709.86 5538.18,-709.86 5538.18,-709.86 5544.18,-709.86 5550.18,-715.86 5550.18,-721.86 5550.18,-721.86 5550.18,-736.38 5550.18,-736.38 5550.18,-742.38 5544.18,-748.38 5538.18,-748.38"/>
 <text xml:space="preserve" text-anchor="start" x="4638.62" y="-733.17" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM shell DLLs: PMSHAPI profiles (ADR&#45;0017), the switch list (the session&#39;s, ADR&#45;0056), HELPMGR, the SOM runtime kernel (ADR&#45;0059 to ADR&#45;0063, ADR&#45;0070 to ADR&#45;0073)</text>
-<text xml:space="preserve" text-anchor="start" x="4955.88" y="-725.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/helpmgr.rs, loader/pm_switch.rs</text>
-<text xml:space="preserve" text-anchor="start" x="5064.62" y="-717.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/som.rs</text>
+<text xml:space="preserve" text-anchor="start" x="4955.12" y="-725.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/profile_text.rs, loader/helpmgr.rs</text>
+<text xml:space="preserve" text-anchor="start" x="5026.75" y="-717.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_switch.rs, loader/som.rs</text>
 </g>
 <!-- dispatch&#45;&gt;pmshell -->
 <g id="edge14" class="edge">

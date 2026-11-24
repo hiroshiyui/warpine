@@ -95,3 +95,15 @@ name = "wav"
 path = "fuzz_targets/wav.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "config_sys"
+path = "fuzz_targets/config_sys.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "profile"
+path = "fuzz_targets/profile.rs"
+test = false
+doc = false

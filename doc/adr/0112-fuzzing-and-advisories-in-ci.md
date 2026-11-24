@@ -62,3 +62,9 @@ The "Security Facilities" TODOs named two gaps:
 `res_templates` fuzzes the parsers of the resources a running program hands Warpine — dialog templates, menu templates, accelerator tables, `RT_STRING` / `RT_MESSAGE` bundles and `PRESPARAMS` blocks — moved into `src/loader/res_templates.rs` so that they build alone (code page decoding and class-atom names come in as functions; the old modules re-export). The menu parser now reads a byte slice instead of guest memory and stops nesting at `MAX_MENU_DEPTH` (16): a hostile template could recurse into submenus once per 16 bytes. Two minutes, 1.76 million inputs, nothing found.
 
 Later the same day `pointer` (the `RT_POINTER` decoder, `pointer_codec.rs`) and `wav` (the waveaudio device's WAV parser, `wav.rs`) followed, each taken out of its module the same way: a minute each, 0.87 and 25.8 million inputs, nothing found.
+
+## Addendum (2026-11-25): the files a program can write
+
+Two parsers read files on drives a program can write, and had no target: `C:\CONFIG.SYS` and the `Prf*` profiles. Their pure parts move into modules of their own, which the old ones re-export: `config_sys_parse.rs` (the statements, the environment, the `THREADS=` limit; `config_sys.rs` keeps the read through the VFS) and `profile_text.rs` (the model and Warpine's text format; `profile.rs` keeps loading and saving). `config_sys` checks the bounds (LIBPATH entries, one environment block, the limit's range); `profile` checks that a parsed profile written back parses to the same profile. A minute each, 1.27 and 3.25 million inputs, nothing found; `seed.sh` writes a CONFIG.SYS and a profile.
+
+Warpine reads no font or help file a program supplies (its fonts are built in, `GpiLoadFonts` is a stub, the Help Manager records a library's name only), so there is no such reader to fuzz yet.
