@@ -170,6 +170,40 @@ static void protocol_checks(void)
     endprotoent();
 }
 
+/* struct servent, as <netdb.h> declares it. */
+struct servent {
+    char  *s_name;
+    char **s_aliases;
+    int    s_port;
+    char  *s_proto;
+};
+typedef struct servent *(_System *PFN_SENT)(void);
+typedef void *(_System *PFN_HADDR)(const char *, int, int);
+typedef int (_System *PFN_HERR)(void);
+
+static void service_checks(void)
+{
+    PFN_PSET setservent = (PFN_PSET)find(tcp, "setservent");
+    PFN_SENT getservent = (PFN_SENT)find(tcp, "getservent");
+    PFN_VOID endservent = (PFN_VOID)find(tcp, "endservent");
+    PFN_HADDR gethostbyaddr = (PFN_HADDR)find(tcp, "gethostbyaddr");
+    PFN_HERR tcp_h_errno = (PFN_HERR)find(tcp, "tcp_h_errno");
+    struct servent *se;
+    char first[64];
+    if (!setservent || !getservent || !endservent || !gethostbyaddr || !tcp_h_errno) return;
+
+    /* The host's services database may be empty: then both walks end at once. */
+    setservent(0);
+    se = getservent();
+    first[0] = '\0';
+    if (se != NULL) strncpy(first, se->s_name, sizeof(first) - 1), first[sizeof(first) - 1] = '\0';
+    setservent(0);
+    se = getservent();
+    check("setservent starts getservent over", (se == NULL && first[0] == '\0') || (se != NULL && strcmp(se->s_name, first) == 0));
+    endservent();
+    check("tcp_h_errno after a failed lookup", gethostbyaddr("\1\2\3\4", 4, 99) == NULL && tcp_h_errno() == 1);
+}
+
 static void socket_checks(void)
 {
     PFN_SOCKET socket = (PFN_SOCKET)find(so, "socket");
@@ -219,6 +253,7 @@ int main(void)
     address_checks();
     resolver_checks();
     protocol_checks();
+    service_checks();
     socket_checks();
     printf("netutil_test: %d passed, %d failed\n", passed, failed);
     return failed != 0;

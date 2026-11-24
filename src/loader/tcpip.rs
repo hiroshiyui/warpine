@@ -218,6 +218,13 @@ pub struct SocketManager {
     pub protoent_addr: Option<u32>,
     /// `getprotoent`'s place in the protocol database.
     pub proto_cursor: usize,
+    /// The resolver's last error (`tcp_h_errno`: `HOST_NOT_FOUND` …).
+    pub h_errno: u32,
+    /// The services database `setservent` / `getservent` walk (name, port
+    /// in network order, protocol), read once from the host's.
+    pub services: Option<Vec<(String, i32, String)>>,
+    /// `getservent`'s place in it.
+    pub serv_cursor: usize,
 }
 
 impl Default for SocketManager {
@@ -234,6 +241,9 @@ impl SocketManager {
             ntoa_addr: None,
             protoent_addr: None,
             proto_cursor: 0,
+            h_errno: 0,
+            services: None,
+            serv_cursor: 0,
         }
     }
 
@@ -1167,7 +1177,9 @@ impl super::Loader {
         let ip = match addr {
             Some(ip) => ip.octets(),
             None => {
-                self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_HOSTUNREACH);
+                let mut sockets = self.shared.socket_mgr.lock_or_recover();
+                sockets.set_errno(SOCE_HOSTUNREACH);
+                sockets.h_errno = super::tcpip_util::HOST_NOT_FOUND;
                 return 0;
             }
         };
@@ -1183,7 +1195,9 @@ impl super::Loader {
         debug!("gethostbyaddr(addr=0x{:X}, len={}, type={})", addr_ptr, len, addr_type);
         // Only support AF_INET (type=2), 4-byte addresses.
         if addr_type != libc::AF_INET as u32 || len < 4 {
-            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_AFNOSUPPORT);
+            let mut sockets = self.shared.socket_mgr.lock_or_recover();
+            sockets.set_errno(SOCE_AFNOSUPPORT);
+            sockets.h_errno = super::tcpip_util::HOST_NOT_FOUND;
             return 0;
         }
         let ip_bytes = self.read_guest_bytes(addr_ptr, 4);
@@ -1346,7 +1360,7 @@ impl super::Loader {
     ///   +0x04  s_aliases u32  ptr to null alias list
     ///   +0x08  s_port    i32  port in network byte order
     ///   +0x0C  s_proto   u32  ptr to protocol name
-    fn write_servent_to_scratch(&self, svc_name: &str, port: i32, proto_name: &str) -> u32 {
+    pub(crate) fn write_servent_to_scratch(&self, svc_name: &str, port: i32, proto_name: &str) -> u32 {
         let scratch = self.ensure_hostent_scratch();
         if scratch == 0 {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOBUFS);

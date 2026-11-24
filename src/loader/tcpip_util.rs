@@ -191,6 +191,35 @@ pub fn protocol_by_number(number: u32) -> Option<usize> {
     PROTOCOLS.iter().position(|&(_, _, p)| p == number)
 }
 
+// ── Services and the resolver's error ────────────────────────────────────────
+
+/// `h_errno` values (<netdb.h>).
+pub const HOST_NOT_FOUND: u32 = 1;
+/// The most services `getservent` lists.
+const MAX_SERVICES: usize = 4096;
+/// libc's services cursor is process-wide state: one reader at a time.
+static HOST_SERVICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The host's services database (name, port in network order, protocol),
+/// at most `MAX_SERVICES` entries.
+fn host_services() -> Vec<(String, i32, String)> {
+    let _one_reader = HOST_SERVICES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = Vec::new();
+    // SAFETY: setservent / getservent / endservent are called under the
+    // lock above; each entry's strings are copied before the next call.
+    unsafe {
+        libc::setservent(0);
+        while out.len() < MAX_SERVICES {
+            let se = libc::getservent();
+            if se.is_null() { break; }
+            let text = |p: *const libc::c_char| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+            out.push((text((*se).s_name), (*se).s_port, text((*se).s_proto)));
+        }
+        libc::endservent();
+    }
+    out
+}
+
 // ── ioctl ────────────────────────────────────────────────────────────────────
 
 /// The socket `ioctl` requests Warpine answers, by their group and number
@@ -316,6 +345,42 @@ impl super::Loader {
             i
         };
         self.net_protoent((i < PROTOCOLS.len()).then_some(i))
+    }
+
+    /// tcp_h_errno: the resolver's last error (`HOST_NOT_FOUND` after a
+    /// lookup that found nothing), as the `h_errno` macro reads it.
+    pub fn net_tcp_h_errno(&self) -> u32 {
+        self.shared.socket_mgr.lock_or_recover().h_errno
+    }
+
+    /// setservent: start the services database over, reading it from the
+    /// host the first time.
+    pub fn net_setservent(&self) -> u32 {
+        let mut sockets = self.shared.socket_mgr.lock_or_recover();
+        if sockets.services.is_none() { sockets.services = Some(host_services()); }
+        sockets.serv_cursor = 0;
+        0
+    }
+
+    /// getservent: the next service, or 0 at the end of the database.
+    pub fn net_getservent(&self) -> u32 {
+        let next = {
+            let mut sockets = self.shared.socket_mgr.lock_or_recover();
+            if sockets.services.is_none() { sockets.services = Some(host_services()); }
+            let i = sockets.serv_cursor;
+            let entry = sockets.services.as_ref().and_then(|v| v.get(i).cloned());
+            if entry.is_some() { sockets.serv_cursor += 1; }
+            entry
+        };
+        next.map_or(0, |(name, port, proto)| self.write_servent_to_scratch(&name, port, &proto))
+    }
+
+    /// endservent: forget the database and its place.
+    pub fn net_endservent(&self) -> u32 {
+        let mut sockets = self.shared.socket_mgr.lock_or_recover();
+        sockets.services = None;
+        sockets.serv_cursor = 0;
+        0
     }
 
     /// dn_expand: unpack the name at `comp` of the message `[msg, eom)`
@@ -518,5 +583,23 @@ mod tests {
         assert_eq!(socket_ioctl(0x4004_7307), Some(SocketIoctl::AtMark));
         assert_eq!(socket_ioctl(0x667E), Some(SocketIoctl::NonBlocking));
         assert_eq!(socket_ioctl(0x4004_6601), None);
+    }
+
+    /// tcp_h_errno reports a failed lookup; setservent starts the services
+    /// walk over (the host's database may be empty).
+    #[test]
+    fn resolver_error_and_service_walk() {
+        let loader = super::super::Loader::new_mock();
+        assert_eq!(loader.net_tcp_h_errno(), 0);
+        assert_eq!(loader.so_gethostbyaddr(0, 4, 99), 0);
+        assert_eq!(loader.net_tcp_h_errno(), HOST_NOT_FOUND);
+        loader.net_setservent();
+        let first = loader.net_getservent();
+        let name = |se: u32| (se != 0).then(|| loader.guest_read::<u32>(se).unwrap()).map(|p| loader.net_string(p).unwrap());
+        let first_name = name(first);
+        loader.net_setservent();
+        assert_eq!(name(loader.net_getservent()), first_name);
+        loader.net_endservent();
+        assert!(loader.shared.socket_mgr.lock_or_recover().services.is_none());
     }
 }

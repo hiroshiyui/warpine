@@ -43,6 +43,17 @@ struct protoent * APIENTRY getprotobynumber(int proto);
 void APIENTRY setprotoent(int stayopen);
 struct protoent * APIENTRY getprotoent(void);
 void APIENTRY endprotoent(void);
+void APIENTRY setservent(int stayopen);
+struct servent * APIENTRY getservent(void);
+void APIENTRY endservent(void);
+
+/* The resolver's last error. */
+int APIENTRY tcp_h_errno(void);
+#define h_errno (tcp_h_errno())
+#define HOST_NOT_FOUND 1
+#define TRY_AGAIN      2
+#define NO_RECOVERY    3
+#define NO_DATA        4
 
 #ifdef __cplusplus
 }

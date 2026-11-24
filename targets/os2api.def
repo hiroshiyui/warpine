@@ -734,6 +734,10 @@ TCP32DLL.68   putlong   # NOTE: Warpine's own ordinal (ADR-0123)
 TCP32DLL.69   setprotoent   # NOTE: Warpine's own ordinal (ADR-0123)
 TCP32DLL.70   getprotoent   # NOTE: Warpine's own ordinal (ADR-0123)
 TCP32DLL.71   endprotoent   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.72   setservent   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.73   getservent   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.74   endservent   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.75   tcp_h_errno   # NOTE: Warpine's own ordinal (ADR-0123)
 
 # ── MOUCALLS (ordinals from Open Watcom os2386.lib MOU16* imports) ──────────
 MOUCALLS.1    MouGetPtrShape

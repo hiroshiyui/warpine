@@ -387,6 +387,10 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             69 => "setprotoent",
             70 => "getprotoent",
             71 => "endprotoent",
+            72 => "setservent",
+            73 => "getservent",
+            74 => "endservent",
+            75 => "tcp_h_errno",
             _ => "?",
         },
 
@@ -1058,6 +1062,7 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             69 => &["stayopen"],
             70 => &[],
             71 => &[],
+            72 => &["stayopen"],
             _ => &[],
         },
 
