@@ -283,12 +283,13 @@ Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordin
 |---|---|---|
 | 1 | `mciSendCommand` | Structured MCI command (MCI_OPEN, MCI_CLOSE, MCI_PLAY, MCI_STOP, etc.) |
 | 2 | `mciSendString` | Text-string MCI command (`"open waveaudio alias wave1"`) |
-| 3 | `mciFreeBlock` | Free an MCI-allocated block |
-| 4 | `mciGetLastError` | Retrieve the last MCI error string |
+| 3 | `mciGetErrorString` | The text of an MCI error code (`mmpm_errtext.rs`) |
+
+The ordinals are those of Open Watcom's `mmpm2.lib`, which has no MDM 4. `mmpm_errtext.rs` holds the text of every `MCIERR_*` code of `<meerror.h>`: the code's name in words, since IBM's message texts are not public (`mci_error_text`).
 
 `DosBeep` (DOSCALLS ordinal 286) is also routed through `mmpm::beep_tone()`, which generates a sine-wave tone at the requested frequency and blocks for its duration.
 
-`MmpmManager` tracks open waveaudio devices (with their alias, decoded PCM, position, volume and playing voice) and the last error. Constants and parameter-block layouts (`MCI_OPEN_PARMS`, `MCI_PLAY_PARMS`, `MCI_SET_PARMS`, `MCI_STATUS_PARMS`), message numbers, `MM_MCINOTIFY` (0x0500) with its notify codes, and the `MCIERR_*` codes (base 5000) follow the toolkit headers `<mcios2.h>` / `<meerror.h>`. WAV files are decoded in Rust (`parse_wav`: uncompressed 8/16/24/32-bit PCM and 32-bit float; compressed formats are refused).
+`MmpmManager` tracks open waveaudio devices (with their alias, decoded PCM, position, volume and playing voice). Constants and parameter-block layouts (`MCI_OPEN_PARMS`, `MCI_PLAY_PARMS`, `MCI_SET_PARMS`, `MCI_STATUS_PARMS`), message numbers, `MM_MCINOTIFY` (0x0500) with its notify codes, and the `MCIERR_*` codes (base 5000) follow the toolkit headers `<mcios2.h>` / `<meerror.h>`. WAV files are decoded in Rust (`parse_wav`: uncompressed 8/16/24/32-bit PCM and 32-bit float; compressed formats are refused).
 
 **Audio output** (`src/gui/audio.rs`). SDL3 audio belongs to the main thread: in the safe sdl3-rs API the `Sdl` context is created there and `AudioSubsystem` / `AudioStream` are neither `Send` nor `Sync`. So the API threads never call SDL: they hand PCM data and a gain to `SharedState::audio` (`AudioService`) and get a voice number back. The main-thread loop (PM desktop or VGA text window) owns an `SdlAudio`, attached at renderer creation, before the guest starts; each loop pass drains the commands into SDL audio streams (which convert to the device format and apply the gain) and reports how much of each voice is still queued. `MCI_WAIT` and `DosBeep` block on the service until the voice ends, `MCI_NOTIFY` watcher threads wait on it with a cancel flag, and `MCI_SET` volume changes reach the playing voice. While voices play, the PM loop waits at most `AUDIO_PUMP_INTERVAL` (10 ms). Without a main-thread loop (`WARPINE_HEADLESS=1`, or a CLI app whose stdout is not a terminal) no backend is attached and audio is silent.
 
@@ -1936,7 +1937,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (513 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (512 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -2026,7 +2027,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (513 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (512 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -2188,7 +2189,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2404: 2289 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
+The unit tests (2406: 2291 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2200,7 +2201,7 @@ The unit tests (2404: 2289 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 
 | `src/loader/stubs.rs` | DosEditName wildcard pattern replacement, DosQuerySysInfo QSV_* constant validation |
 | `src/loader/process.rs` | ProcessManager child tracking, wait-any semantics |
 | `src/loader/api_trace.rs` | ordinal_to_name (DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, NLS, MSG, MDM, UCONV — auto-generated from `os2api.def`), module_for_ordinal (all ranges), arg_names_for_ordinal |
-| `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciFreeBlock, mciGetLastError |
+| `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciGetErrorString |
 | `src/loader/vfs.rs` | DriveManager path resolution, device name detection, drive letter parsing |
 | `src/loader/vfs_hostdir.rs` | HostDirBackend case-insensitive lookup, sandbox enforcement, EA operations |
 | `src/gui/sdl_renderer.rs` | Scancode / VK / WM_CHAR mapping, mouse modifiers (`fsInp`) and double clicks, window chrome and menu drawing, chrome hit-testing, the event-loop wait, scripted input → SDL events |
@@ -2511,14 +2512,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (513 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (512 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2404 unit tests (2289 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 229 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2406 unit tests (2291 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 230 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

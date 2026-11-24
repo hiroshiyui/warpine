@@ -730,19 +730,20 @@ on two lines.
 ABC0003P: Continue (Y/N)?
 ```
 
-### MDM / MMPM/2 (4 APIs)
+### MDM / MMPM/2 (3 APIs)
 
-mciSendCommand (10241), mciSendString (10242), mciFreeBlock (10243), mciGetLastError (10244)
+mciSendCommand (10241), mciSendString (10242), mciGetErrorString (10243) — the ordinals of Open Watcom's `mmpm2.lib` (it has no MDM 4).
 
 Device type: `waveaudio` (WAV files: uncompressed 8/16/24/32-bit PCM or 32-bit float). Constants, parameter blocks and error codes follow `<mcios2.h>` / `<meerror.h>`.
 
 - **`mciSendCommand`:** `MCI_OPEN` (`MCI_OPEN_ELEMENT`, `MCI_OPEN_ALIAS`, `MCI_OPEN_TYPE_ID`), `MCI_CLOSE`, `MCI_PLAY` (`MCI_FROM`, `MCI_WAIT`, `MCI_NOTIFY` → `MM_MCINOTIFY`: mp1 = the notify code and the command's user parameter, mp2 = the device and `MCI_PLAY`), `MCI_STOP`, `MCI_SEEK`, `MCI_SET` (`MCI_SET_AUDIO | MCI_SET_VOLUME`, also changes a playing sound), `MCI_STATUS` (mode, length, position); `MCI_RECORD` returns `MCIERR_UNSUPPORTED_FUNCTION`.
 - **`mciSendString`:** `open <file | waveaudio> [type t] [alias a] [wait]`, `play <a> [wait] [notify]`, `stop`, `close`, `seek <a> to <ms>`, `set <a> audio volume to <n>`, `status <a> mode`; devices are named by alias, element name or device ID.
+- **`mciGetErrorString(ulError, pszBuffer, usLength)`:** the low word of `ulError` is the error code, the high word a device ID (0 for none; one that is not open gives `MCIERR_INVALID_DEVICE_ID`). The text and its NUL are copied, at most `usLength` bytes of them (a short buffer gets the text cut, without a NUL); a code `<meerror.h>` does not define gives `MCIERR_OUTOFRANGE`, a null or unwritable buffer `MCIERR_INVALID_BUFFER`. The texts are the codes' names in words ("File not found"; IBM's texts are not public, unverified).
 - **Output:** sound is played by the main-thread SDL3 loop; headless runs (`WARPINE_HEADLESS=1`, or a CLI program whose stdout is not a terminal) are silent, and `DosBeep` then returns at once.
 
 ### UCONV (5 APIs)
 
-UniCreateUconvObject (12289), UniFreeUconvObject (12290), UniUconvToUcs (12291), UniUconvFromUcs (12292), UniMapCpToUcsCp (12294)
+UniCreateUconvObject (12289), UniUconvToUcs (12290), UniUconvFromUcs (12291), UniFreeUconvObject (12292), UniMapCpToUcsCp (12298) — UCONV 1–4 and 10, the ordinals of Open Watcom's `libconv.lib`.
 
 UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`.
 
@@ -1174,7 +1175,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 513 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 512 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1182,7 +1183,7 @@ Counts are taken from the static registry (`api_registry.rs`, 513 entries) and t
 | QUECALLS | registry | 8 | 0 | 8 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 4 | 0 | 4 |
-| MDM (MMPM/2) | registry | 4 | 0 | 4 |
+| MDM (MMPM/2) | registry | 3 | 0 | 3 |
 | UCONV | registry | 5 | 0 | 5 |
 | SO32DLL (sockets) | registry | 27 | 0 | 27 |
 | TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
@@ -1201,7 +1202,7 @@ Counts are taken from the static registry (`api_registry.rs`, 513 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **907** | **21** | **928** |
+| **Total** | | **906** | **21** | **927** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

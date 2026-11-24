@@ -608,12 +608,12 @@ NLS.6         DosQueryDBCSEnv
 NLS.7         DosMapCase
 NLS.8         DosQueryCollate
 
-# ── UCONV (ordinal relative to module, linker uses UCONV.N) ──────────────────
+# ── UCONV (ordinals from Open Watcom lib386/os2/libconv.lib) ─────────────────
 UCONV.1       UniCreateUconvObject
-UCONV.2       UniFreeUconvObject
-UCONV.3       UniUconvToUcs
-UCONV.4       UniUconvFromUcs
-UCONV.6       UniMapCpToUcsCp
+UCONV.2       UniUconvToUcs
+UCONV.3       UniUconvFromUcs
+UCONV.4       UniFreeUconvObject
+UCONV.10      UniMapCpToUcsCp
 
 # ── MSG (32-bit ordinals from Open Watcom os2386.lib; MSG.1-3 and MSG.7 are 16-bit) ──
 MSG.4         DosInsertMessage
@@ -621,11 +621,10 @@ MSG.5         DosPutMessage
 MSG.6         DosGetMessage       # NOTE: OW lib names this DOS32TRUEGETMESSAGE; its DosGetMessage stub (msgseg32) passes the message segment as an extra first argument
 MSG.8         DosQueryMessageCP   # NOTE: OW lib names this DOS32IQUERYMESSAGECP and has no DosQueryMessageCP import; called with DosQueryMessageCP's four arguments
 
-# ── MDM (ordinal relative to module, linker uses MDM.N) ──────────────────────
+# ── MDM (ordinals from Open Watcom lib386/os2/mmpm2.lib) ─────────────────────
 MDM.1         mciSendCommand
 MDM.2         mciSendString
-MDM.3         mciFreeBlock
-MDM.4         mciGetLastError
+MDM.3         mciGetErrorString
 
 # ── SO32DLL (TCP/IP socket API — ordinal relative to module) ─────────────────
 SO32DLL.1     accept

@@ -19,6 +19,8 @@ extern "C" {
 #define MCIERR_CANNOT_LOAD_DRIVER    (MCIERR_BASE + 10)
 #define MCIERR_UNSUPPORTED_FUNCTION  (MCIERR_BASE + 18)
 #define MCIERR_FILE_NOT_FOUND        (MCIERR_BASE + 19)
+#define MCIERR_OUTOFRANGE            (MCIERR_BASE + 26)
+#define MCIERR_INVALID_BUFFER        (MCIERR_BASE + 50)
 
 #define MCI_OPEN    1
 #define MCI_CLOSE   2
@@ -82,8 +84,7 @@ ULONG APIENTRY mciSendCommand(USHORT usDeviceID, USHORT usMessage, ULONG ulParam
                               USHORT usUserParm);
 ULONG APIENTRY mciSendString(PSZ pszCommandBuf, PSZ pszReturnString, USHORT usReturnLength, HWND hwndCallBack,
                              USHORT usUserParm);
-ULONG APIENTRY mciGetLastError(HWND hwndCallback, PULONG pulErrorNum);
-ULONG APIENTRY mciFreeBlock(PVOID pvBlock);
+ULONG APIENTRY mciGetErrorString(ULONG ulError, PSZ pszBuffer, USHORT usLength);
 
 #ifdef __cplusplus
 }

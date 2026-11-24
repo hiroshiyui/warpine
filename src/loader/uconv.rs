@@ -101,7 +101,7 @@ impl super::Loader {
         ULS_SUCCESS
     }
 
-    // ── UniFreeUconvObject (ordinal 2) ────────────────────────────────────────
+    // ── UniFreeUconvObject (ordinal 4) ────────────────────────────────────────
     //
     //   APIRET UniFreeUconvObject(UCONV_OBJECT uobj)
     //
@@ -112,7 +112,7 @@ impl super::Loader {
         if ok { ULS_SUCCESS } else { ULS_BADOBJECT }
     }
 
-    // ── UniUconvToUcs (ordinal 3) ─────────────────────────────────────────────
+    // ── UniUconvToUcs (ordinal 2) ─────────────────────────────────────────────
     //
     //   APIRET UniUconvToUcs(
     //       UCONV_OBJECT  uobj,
@@ -187,7 +187,7 @@ impl super::Loader {
         ULS_SUCCESS
     }
 
-    // ── UniUconvFromUcs (ordinal 4) ───────────────────────────────────────────
+    // ── UniUconvFromUcs (ordinal 3) ───────────────────────────────────────────
     //
     //   APIRET UniUconvFromUcs(
     //       UCONV_OBJECT  uobj,
@@ -259,7 +259,7 @@ impl super::Loader {
         ULS_SUCCESS
     }
 
-    // ── UniMapCpToUcsCp (ordinal 6) ───────────────────────────────────────────
+    // ── UniMapCpToUcsCp (ordinal 10)──────────────────────────────────────────
     //
     //   APIRET UniMapCpToUcsCp(ULONG ulCodePage, UniChar *ucsCodePage, size_t n)
     //

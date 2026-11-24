@@ -59,6 +59,6 @@ The chart now also counts the modules the import library leaves out, each by its
 - No public source lists the exports of SO32DLL and TCP32DLL. The calls are split by the TCP/IP reference's chapters (sockets → SO32DLL, network utilities → TCP32DLL), and the generator matches the two DLLs as one pool (`POOLS`), so a call Warpine maps in either counts, once.
 - MDM is dated 3.0 and the sockets 4.0, the releases that put them in the base product.
 
-The research also found two ordinal errors in Warpine's own tables, which the chart (matching by name) does not hide. They are recorded in the TODOs:
+The research also found two ordinal errors in Warpine's own tables, which the chart (matching by name) does not hide; both were fixed the same day:
 - UCONV 2–4 and 6 disagree with Open Watcom's `libconv.lib`.
 - MDM 3 and 4 carry names no OS/2 source has: `mmpm2.lib` has `mciGetErrorString` at 3 and nothing at 4.

@@ -7,7 +7,7 @@
  *
  * Tests:
  *  1. DosLoadModule("UCONV") — must succeed
- *  2. DosQueryProcAddr — resolve ordinals 1–4 and 6
+ *  2. DosQueryProcAddr — resolve ordinals 1–4 and 10 (Open Watcom libconv.lib)
  *  3. UniCreateUconvObject("IBM-437") — create conversion object
  *  4. UniUconvToUcs — convert ASCII bytes to UCS-2
  *  5. UniUconvFromUcs — convert UCS-2 back to bytes (round-trip)
@@ -97,27 +97,27 @@ int main(void) {
         DosExit(EXIT_PROCESS, 1);
     }
 
-    /* ── Test 2: DosQueryProcAddr for ordinals 1,2,3,4,6 ── */
+    /* ── Test 2: DosQueryProcAddr for ordinals 1,2,3,4,10 (Open Watcom libconv.lib) ── */
     print("\r\nTest 2: DosQueryProcAddr — resolve UCONV ordinals\r\n");
     rc = DosQueryProcAddr(hmodUconv, 1, NULL, &pfn);
     pUniCreate = (PFN_UniCreate)pfn;
     check("Ordinal 1 (UniCreateUconvObject) resolved", rc == 0 && pfn != NULL, &passed, &failed);
 
     rc = DosQueryProcAddr(hmodUconv, 2, NULL, &pfn);
-    pUniFree = (PFN_UniFree)pfn;
-    check("Ordinal 2 (UniFreeUconvObject) resolved", rc == 0 && pfn != NULL, &passed, &failed);
+    pUniToUcs = (PFN_UniToUcs)pfn;
+    check("Ordinal 2 (UniUconvToUcs) resolved", rc == 0 && pfn != NULL, &passed, &failed);
 
     rc = DosQueryProcAddr(hmodUconv, 3, NULL, &pfn);
-    pUniToUcs = (PFN_UniToUcs)pfn;
-    check("Ordinal 3 (UniUconvToUcs) resolved", rc == 0 && pfn != NULL, &passed, &failed);
+    pUniFromUcs = (PFN_UniFromUcs)pfn;
+    check("Ordinal 3 (UniUconvFromUcs) resolved", rc == 0 && pfn != NULL, &passed, &failed);
 
     rc = DosQueryProcAddr(hmodUconv, 4, NULL, &pfn);
-    pUniFromUcs = (PFN_UniFromUcs)pfn;
-    check("Ordinal 4 (UniUconvFromUcs) resolved", rc == 0 && pfn != NULL, &passed, &failed);
+    pUniFree = (PFN_UniFree)pfn;
+    check("Ordinal 4 (UniFreeUconvObject) resolved", rc == 0 && pfn != NULL, &passed, &failed);
 
-    rc = DosQueryProcAddr(hmodUconv, 6, NULL, &pfn);
+    rc = DosQueryProcAddr(hmodUconv, 10, NULL, &pfn);
     pUniMapCp = (PFN_UniMapCp)pfn;
-    check("Ordinal 6 (UniMapCpToUcsCp) resolved", rc == 0 && pfn != NULL, &passed, &failed);
+    check("Ordinal 10 (UniMapCpToUcsCp) resolved", rc == 0 && pfn != NULL, &passed, &failed);
 
     if (!pUniCreate || !pUniFree || !pUniToUcs || !pUniFromUcs) {
         print("  FATAL: required UCONV ordinals missing — aborting\r\n");

@@ -5,8 +5,8 @@
 // Implements MDM.DLL ordinals:
 //   1 = mciSendCommand(usDeviceID, usMessage, ulParam1, ulParam2)
 //   2 = mciSendString(pszCommandBuf, pszReturnString, cbReturnString, hwndCallback)
-//   3 = mciFreeBlock(pvBlock)
-//   4 = mciGetLastError(usDeviceID, pszErrorBuf, cbErrorBuf)
+//   3 = mciGetErrorString(ulError, pszBuffer, usLength)
+// (the ordinals of Open Watcom's mmpm2.lib; MDM has no ordinal 4 there)
 //
 // Audio output goes through `SharedState::audio` (`gui::audio`): PCM data is
 // handed to the main-thread loop, which plays it with SDL3 audio streams;
@@ -117,6 +117,25 @@ pub const MCIERR_INVALID_DEVICE_NAME:  u32 = MCIERR_BASE + 7;
 pub const MCIERR_CANNOT_LOAD_DRIVER:   u32 = MCIERR_BASE + 10;
 pub const MCIERR_UNSUPPORTED_FUNCTION: u32 = MCIERR_BASE + 18;
 pub const MCIERR_FILE_NOT_FOUND:       u32 = MCIERR_BASE + 19;
+pub const MCIERR_OUTOFRANGE:           u32 = MCIERR_BASE + 26;
+pub const MCIERR_INVALID_BUFFER:       u32 = MCIERR_BASE + 50;
+
+/// The longest text `mciGetErrorString` returns, its NUL included (IBM's
+/// Multimedia Programming Reference: "The maximum string length returned
+/// is 128 bytes").
+pub const MCI_ERROR_STRING_MAX: usize = 128;
+/// `mciGetErrorString`'s text for `MCIERR_SUCCESS` (Warpine's wording).
+const MCI_NO_ERROR_TEXT: &str = "No error";
+
+/// The text of an MCI error code (the low word of `mciGetErrorString`'s
+/// `ulError`), or `None` for a code `<meerror.h>` does not define.
+pub fn mci_error_text(code: u32) -> Option<&'static str> {
+    if code == MCIERR_SUCCESS {
+        return Some(MCI_NO_ERROR_TEXT);
+    }
+    let n = code.checked_sub(MCIERR_BASE)?;
+    super::mmpm_errtext::MCI_ERROR_TEXTS.iter().find(|(c, _)| *c == n).map(|(_, t)| *t)
+}
 
 // ── MCI device state ──────────────────────────────────────────────────────────
 
@@ -195,7 +214,6 @@ fn device_mode(dev: &MciDevice, audio: &AudioService) -> MciMode {
 pub struct MmpmManager {
     pub devices: HashMap<u16, MciDevice>,
     pub next_device_id: u16,
-    pub last_error: u32,
 }
 
 impl Default for MmpmManager {
@@ -207,7 +225,6 @@ impl MmpmManager {
         Self {
             devices: HashMap::new(),
             next_device_id: 1,
-            last_error: 0,
         }
     }
 }
@@ -561,24 +578,31 @@ impl super::Loader {
         }
     }
 
-    /// MDM ordinal 3: `mciFreeBlock(pvBlock)` — no-op in our implementation.
-    pub fn mci_free_block(&self, _pv: u32) -> u32 {
-        debug!("  mciFreeBlock");
-        MCIERR_SUCCESS
-    }
-
-    /// MDM ordinal 4: `mciGetLastError(usDeviceID, pszErrorBuf, cbErrorBuf)`
-    pub fn mci_get_last_error(&self, _device_id: u32, psz_buf: u32, cb_buf: u32) -> u32 {
-        let err = self.shared.mmpm_mgr.lock().unwrap().last_error;
-        debug!("  mciGetLastError -> {}", err);
-        if psz_buf != 0 && cb_buf > 0 {
-            let msg = format!("Error {}", err);
-            let bytes = msg.as_bytes();
-            let n = bytes.len().min(cb_buf as usize - 1);
-            self.guest_write_bytes(psz_buf, &bytes[..n]);
-            self.guest_write::<u8>(psz_buf + n as u32, 0);
+    /// MDM ordinal 3: `mciGetErrorString(ulError, pszBuffer, usLength)`.
+    ///
+    /// The low word of `ulError` is the error code, the high word a device
+    /// ID (0 for none; an ID that is not open is `MCIERR_INVALID_DEVICE_ID`).
+    /// The text and its NUL go to the buffer, at most `usLength` bytes of
+    /// them: a short buffer gets the text cut, without a NUL, as IBM's
+    /// Reference describes. Warpine has no device-dependent texts.
+    pub fn mci_get_error_string(&self, ul_error: u32, psz_buffer: u32, us_length: u32) -> u32 {
+        let code = ul_error & 0xFFFF;
+        let device = (ul_error >> 16) as u16;
+        debug!("  mciGetErrorString({code}, device {device})");
+        if device != 0 && !self.shared.mmpm_mgr.lock().unwrap().devices.contains_key(&device) {
+            return MCIERR_INVALID_DEVICE_ID;
         }
-        err
+        let Some(text) = mci_error_text(code) else { return MCIERR_OUTOFRANGE };
+        if psz_buffer == 0 {
+            return MCIERR_INVALID_BUFFER;
+        }
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(0);
+        bytes.truncate((us_length & 0xFFFF) as usize);
+        match self.guest_write_bytes(psz_buffer, &bytes) {
+            Some(()) => MCIERR_SUCCESS,
+            None => MCIERR_INVALID_BUFFER,
+        }
     }
 
     // ── Internal MCI helpers ──────────────────────────────────────────────────
@@ -974,7 +998,6 @@ mod tests {
         let mgr = MmpmManager::new();
         assert!(mgr.devices.is_empty());
         assert_eq!(mgr.next_device_id, 1);
-        assert_eq!(mgr.last_error, 0);
     }
 
     #[test]
@@ -1331,5 +1354,47 @@ mod tests {
         assert_eq!(send("open waveaudio alias wtest"), MCIERR_SUCCESS);
         assert_eq!(send("close wtest"), MCIERR_SUCCESS);
         assert_eq!(send("open nosuch.wav alias x"), MCIERR_FILE_NOT_FOUND, "an element that does not exist");
+    }
+
+    /// Every MCI error code has a text that fits the documented 128 bytes;
+    /// codes outside `<meerror.h>` have none.
+    #[test]
+    fn test_mci_error_texts() {
+        assert_eq!(mci_error_text(MCIERR_SUCCESS), Some("No error"));
+        assert_eq!(mci_error_text(MCIERR_INVALID_DEVICE_ID), Some("Invalid device ID"));
+        assert_eq!(mci_error_text(MCIERR_FILE_NOT_FOUND), Some("File not found"));
+        assert_eq!(mci_error_text(MCIERR_BASE + 36), None, "a gap in <meerror.h>");
+        assert_eq!(mci_error_text(MCIERR_BASE + 256), None, "the custom driver base");
+        assert_eq!(mci_error_text(42), None);
+        let texts = super::super::mmpm_errtext::MCI_ERROR_TEXTS;
+        assert!(texts.windows(2).all(|w| w[0].0 < w[1].0), "in code order, no duplicates");
+        assert!(texts.iter().all(|(_, t)| !t.is_empty() && t.len() < MCI_ERROR_STRING_MAX));
+    }
+
+    /// `mciGetErrorString`: the text with its NUL, a short buffer cut
+    /// without one, and the documented refusals.
+    #[test]
+    fn test_mci_get_error_string() {
+        let loader = super::super::Loader::new_mock();
+        let buf = 0x0020_0000;
+        let read = |n: usize| {
+            (0..n as u32).map(|i| loader.guest_read::<u8>(buf + i).unwrap()).collect::<Vec<u8>>()
+        };
+        assert_eq!(loader.mci_get_error_string(MCIERR_FILE_NOT_FOUND, buf, 128), MCIERR_SUCCESS);
+        assert_eq!(read(15), b"File not found\0");
+        loader.guest_write_bytes(buf, &[0xAA; 8]).unwrap();
+        assert_eq!(loader.mci_get_error_string(MCIERR_FILE_NOT_FOUND, buf, 4), MCIERR_SUCCESS);
+        assert_eq!(read(5), b"File\xAA", "four bytes, no NUL");
+        assert_eq!(loader.mci_get_error_string(MCIERR_BASE + 36, buf, 128), MCIERR_OUTOFRANGE);
+        assert_eq!(loader.mci_get_error_string(MCIERR_FILE_NOT_FOUND, 0, 128), MCIERR_INVALID_BUFFER);
+        // The high word names a device: one that is not open is refused.
+        assert_eq!(loader.mci_get_error_string((9 << 16) | MCIERR_FILE_NOT_FOUND, buf, 128), MCIERR_INVALID_DEVICE_ID);
+        loader.shared.mmpm_mgr.lock().unwrap().devices.insert(9, MciDevice {
+            device_type: "waveaudio".into(), element_name: String::new(), alias: String::new(),
+            mode: MciMode::Stopped, voice: None, pcm: Vec::new(),
+            spec: PcmSpec { freq: 1000, channels: 1, format: SampleFormat::U8 },
+            current_position: 0, volume: 100, notify_hwnd: 0, notify_cancel: None,
+        });
+        assert_eq!(loader.mci_get_error_string((9 << 16) | MCIERR_FILE_NOT_FOUND, buf, 128), MCIERR_SUCCESS);
     }
 }

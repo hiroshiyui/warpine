@@ -261,18 +261,17 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         o if (MDM_BASE..UCONV_BASE).contains(&o) => match o - MDM_BASE {
             1 => "mciSendCommand",
             2 => "mciSendString",
-            3 => "mciFreeBlock",
-            4 => "mciGetLastError",
+            3 => "mciGetErrorString",
             _ => "?",
         },
 
         // ── UCONV ─────────────────────────────────────────────────
         o if (UCONV_BASE..SO32DLL_BASE).contains(&o) => match o - UCONV_BASE {
             1 => "UniCreateUconvObject",
-            2 => "UniFreeUconvObject",
-            3 => "UniUconvToUcs",
-            4 => "UniUconvFromUcs",
-            6 => "UniMapCpToUcsCp",
+            2 => "UniUconvToUcs",
+            3 => "UniUconvFromUcs",
+            4 => "UniFreeUconvObject",
+            10 => "UniMapCpToUcsCp",
             _ => "?",
         },
 
@@ -904,18 +903,17 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         o if (MDM_BASE..UCONV_BASE).contains(&o) => match o - MDM_BASE {
             1 => &["usDeviceID", "usMessage", "ulParam1", "pParam2"],
             2 => &["pszCommandBuf", "pszReturnString", "usReturnLength", "hwndCallback"],
-            3 => &["pMemToFree"],
-            4 => &["pszErrorBuf", "usBufLen"],
+            3 => &["ulError", "pszBuffer", "usLength"],
             _ => &[],
         },
 
         // ── UCONV ─────────────────────────────────────────────────────────
         o if (UCONV_BASE..SO32DLL_BASE).contains(&o) => match o - UCONV_BASE {
             1 => &["ucsName", "puobj"],
-            2 => &["uobj"],
-            3 => &["uobj", "ppInBuf", "pInBytesLeft", "ppOutBuf", "pOutCharsLeft", "pNumSubs"],
-            4 => &["uobj", "ppInBuf", "pInCharsLeft", "ppOutBuf", "pOutBytesLeft", "pNumSubs"],
-            6 => &["ulCodePage", "ucsCodePage", "n"],
+            2 => &["uobj", "ppInBuf", "pInBytesLeft", "ppOutBuf", "pOutCharsLeft", "pNumSubs"],
+            3 => &["uobj", "ppInBuf", "pInCharsLeft", "ppOutBuf", "pOutBytesLeft", "pNumSubs"],
+            4 => &["uobj"],
+            10 => &["ulCodePage", "ucsCodePage", "n"],
             _ => &[],
         },
 
@@ -1443,8 +1441,11 @@ mod tests {
     fn test_mdm_ordinal_names() {
         assert_eq!(ordinal_to_name(MDM_BASE + 1), "mciSendCommand");
         assert_eq!(ordinal_to_name(MDM_BASE + 2), "mciSendString");
-        assert_eq!(ordinal_to_name(MDM_BASE + 3), "mciFreeBlock");
-        assert_eq!(ordinal_to_name(MDM_BASE + 4), "mciGetLastError");
+        assert_eq!(ordinal_to_name(MDM_BASE + 3), "mciGetErrorString");
+        assert_eq!(ordinal_to_name(MDM_BASE + 4), "?", "mmpm2.lib has no MDM 4");
+        assert_eq!(ordinal_to_name(UCONV_BASE + 2), "UniUconvToUcs");
+        assert_eq!(ordinal_to_name(UCONV_BASE + 4), "UniFreeUconvObject");
+        assert_eq!(ordinal_to_name(UCONV_BASE + 10), "UniMapCpToUcsCp");
         assert_eq!(ordinal_to_name(MDM_BASE + 99), "?");
     }
 

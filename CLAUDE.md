@@ -18,7 +18,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2: 32-bit (LX
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2404 unit tests (2289 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 229 integration tests
+cargo test                                 # 2406 unit tests (2291 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 230 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); then `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -47,7 +47,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 
 ## Architecture in brief
 
-1. **Execution:** `main.rs` parses the executable (`src/lx/`, `src/ne/`); `Loader::load` maps it and applies fixups; `Loader::run` sets up TIB / PIB and runs a vCPU (`vcpu.rs`). API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal; the VMEXIT goes to `api_dispatch.rs`: the registry (`api_registry.rs`, 513 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 415 ordinals) — 928 entry points (`--compat`).
+1. **Execution:** `main.rs` parses the executable (`src/lx/`, `src/ne/`); `Loader::load` maps it and applies fixups; `Loader::run` sets up TIB / PIB and runs a vCPU (`vcpu.rs`). API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal; the VMEXIT goes to `api_dispatch.rs`: the registry (`api_registry.rs`, 512 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 415 ordinals) — 927 entry points (`--compat`).
 2. **Threads:** one OS/2 thread = one host thread with its own vCPU.
    - All threads run paged at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread). 32-bit threads have their own page tables, identity-mapped except the thread-local page (`paging.rs`, ADR-0088; host accesses there go to the running thread's page, `guest_mem.rs`). GDT, IDT, ring-0 window and the paging arena (≤ 738 threads, ADR-0115) are supervisor-only, thunks read-only, CR0.WP set. No guest ring 0, no paging watch.
    - Warpine never writes its protected memory (GDT, IDT, stubs, paging arena) through a guest-given address: `guest_write` / `guest_write_bytes` / `guest_slice_mut` refuse it (`guest_mem::protected`); only Warpine's setup uses `system_write` / `system_write_bytes`, as must any new structure there.

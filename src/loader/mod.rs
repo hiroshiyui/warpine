@@ -102,6 +102,7 @@ mod process;
 pub mod locale;
 pub mod codepage;
 pub mod mmpm;
+pub mod mmpm_errtext;
 pub mod crash_dump;
 pub mod api_ring;
 pub mod gdb_stub;

@@ -105,7 +105,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - check the Warp 3 data, and the Warp 3 dates of SOM 2.0 (from an AIX edition) and of the VIO / MOU threshold and `VioGlobalReg` calls;
   - a public export list of SO32DLL / TCP32DLL (the split by the reference's chapters is a guess, ADR-0033 addendum);
   - the modules not charted: Open32 (PMWINX), OpenGL, DIVE, MMIO, MCIAPI, LIBUNI, TCPIP32.
-- [ ] **UCONV and MDM ordinals disagree with Open Watcom's import libraries** (found by the chart's research, ADR-0033 addendum): `libconv.lib` has `UniUconvToUcs` 2, `UniUconvFromUcs` 3, `UniFreeUconvObject` 4, `UniMapCpToUcsCp` 10 (Warpine: 3, 4, 2, 6); `mmpm2.lib` has `mciGetErrorString` at MDM 3 and no MDM 4, where Warpine serves `mciFreeBlock` / `mciGetLastError`, names no OS/2 source has. A program linked with the real libraries calls the wrong function; the SDK's `os2me.h` and `uconv_test` follow Warpine's numbers.
 - [ ] **SOM.DLL ordinals 48 and above**: see [SOM](#som--workplace-shell).
 
 ---

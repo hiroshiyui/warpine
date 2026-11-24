@@ -8,7 +8,9 @@
  *     plays it with "wait" (about 400 ms) and sets its volume;
  *   - plays it again with "notify" and waits for MM_MCINOTIFY;
  *   - plays it through mciSendCommand (MCI_OPEN_PARMS / MCI_PLAY_PARMS)
- *     with MCI_WAIT.
+ *     with MCI_WAIT;
+ *   - asks mciGetErrorString (MDM ordinal 3 of mmpm2.lib) for an error's
+ *     text, with a short buffer, an unknown code and an unknown device.
  * Each check is written to stdout and shown in the window:
  *
  *   pm_audio_test: <name>: ok
@@ -210,6 +212,23 @@ static void run_command_checks( void )
     check( "MCI_CLOSE", mciSendCommand( open.usDeviceID, MCI_CLOSE, MCI_WAIT, NULL, 0 ), MCIERR_SUCCESS );
 }
 
+/* mciGetErrorString: a text, cut to a short buffer, and the refusals. */
+static void run_error_string_checks( void )
+{
+    char buf[128];
+
+    memset( buf, 'x', sizeof( buf ) );
+    check( "mciGetErrorString", mciGetErrorString( MCIERR_FILE_NOT_FOUND, buf, sizeof( buf ) ), MCIERR_SUCCESS );
+    check( "error text is a terminated string", memchr( buf, '\0', sizeof( buf ) ) != NULL && buf[0] != '\0', TRUE );
+    memset( buf, 'x', sizeof( buf ) );
+    mciGetErrorString( MCIERR_FILE_NOT_FOUND, buf, 2 );
+    check( "a short buffer gets only its length", buf[2] == 'x', TRUE );
+    check( "unknown error code", mciGetErrorString( MCIERR_BASE + 36, buf, sizeof( buf ) ), MCIERR_OUTOFRANGE );
+    check( "unknown device in the high word",
+           mciGetErrorString( MAKEULONG( MCIERR_FILE_NOT_FOUND, 0x7777 ), buf, sizeof( buf ) ),
+           MCIERR_INVALID_DEVICE_ID );
+}
+
 static void finish( HWND hwnd )
 {
     char text[64];
@@ -219,6 +238,7 @@ static void finish( HWND hwnd )
     WinStopTimer( hab, hwnd, ID_TIMEOUT );
     check( "close", mci( "close tone", NULL, 0 ), MCIERR_SUCCESS );
     run_command_checks();
+    run_error_string_checks();
     DosDelete( "tone.wav" );
     strcpy( text, "pm_audio_test: done " );
     append_long( text + strlen( text ), n_passed );

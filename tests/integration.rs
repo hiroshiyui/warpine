@@ -1135,6 +1135,20 @@ fn test_audio() {
     assert!(out.contains("Failed: 0"), "audio_test failed (exit {code}):\n{out}");
 }
 
+/// uconv_test: UCONV loaded at run time, its calls resolved at the ordinals
+/// of Open Watcom's `libconv.lib` (2 `UniUconvToUcs`, 3 `UniUconvFromUcs`,
+/// 4 `UniFreeUconvObject`, 10 `UniMapCpToUcsCp`), and a codepage round trip.
+#[test]
+fn test_uconv_ordinals_and_round_trip() {
+    if !kvm_available() || !sample_exists("samples/uconv_test/uconv_test.exe") { return; }
+    let (out, code) = run_sample("samples/uconv_test/uconv_test.exe", 15);
+    for line in ["Ordinal 2 (UniUconvToUcs) resolved OK", "Ordinal 10 (UniMapCpToUcsCp) resolved OK",
+                 "UniFreeUconvObject(obj437) returns 0 OK"] {
+        assert!(out.contains(line), "missing '{line}' (exit {code}):\n{out}");
+    }
+    assert!(out.contains("Failed: 0"), "uconv_test failed (exit {code}):\n{out}");
+}
+
 /// socket_test: SO32DLL loaded at run time, sockets over loopback, with
 /// `select` on the OS/2 TCP/IP `fd_set` (a count and socket numbers).
 #[test]
@@ -4846,10 +4860,11 @@ fn gui_pm_codepage_test_follows_the_queue_codepage() {
 /// pm_audio_test: DosBeep and MMPM/2 waveaudio played through the main-thread
 /// SDL3 audio service (dummy audio driver): playback blocks for the file's
 /// length with "wait", "notify" posts MM_MCINOTIFY, aliases and the
-/// mciSendCommand parameter blocks follow the toolkit headers.
+/// mciSendCommand parameter blocks follow the toolkit headers, and
+/// mciGetErrorString answers at mmpm2.lib's ordinal (MDM 3).
 #[test]
 fn gui_pm_audio_test_plays_through_the_audio_service() {
-    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 19);
+    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 24);
 }
 
 // Colours the compositor draws with (`src/gui/sdl_renderer.rs`).

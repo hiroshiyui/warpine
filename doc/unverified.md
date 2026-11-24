@@ -341,6 +341,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 ## Other
 
+- **`mciGetErrorString`** (MDM 3): the texts (each code's name in words, `mmpm_errtext.rs`; IBM's are not public), "No error" for `MCIERR_SUCCESS`, a cut text left without a NUL, the device ID checked against the open devices only, and no device-dependent texts.
 - **Compatibility chart data** (ADR-0033 addendum, 2026-11-24): the VIO / KBD / MOU calls dated 2.0 from the 1.x references; the REXX `Rx*` names left out as 1.x entry points; the SO32DLL / TCP32DLL split by the TCP/IP reference's chapters; MDM dated 3.0 and the sockets 4.0; the H1 (ordinal chronology) dates of `other_api_versions.tsv`.
 - **SOM ordinals** (ADR-0070):
   - osFree's numbers for ordinals 1–47 being IBM's, data at 1–19;
