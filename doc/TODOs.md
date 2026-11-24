@@ -26,12 +26,10 @@ disassembly.
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
-  - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
-  - seccomp filters per process role (guest processes, the desktop server);
+- [ ] **Confining the host process, further** (Landlock is done, ADR-0111; a seccomp deny list per role, ADR-0124):
+  - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested, and so is the seccomp deny list;
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
 - [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps, pointers, WAV files and the dialog / menu / accelerator / string / `PRESPARAMS` resources, a minute per target on each push and ten minutes weekly): the font and help-file readers when Warpine reads guest-supplied ones.
-- [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---
 
@@ -75,13 +73,12 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 ## Kernel and processes
 
 - [ ] **Shared memory** (ADR-0049):
-  - enforce access flags (every process can reach the whole arena now);
   - `DosAllocShrSeg` / `DosGetShrSeg`;
-  - free a killed process's blocks at once (now at the next table use).
+  - API calls refusing an address in a block the caller does not hold, and the arena's holds for 16-bit programs (guest code is held to them since the ADR-0049 addendum);
+  - the blocks of a killed process whose parent never waits for it, swept at the next table use (a reaped child's go at once).
 - [ ] **Semaphores** (ADR-0050):
   - named and shared muxwait semaphores across processes;
-  - limits of 512 per session and 28 processes per semaphore;
-  - free a semaphore only a killed process held at once.
+  - limits of 512 per session and 28 processes per semaphore.
 - [ ] **Signals** (ADR-0035, 0093):
   - interrupting writes to anonymous pipes, and host file I/O on FIFOs and devices;
   - signal focus across the session, `ERROR_INVALID_PROCID` for PM programs;
@@ -91,7 +88,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
-- [ ] **Threads per process**: the paging arena caps a process at 738 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
+- [ ] **Threads per process**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
 - [ ] **Profiles**:
   - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
   - binary OS/2 INI files (format unpublished).
