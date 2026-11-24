@@ -77,3 +77,9 @@ doc = false
 
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "res_templates"
+path = "fuzz_targets/res_templates.rs"
+test = false
+doc = false

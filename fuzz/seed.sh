@@ -5,12 +5,13 @@
 # DLLs for lx_parse, NE programs for ne_parse, message files for msgfile,
 # resource scripts for os2rc, IDL files for somidl, and lx-link's inputs (ELF objects, resource
 # files, DLLs, message files) for lx_link, each behind the byte that picks
-# its kind (fuzz_targets/lx_link.rs), and bitmap files for bitmap.
+# its kind (fuzz_targets/lx_link.rs), bitmap files for bitmap, and the
+# resource files behind each of res_templates' five kinds.
 # desktop_proto starts from nothing;
 # libFuzzer finds its tags quickly.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap
+mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates
 n=0
 while IFS= read -r -d '' f; do
     case $(head -c 2 "$f" | od -An -c | tr -d ' ') in
@@ -47,4 +48,11 @@ while IFS= read -r -d '' f; do
     { printf "$kind"; cat -- "$f"; } > "corpus/lx_link/$(sha256sum -- "$f" | cut -c1-16)"
     m=$((m + 1))
 done < <(find ../samples ../sdk -type f \( -name '*.o' -o -name '*.res' -o -name '*.dll' -o -name '*.msg' \) -size -1024k -print0 2>/dev/null)
+# res_templates: each resource file behind each parser's byte (0 dialog,
+# 1 menu, 2 accelerators, 3 string bundle, 4 PRESPARAMS).
+while IFS= read -r -d '' f; do
+    for kind in 0 1 2 3 4; do
+        { printf "\\x0$kind"; cat -- "$f"; } > "corpus/res_templates/$kind-$(sha256sum -- "$f" | cut -c1-16)"
+    done
+done < <(find ../samples ../sdk -type f -name '*.res' -size -256k -print0 2>/dev/null)
 echo "fuzz/seed.sh: $n programs and DLLs, $m lx-link inputs as seeds"

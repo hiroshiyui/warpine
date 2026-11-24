@@ -241,13 +241,13 @@
 <text xml:space="preserve" text-anchor="start" x="53.88" y="-759.91" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM window manager: PMWIN windows, messages, hooks (ADR&#45;0026), input, painting, presentation parameters, atoms, DDE, dialogs embedded in windows (ADR&#45;0042)</text>
 <text xml:space="preserve" text-anchor="start" x="344.88" y="-751.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_win.rs, loader/pm_types.rs, loader/pm_window.rs, loader/pm_winutil.rs</text>
 <text xml:space="preserve" text-anchor="start" x="355.75" y="-743.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_track.rs, loader/track.rs, loader/pm_input.rs, loader/pm_dialog.rs</text>
-<text xml:space="preserve" text-anchor="start" x="336.62" y="-735.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_msgbox.rs, loader/pm_destroy.rs, loader/pm_error.rs, loader/pm_pointer.rs</text>
-<text xml:space="preserve" text-anchor="start" x="319.38" y="-727.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_minmax.rs, loader/pm_sysmenu.rs, loader/pm_menubar.rs, loader/pm_menuitems.rs</text>
-<text xml:space="preserve" text-anchor="start" x="337" y="-719.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_paint.rs, loader/pm_query.rs, loader/pm_keystate.rs, loader/pm_syscolor.rs</text>
-<text xml:space="preserve" text-anchor="start" x="341.88" y="-711.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_rect.rs, loader/pm_cursor.rs, loader/pm_message.rs, loader/pm_hook.rs</text>
-<text xml:space="preserve" text-anchor="start" x="338.12" y="-703.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_frame.rs, loader/pm_accel.rs, loader/pm_winmisc.rs, loader/pm_remote.rs</text>
-<text xml:space="preserve" text-anchor="start" x="326.88" y="-695.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_enum.rs, loader/pm_presparam.rs, loader/pm_paint_style.rs, loader/pm_atom.rs</text>
-<text xml:space="preserve" text-anchor="start" x="458.5" y="-687.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_dde.rs</text>
+<text xml:space="preserve" text-anchor="start" x="331.38" y="-735.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/res_templates.rs, loader/pm_msgbox.rs, loader/pm_destroy.rs, loader/pm_error.rs</text>
+<text xml:space="preserve" text-anchor="start" x="326.88" y="-727.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_pointer.rs, loader/pm_minmax.rs, loader/pm_sysmenu.rs, loader/pm_menubar.rs</text>
+<text xml:space="preserve" text-anchor="start" x="331.38" y="-719.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_menuitems.rs, loader/pm_paint.rs, loader/pm_query.rs, loader/pm_keystate.rs</text>
+<text xml:space="preserve" text-anchor="start" x="336.62" y="-711.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_syscolor.rs, loader/pm_rect.rs, loader/pm_cursor.rs, loader/pm_message.rs</text>
+<text xml:space="preserve" text-anchor="start" x="342.25" y="-703.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_hook.rs, loader/pm_frame.rs, loader/pm_accel.rs, loader/pm_winmisc.rs</text>
+<text xml:space="preserve" text-anchor="start" x="323.12" y="-695.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_remote.rs, loader/pm_enum.rs, loader/pm_presparam.rs, loader/pm_paint_style.rs</text>
+<text xml:space="preserve" text-anchor="start" x="422.5" y="-687.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_atom.rs, loader/pm_dde.rs</text>
 </g>
 <!-- dispatch&#45;&gt;pmwin -->
 <g id="edge12" class="edge">

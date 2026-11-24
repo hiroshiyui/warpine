@@ -33,137 +33,13 @@ use super::{pm_button, ApiResult, Loader, MutexExt};
 /// frame's title bar without a system-menu button.
 const TITLE_TEXT_INSET: i32 = 4;
 
-// ── DLGTEMPLATE layout (<pmwin.h>) ───────────────────────────────────────────
+// ── DLGTEMPLATE (parsed in res_templates.rs) ─────────────────────────────────
 
-/// `DLGTEMPLATE.codepage`: codepage of the template's texts.
-const DT_CODEPAGE: usize = 4;
-/// `DLGTEMPLATE.offadlgti`: offset of the first `DLGTITEM`.
-const DT_OFF_ITEMS: usize = 6;
-/// `DLGTEMPLATE.iItemFocus`: index of the item that gets the focus.
-const DT_ITEM_FOCUS: usize = 10;
-/// Size of the `DLGTEMPLATE` header before the items.
-const DT_HEADER_SIZE: usize = 14;
+pub(super) use super::res_templates::{DlgTemplate, MAX_DLG_CTL_DATA};
+pub(super) use super::res_templates::{parse_accel_table, ACCEL_SIZE, AT_HEADER_SIZE};
 
-/// Size of one `DLGTITEM`.
-const DLGTITEM_SIZE: usize = 30;
-const DI_CHILDREN: usize = 2;
-const DI_CCH_CLASS: usize = 4;
-const DI_OFF_CLASS: usize = 6;
-const DI_CCH_TEXT: usize = 8;
-const DI_OFF_TEXT: usize = 10;
-const DI_STYLE: usize = 12;
-const DI_X: usize = 16;
-const DI_Y: usize = 18;
-const DI_CX: usize = 20;
-const DI_CY: usize = 22;
-const DI_ID: usize = 24;
-const DI_OFF_PRESPARAMS: usize = 26;
-const DI_OFF_CTLDATA: usize = 28;
-
-/// Offset value meaning "none" (`offCtlData`, `offPresParams`, `iItemFocus`).
-const NO_OFFSET: u16 = 0xFFFF;
 /// High word of a predefined class given as `MAKEINTATOM` (`WC_BUTTON` = 0xFFFF0003).
 const CLASS_ATOM_BASE: u32 = 0xFFFF_0000;
-
-/// One `DLGTITEM` of a template, with its strings resolved.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct DlgItem {
-    pub class_name: String,
-    pub text: String,
-    /// Position and size in dialog units, relative to the parent item.
-    pub x: i16,
-    pub y: i16,
-    pub cx: i16,
-    pub cy: i16,
-    pub id: u16,
-    pub style: u32,
-    /// Index of the parent item in [`DlgTemplate::items`]; `None` = the dialog.
-    pub parent: Option<usize>,
-    /// Presentation parameters (`offPresParams`: a `PRESPARAMS` block in
-    /// the template; `pm_presparam.rs`).
-    pub pres_params: Vec<(u32, Vec<u8>)>,
-    /// The item's control data (`CTLDATA`, e.g. a slider's `SLDCDATA`), at
-    /// most [`MAX_DLG_CTL_DATA`] bytes; empty when it has none.
-    pub ctl_data: Vec<u8>,
-}
-
-/// Most control data bytes kept for a dialog item: enough for the
-/// structures the built-in controls read from it (`SLDCDATA`, `VSCDATA`).
-pub(super) const MAX_DLG_CTL_DATA: usize = 64;
-
-/// The control data at `off` in the template: as many bytes as its leading
-/// size field (`cbSize`, a ULONG) gives, bounded by the template's end and
-/// [`MAX_DLG_CTL_DATA`].
-fn ctl_data_at(data: &[u8], off: u16) -> Vec<u8> {
-    if off == NO_OFFSET {
-        return Vec::new();
-    }
-    let off = off as usize;
-    let len = u32_at(data, off).map_or(0, |cb| (cb as usize).min(MAX_DLG_CTL_DATA));
-    data.get(off..).map_or_else(Vec::new, |rest| rest[..len.min(rest.len())].to_vec())
-}
-
-/// A parsed `DLGTEMPLATE`.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct DlgTemplate {
-    /// The dialog frame (the first item): title, position, size and style.
-    pub dialog: DlgItem,
-    /// `FCF_*` frame flags: the template's frame control data plus the border
-    /// its `FS_*` style asks for.
-    pub frame_flags: u32,
-    /// Index into `items` of the control that gets the focus first, when the
-    /// template names one.
-    pub focus: Option<usize>,
-    /// The controls, in template order (parents before their children).
-    pub items: Vec<DlgItem>,
-}
-
-fn u16_at(data: &[u8], off: usize) -> Option<u16> {
-    data.get(off..off + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
-}
-
-fn u32_at(data: &[u8], off: usize) -> Option<u32> {
-    data.get(off..off + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-/// The string at `off` in the template: at most `cch` bytes (all the way to
-/// the end when `cch` is 0), cut at the first NUL, decoded with `codepage`.
-fn template_string(data: &[u8], off: u16, cch: u16, codepage: u32) -> String {
-    let off = off as usize;
-    if off == NO_OFFSET as usize || off >= data.len() {
-        return String::new();
-    }
-    let end = if cch == 0 { data.len() } else { (off + cch as usize).min(data.len()) };
-    let bytes = &data[off..end];
-    let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
-    super::codepage::cp_decode(bytes, codepage)
-}
-
-/// Read the `DLGTITEM` at `off`; returns the item and its `cChildren`.
-fn read_item(data: &[u8], off: usize, codepage: u32) -> Option<(DlgItem, u16, u16)> {
-    let item = data.get(off..off + DLGTITEM_SIZE)?;
-    let w = |o| u16_at(item, o).unwrap_or(0);
-    let class_name = match w(DI_CCH_CLASS) {
-        0 => super::pm_win::resolve_class_atom(CLASS_ATOM_BASE | w(DI_OFF_CLASS) as u32, String::new()),
-        cch => template_string(data, w(DI_OFF_CLASS), cch, codepage),
-    };
-    Some((DlgItem {
-        class_name,
-        text: template_string(data, w(DI_OFF_TEXT), w(DI_CCH_TEXT), codepage),
-        x: w(DI_X) as i16,
-        y: w(DI_Y) as i16,
-        cx: w(DI_CX) as i16,
-        cy: w(DI_CY) as i16,
-        id: w(DI_ID),
-        style: u32_at(item, DI_STYLE).unwrap_or(0),
-        parent: None,
-        pres_params: match w(DI_OFF_PRESPARAMS) {
-            NO_OFFSET => Vec::new(),
-            off => data.get(off as usize..).map_or_else(Vec::new, super::pm_presparam::parse_presparams),
-        },
-        ctl_data: ctl_data_at(data, w(DI_OFF_CTLDATA)),
-    }, w(DI_CHILDREN), w(DI_OFF_CTLDATA)))
-}
 
 /// `FCF_*` border flag for the `FS_*` border style of a dialog.
 fn border_flags(style: u32) -> u32 {
@@ -178,78 +54,18 @@ fn border_flags(style: u32) -> u32 {
     }
 }
 
-/// Parse a `DLGTEMPLATE` resource. Texts are decoded with the template's
-/// codepage, or `fallback_cp` when it gives none. `None` when the data is
-/// too short to hold the header and the dialog item.
-///
-/// The frame control data of the dialog item holds its `FCF_*` flags as one
-/// ULONG — that is what the Open Watcom resource compiler writes for
-/// `DIALOG ... , FCF_TITLEBAR | FCF_SYSMENU` (verified on
-/// `samples/pm_menu_dlg_test`), not a `FRAMECDATA` structure.
+/// Parse a `DLGTEMPLATE` resource (`res_templates::parse_dlg_template`):
+/// texts decoded with the template's codepage, or `fallback_cp`; classes
+/// given as atoms named after the predefined classes; the frame flags with
+/// the border the dialog's `FS_*` style asks for.
 pub(super) fn parse_dlg_template(data: &[u8], fallback_cp: u32) -> Option<DlgTemplate> {
-    if data.len() < DT_HEADER_SIZE + DLGTITEM_SIZE {
-        return None;
-    }
-    let codepage = match u16_at(data, DT_CODEPAGE)? { 0 => fallback_cp, cp => cp as u32 };
-    let first = u16_at(data, DT_OFF_ITEMS)? as usize;
-    let (dialog, children, ctl_off) = read_item(data, first, codepage)?;
-    let frame_flags = border_flags(dialog.style) | match ctl_off {
-        NO_OFFSET => 0,
-        off => u32_at(data, off as usize).unwrap_or(0),
-    };
-
-    // Items follow the dialog in tree order. `pending` holds, for each open
-    // parent, its index (None = the dialog) and how many children it still
-    // has; a template can never hold more items than fit in its size.
-    let max_items = (data.len() - first) / DLGTITEM_SIZE - 1;
-    let mut items: Vec<DlgItem> = Vec::new();
-    let mut pending: Vec<(Option<usize>, u16)> = vec![(None, children)];
-    while let Some((parent, left)) = pending.last_mut() {
-        if *left == 0 {
-            pending.pop();
-            continue;
-        }
-        *left -= 1;
-        let parent = *parent;
-        if items.len() >= max_items {
-            break;
-        }
-        let Some((mut item, grandchildren, _)) =
-            read_item(data, first + (items.len() + 1) * DLGTITEM_SIZE, codepage) else { break };
-        item.parent = parent;
-        items.push(item);
-        if grandchildren > 0 {
-            pending.push((Some(items.len() - 1), grandchildren));
-        }
-    }
-
-    // iItemFocus indexes all items, the dialog being item 0.
-    let focus = match u16_at(data, DT_ITEM_FOCUS)? {
-        NO_OFFSET | 0 => None,
-        i => Some(i as usize - 1).filter(|&i| i < items.len()),
-    };
-    Some(DlgTemplate { dialog, frame_flags, focus, items })
+    let class_atom = |atom: u16| super::pm_win::resolve_class_atom(CLASS_ATOM_BASE | atom as u32, String::new());
+    let mut t = super::res_templates::parse_dlg_template(data, fallback_cp, &super::codepage::cp_decode, &class_atom)?;
+    t.frame_flags |= border_flags(t.dialog.style);
+    Some(t)
 }
 
 // ── Accelerator tables ───────────────────────────────────────────────────────
-
-/// `ACCELTABLE` layout: `cAccel` (USHORT), `codepage` (USHORT), then
-/// `ACCEL { fs, key, cmd }` entries of three USHORTs.
-pub(super) const AT_HEADER_SIZE: usize = 4;
-pub(super) const ACCEL_SIZE: usize = 6;
-
-/// Parse an `ACCELTABLE` resource; entries past the end of `data` are dropped.
-pub(super) fn parse_accel_table(data: &[u8]) -> Vec<AccelEntry> {
-    let count = u16_at(data, 0).unwrap_or(0) as usize;
-    (0..count).map_while(|i| {
-        let off = AT_HEADER_SIZE + i * ACCEL_SIZE;
-        Some(AccelEntry {
-            flags: u16_at(data, off)?,
-            key: u16_at(data, off + 2)?,
-            cmd: u16_at(data, off + 4)?,
-        })
-    }).collect()
-}
 
 /// The system accelerator table: keystrokes every frame understands.
 /// Alt+F4 closes, Alt+F5 restores, Alt+F7 moves, Alt+F8 sizes, Alt+F9
@@ -722,6 +538,7 @@ impl Loader {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use super::super::res_templates::{ctl_data_at, DlgItem, DI_OFF_PRESPARAMS, DLGTITEM_SIZE, DT_HEADER_SIZE, NO_OFFSET};
 
     /// The `DLGTEMPLATE` Open Watcom `wrc` builds for the About dialog of
     /// `samples/pm_menu_dlg_test/pm_menu_dlg_test.rc` (copied from its .res).

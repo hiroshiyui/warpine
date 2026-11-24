@@ -62,10 +62,9 @@ pub const QPF_VALIDFLAGS: u32 = 0x000F;
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 
-/// Most attributes one window keeps; setting another fails.
-pub const MAX_PRESPARAMS: usize = 64;
-/// Longest value of one attribute, in bytes.
-pub const MAX_PRESPARAM_LEN: usize = 1024;
+// The attribute bounds and the PRESPARAMS parser live with the other
+// resource parsers (res_templates.rs, fuzzed).
+pub use super::res_templates::{parse_presparams, MAX_PRESPARAMS, MAX_PRESPARAM_LEN};
 /// Most bytes of a `PRESPARAMS` block read from the guest (`cb` included).
 pub const MAX_PRESPARAMS_BLOCK: usize = 16 * 1024;
 /// Longest owner chain followed for inheritance (owner loops end here too).
@@ -124,30 +123,6 @@ impl PresParams {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-}
-
-/// The attributes of a `PRESPARAMS` block (`ULONG cb` of the `PARAM`s that
-/// follow; each `PARAM` is `ULONG id`, `ULONG cb`, `cb` bytes). Parsing
-/// stops at the end of `cb`, of `block`, at a `PARAM` that does not fit, or
-/// after [`MAX_PRESPARAMS`] entries; over-long values are skipped.
-pub fn parse_presparams(block: &[u8]) -> Vec<(u32, Vec<u8>)> {
-    let u32_at = |off: usize| -> Option<u32> {
-        Some(u32::from_le_bytes(block.get(off..off.checked_add(ULONG_LEN)?)?.try_into().ok()?))
-    };
-    let Some(cb) = u32_at(0) else { return Vec::new() };
-    let end = (cb as usize).saturating_add(ULONG_LEN).min(block.len());
-    let mut out = Vec::new();
-    let mut at = ULONG_LEN;
-    while out.len() < MAX_PRESPARAMS && at + 2 * ULONG_LEN <= end {
-        let (Some(id), Some(len)) = (u32_at(at), u32_at(at + ULONG_LEN)) else { break };
-        let start = at + 2 * ULONG_LEN;
-        let Some(stop) = start.checked_add(len as usize).filter(|&s| s <= end) else { break };
-        if (len as usize) <= MAX_PRESPARAM_LEN {
-            out.push((id, block[start..stop].to_vec()));
-        }
-        at = stop;
-    }
-    out
 }
 
 /// A `PP_FONTNAMESIZE` value ("10.Helv", NUL-terminated or not) as the font

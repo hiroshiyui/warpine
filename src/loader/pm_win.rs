@@ -1766,95 +1766,12 @@ impl super::Loader {
 
     // ── Binary resource parser helpers ───────────────────────────────────────────
 
-    /// Read a NUL-terminated guest string starting at `base + *offset`, advancing
-    /// `*offset` past the terminating NUL, and decode it with `codepage`.
-    /// Stops at `base + max_size`.
-    fn read_nul_str_at(&self, base: u32, offset: &mut u32, max_size: u32, codepage: u32) -> String {
-        let mut bytes = Vec::new();
-        loop {
-            if *offset >= max_size { break; }
-            let b = self.guest_read::<u8>(base + *offset).unwrap_or(0);
-            *offset += 1;
-            if b == 0 { break; }
-            bytes.push(b);
-        }
-        super::codepage::cp_decode(&bytes, codepage)
-    }
-
-    /// Parse exactly `count` MENUTEMPLATE items from the flat byte stream.
-    ///
-    /// Each item is: u16 afStyle + u16 afAttribute + u16 id + NUL-terminated
-    /// text (absent when `MIS_SEPARATOR` is set).  SUBMENU items are followed
-    /// by a 10-byte child-block header (u32 total_size, u16 codepage, u16
-    /// reserved, u16 child_count) then the children recursively.
-    ///
-    /// When `count == 0` the function falls back to the MIS_END sentinel
-    /// (bit 15 of afStyle) for compatibility with hand-built templates that
-    /// omit the count field.
-    fn parse_menu_items(&self, base: u32, size: u32, offset: &mut u32, count: usize, codepage: u32) -> Vec<MenuItem> {
-        use super::constants::{MIS_END, MIS_SEPARATOR, MIS_SUBMENU};
-        let use_count = count > 0;
-        let mut items = Vec::new();
-        let mut remaining = count;
-        loop {
-            if use_count && remaining == 0 { break; }
-            if *offset + 6 > size { break; }
-            let raw_style = self.guest_read::<u16>(base + *offset).unwrap_or(0);
-            let attr      = self.guest_read::<u16>(base + *offset + 2).unwrap_or(0);
-            let id        = self.guest_read::<u16>(base + *offset + 4).unwrap_or(0);
-            *offset += 6;
-
-            let is_last = !use_count && (raw_style & MIS_END) != 0;
-            let style   = raw_style & !MIS_END;
-
-            // Text is present unless the item is a pure separator.
-            let text = if style & MIS_SEPARATOR == 0 {
-                self.read_nul_str_at(base, offset, size, codepage)
-            } else {
-                String::new()
-            };
-
-            // Recurse into submenu: wrc prepends a 10-byte child-block header
-            // (u32 total_size + u16 codepage + u16 reserved + u16 child_count).
-            let children = if style & MIS_SUBMENU != 0 {
-                if *offset + 10 <= size {
-                    let child_count = self.guest_read::<u16>(base + *offset + 8).unwrap_or(0) as usize;
-                    *offset += 10;
-                    self.parse_menu_items(base, size, offset, child_count, codepage)
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
-
-            items.push(MenuItem { id, style, attr, text, children, image: None, row_h: 0 });
-            if use_count { remaining -= 1; }
-            if is_last { break; }
-        }
-        items
-    }
-
-    /// Parse a MENUTEMPLATE binary resource at `guest_addr` (size `size`);
-    /// item texts are decoded with the template's codepage.
-    ///
-    /// The wrc (Open Watcom) OS/2 MENUTEMPLATE header is 10 bytes:
-    ///   u32 total_size, u16 codepage, u16 reserved, u16 item_count.
-    /// Items start at byte 10.  A zero item_count falls back to MIS_END
-    /// sentinel parsing for hand-built inline templates.
-    ///
-    /// Returns the top-level item list, or an empty `Vec` on parse failure.
+    /// Parse the MENUTEMPLATE at `guest_addr` (at most `size` bytes, fewer
+    /// when memory ends first; `res_templates::parse_menu_template`), texts
+    /// in the template's codepage or the process's.
     fn parse_menu_template(&self, guest_addr: u32, size: u32) -> Vec<MenuItem> {
-        if size < 10 { return Vec::new(); }
-        // Header: u32 total_size, u16 codepage, u16 reserved, u16 item_count
-        let item_count = self.guest_read::<u16>(guest_addr + 8).unwrap_or(0) as usize;
-        // Item texts are in the template's codepage; 0 means the process codepage.
-        let codepage = match self.guest_read::<u16>(guest_addr + 4).unwrap_or(0) {
-            0 => self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed),
-            cp => cp as u32,
-        };
-        let mut offset = 10u32;
-        self.parse_menu_items(guest_addr, size, &mut offset, item_count, codepage)
+        let data: Vec<u8> = (0..size).map_while(|i| self.guest_read::<u8>(guest_addr.checked_add(i)?)).collect();
+        super::res_templates::parse_menu_template(&data, self.process_codepage(), &super::codepage::cp_decode)
     }
 
     /// Parse the RT_MENU resource `id_menu` of module `hmod` (0 = the
@@ -2791,7 +2708,7 @@ mod tests {
     #[test]
     fn test_create_dialog_scales_dialog_units_to_pixels() {
         use super::super::mutex_ext::MutexExt;
-        use super::super::pm_dialog::{DlgItem, DlgTemplate};
+        use super::super::res_templates::{DlgItem, DlgTemplate};
         let loader = Loader::new_mock();
         {
             let mut wm = loader.shared.window_mgr.lock_or_recover();

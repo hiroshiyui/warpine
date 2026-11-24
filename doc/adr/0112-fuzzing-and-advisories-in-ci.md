@@ -56,3 +56,7 @@ The "Security Facilities" TODOs named two gaps:
 - A new advisory against a dependency turns CI red until it is fixed or written off in `deny.toml` with a reason.
 - **Found after release:** the image first installed the nightly without `rust-src`. `test_rust_hello`, which had skipped for want of the toolchain, then failed in every matrix entry, from this change until it was fixed (v0.0.9 was released with CI red). The image's tag names the component, so a fixed image is built.
 - **Found with it:** `cargo deny`'s advisory check, which CI had never reached, failed in the image: the release binary fetches the advisory database with `git`, which the image lacked. The image installs `git` from the dated Debian snapshot, and its tag carries a revision (`IMAGE_REVISION`) counted up when its package list changes.
+
+## Addendum (2026-11-24): the resource parsers
+
+`res_templates` fuzzes the parsers of the resources a running program hands Warpine — dialog templates, menu templates, accelerator tables, `RT_STRING` / `RT_MESSAGE` bundles and `PRESPARAMS` blocks — moved into `src/loader/res_templates.rs` so that they build alone (code page decoding and class-atom names come in as functions; the old modules re-export). The menu parser now reads a byte slice instead of guest memory and stops nesting at `MAX_MENU_DEPTH` (16): a hostile template could recurse into submenus once per 16 bytes. Two minutes, 1.76 million inputs, nothing found.

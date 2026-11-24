@@ -30,29 +30,11 @@ use super::mutex_ext::MutexExt;
 use super::pm_types::WindowManager;
 use super::{ApiResult, Loader};
 
-/// Strings in one `RT_STRING` / `RT_MESSAGE` bundle.
-pub const STRINGS_PER_BUNDLE: u32 = 16;
-/// Size of a bundle's codepage header.
-const BUNDLE_HEADER: usize = 2;
+pub use super::res_templates::{bundle_string, STRINGS_PER_BUNDLE};
 
 /// Bundle resource id and index in it of string `id`.
 pub fn bundle_of(id: u32) -> (u16, usize) {
     ((id / STRINGS_PER_BUNDLE + 1) as u16, (id % STRINGS_PER_BUNDLE) as usize)
-}
-
-/// String `index` of a bundle, without its terminating NUL; `None` past
-/// the bundle's end.
-pub fn bundle_string(data: &[u8], index: usize) -> Option<&[u8]> {
-    let mut off = BUNDLE_HEADER;
-    for i in 0..STRINGS_PER_BUNDLE as usize {
-        let len = *data.get(off)? as usize;
-        let text = data.get(off + 1..off + 1 + len)?;
-        if i == index {
-            return Some(text.strip_suffix(&[0]).unwrap_or(text));
-        }
-        off += 1 + len;
-    }
-    None
 }
 
 /// The text `WinSetDlgItemShort` puts in a dialog item.

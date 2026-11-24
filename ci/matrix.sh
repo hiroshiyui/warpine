@@ -35,7 +35,7 @@ step() { echo; echo "=== $* ==="; }
 fuzz_all() {
     step "fuzzing, $1 s per target"
     fuzz/seed.sh
-    for target in desktop_proto lx_parse ne_parse msgfile os2rc somidl lx_link bitmap; do
+    for target in desktop_proto lx_parse ne_parse msgfile os2rc somidl lx_link bitmap res_templates; do
         if ! FUZZ_TARGET_DIR="$CARGO_TARGET_DIR/fuzz" fuzz/run.sh "$target" "$1" >"$CARGO_TARGET_DIR/fuzz-$target.log" 2>&1; then
             tail -40 "$CARGO_TARGET_DIR/fuzz-$target.log"
             for crash in fuzz/artifacts/"$target"/*; do

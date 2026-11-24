@@ -11,6 +11,7 @@ pub mod pm_input;
 mod pm_msgbox;
 mod pm_controls;
 mod pm_dialog;
+pub mod res_templates;
 mod pm_error;
 mod pm_button;
 mod pm_owner;

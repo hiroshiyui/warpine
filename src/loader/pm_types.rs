@@ -512,36 +512,8 @@ impl PresentationSpace {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AccelEntry {
-    pub flags: u16,
-    pub key: u16,
-    pub cmd: u16,
-}
-
-/// A single item from a parsed OS/2 MENUTEMPLATE binary resource.
-///
-/// Populated by `Loader::parse_menu_items` and stored in
-/// `OS2Window::menu_items` for WC_MENU windows created by `WinLoadMenu`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MenuItem {
-    pub id: u16,
-    /// `afStyle` field from the binary resource (MIS_* flags, bit 15 stripped).
-    pub style: u16,
-    /// `afAttribute` field (MIA_* flags).
-    pub attr: u16,
-    pub text: String,
-    /// Nested items for `MIS_SUBMENU` entries.
-    pub children: Vec<MenuItem>,
-    /// What the owner drew for a `MIS_OWNERDRAW` pull-down item
-    /// (`pm_owner.rs`): `owner_menu_item_w()` × `MENU_DROPDOWN_ITEM_H`
-    /// pels, rows top down; `None` = drawn as text.
-    pub image: Option<std::sync::Arc<Vec<u32>>>,
-    /// For an item with a submenu: the height of its pull-down's rows, as
-    /// the owner measured its `MIS_OWNERDRAW` items (`WM_MEASUREITEM`,
-    /// `pm_owner.rs`); 0 = not measured, the default height.
-    pub row_h: i32,
-}
+/// `ACCEL` entries and menu items are parsed in `res_templates.rs`.
+pub use super::res_templates::{AccelEntry, MenuItem};
 
 impl MenuItem {
     /// The height of this item's pull-down rows.
