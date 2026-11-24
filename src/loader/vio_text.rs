@@ -38,6 +38,29 @@ pub struct SavedScreen {
     cursor: (u16, u16),
 }
 
+/// The hardware settings `VioSetState` records and `VioGetState` reports
+/// (Warpine's renderer does not act on them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VioState {
+    /// The 16 palette registers (type 0), the EGA / VGA text-mode defaults.
+    pub palette: [u16; 16],
+    /// The overscan (border) colour (type 1).
+    pub overscan: u16,
+    /// Blink (0) or bright backgrounds (1) (type 2): 1, which the renderer
+    /// draws.
+    pub intensity: u16,
+}
+
+impl Default for VioState {
+    fn default() -> Self {
+        VioState {
+            palette: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F],
+            overscan: 0,
+            intensity: 1,
+        }
+    }
+}
+
 /// The logical keyboard's state (`KbdSetStatus` / `KbdGetStatus`,
 /// `KbdSetCp` / `KbdGetCp`) and a key `KbdPeek` read from the host terminal
 /// but left for the next `KbdCharIn`.

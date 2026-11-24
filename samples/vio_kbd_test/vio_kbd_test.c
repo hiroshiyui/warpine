@@ -111,6 +111,9 @@ static void vio_checks(void)
           read_at(rows - 1, cols - 1, buf, 1) && buf[0] == '#' && read_at(9, 0, buf + 1, 1) && buf[1] != '#');
 
     check("VioGetCp", VioGetCp(0, &cp, 0) == 0 && cp != 0);
+    check("VioSetCp", VioSetCp(0, 850, 0) == 0 && VioGetCp(0, &cp, 0) == 0 && cp == 850);
+    check("VioSetCp refuses an unknown codepage", VioSetCp(0, 12345, 0) == 469);
+    VioSetCp(0, 0, 0); /* back to the process codepage */
 
     VioWrtCharStr("SAVE", 4, 0, 0, 0);
     opts = 1; /* wait, not transparent */
@@ -139,6 +142,10 @@ static void vio_checks(void)
         intensity.cb = sizeof(intensity); intensity.type = 2;
         check("VioGetState overscan", VioGetState(&overscan, 0) == 0);
         check("VioGetState intensity", VioGetState(&intensity, 0) == 0);
+        overscan.color = 3;
+        check("VioSetState overscan", VioSetState(&overscan, 0) == 0);
+        overscan.color = 0;
+        check("VioGetState reports it", VioGetState(&overscan, 0) == 0 && overscan.color == 3);
     }
 }
 

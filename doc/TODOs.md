@@ -255,7 +255,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 - [ ] **VIO and KBD calls still missing** (the chart's VIO / KBD row):
   - `KbdSetStatus`'s modes acted on by the reads (echo, ASCII line editing, the turnaround character);
   - `KbdXlate`, `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`;
-  - `VioGetFont` / `VioSetFont`, `VioSetState`, `VioSetCp`, `VioGetBuf` / `VioShowBuf` (stubs), `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
+  - `VioGetFont` / `VioSetFont`, `VioGetBuf` / `VioShowBuf` (stubs), `VioSetState` / `VioSetCp` acted on by the renderer, `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
 - [ ] **VIO window**:
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).

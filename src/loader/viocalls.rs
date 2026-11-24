@@ -9,6 +9,13 @@ use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::vio_text::ScrollDir;
 
+/// `VioGetState` / `VioSetState` request types (<bsesub.h> structures).
+const VS_PALETTE: u16 = 0;
+const VS_OVERSCAN: u16 = 1;
+const VS_INTENSITY: u16 = 2;
+/// `cb` of `VIOOVERSCAN` / `VIOINTENSITY`, and of `VIOPALSTATE` with no colour.
+const STATE_HEADER: u16 = 6;
+
 impl super::Loader {
     pub(crate) fn handle_viocalls(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> super::ApiResult {
         let regs = vcpu.get_regs().unwrap();
@@ -48,8 +55,10 @@ impl super::Loader {
             5  => self.vio_set_ansi(read_stack(8), read_stack(4)),
             // VioGetAnsi(pMode, hvio) → ESP+4=hvio, +8=pMode
             3  => self.vio_get_ansi(read_stack(8), read_stack(4)),
-            51 => { debug!("  VioSetState (stub)"); NO_ERROR },
-            42 => { debug!("  VioSetCp (stub)"); NO_ERROR },
+            // VioSetState(pState, hvio) → ESP+4=hvio, +8=pState
+            51 => self.vio_set_state(read_stack(8)),
+            // VioSetCp(reserved, idCodePage, hvio) → ESP+4=hvio, +8=idCodePage, +12=reserved
+            42 => self.vio_set_cp(read_stack(12), read_stack(8)),
             // VioGetConfig(reserved, pConfig, hvio) → ESP+4=hvio, +8=pConfig, +12=reserved
             46 => self.vio_get_config(read_stack(12), read_stack(8)),
             // VioSetMode(pMode, hvio) → ESP+4=hvio, +8=pMode
@@ -92,7 +101,7 @@ impl super::Loader {
         debug!("  VioWrtTTY(psz=0x{:08X}, cb={})", psz, cb);
         if cb == 0 || psz == 0 { return NO_ERROR; }
         let data: Vec<u8> = (0..cb).map_while(|i| self.guest_read::<u8>(psz.checked_add(i)?)).collect();
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_tty(&data, cp);
         NO_ERROR
@@ -203,7 +212,7 @@ impl super::Loader {
         let (fill_cell, fill_raw) = if p_cell != 0 {
             let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
             let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
-            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+            let cp = self.vio_codepage();
             ((super::console::VioManager::decode_vio_byte(ch_byte, cp), attr), ch_byte)
         } else {
             ((' ', 0x07), b' ')
@@ -219,7 +228,7 @@ impl super::Loader {
         debug!("  VioWrtCharStrAtt(cb={}, row={}, col={})", cb, row, col);
         let attr = if p_attr != 0 { self.guest_read::<u8>(p_attr).unwrap_or(0x07) } else { 0x07 };
         let data: Vec<u8> = (0..cb).map_while(|i| self.guest_read::<u8>(psz.checked_add(i)?)).collect();
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_char_str_att(row as u16, col as u16, &data, attr, cp);
         NO_ERROR
@@ -230,7 +239,7 @@ impl super::Loader {
         debug!("  VioWrtNCell(count={}, row={}, col={})", count, row, col);
         let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
         let attr = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         let ch = super::console::VioManager::decode_vio_byte(ch_byte, cp);
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_n_cell(row as u16, col as u16, ch_byte, (ch, attr), count as u16);
@@ -254,7 +263,7 @@ impl super::Loader {
     /// (the text modes Warpine has); an odd last byte is ignored.
     fn vio_wrt_cell_str(&self, p_cells: u32, cb: u32, row: u32, col: u32, _hvio: u32) -> u32 {
         debug!("  VioWrtCellStr(cb={}, row={}, col={})", cb, row, col);
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         let mut console = self.shared.console_mgr.lock_or_recover();
         let (rows, cols) = (console.rows as u32, console.cols as u32);
         if row >= rows { return ERROR_VIO_ROW; }
@@ -274,7 +283,7 @@ impl super::Loader {
     fn vio_read_cell_str(&self, p_buf: u32, pcb: u32, row: u32, col: u32, _hvio: u32) -> u32 {
         debug!("  VioReadCellStr(row={}, col={})", row, col);
         let max_len = self.guest_read::<u16>(pcb).unwrap_or(0);
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         let console = self.shared.console_mgr.lock_or_recover();
         let cells = console.read_cell_str(row as u16, col as u16, max_len);
         let mut offset = 0u32;
@@ -404,7 +413,7 @@ impl super::Loader {
         debug!("  VioWrtCharStr(cb={cb}, row={row}, col={col})");
         let (row, col) = match self.vio_cell(row, col) { Ok(rc) => rc, Err(e) => return e };
         let data = self.vio_bytes(pch, cb);
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         self.shared.console_mgr.lock_or_recover().write_chars(row, col, &data, cp);
         NO_ERROR
     }
@@ -416,7 +425,7 @@ impl super::Loader {
         let (row, col) = match self.vio_cell(row, col) { Ok(rc) => rc, Err(e) => return e };
         let Some(ch) = self.guest_read::<u8>(pch) else { return ERROR_VIO_INVALID_PARMS };
         let data = vec![ch; (n & 0xFFFF) as usize];
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let cp = self.vio_codepage();
         self.shared.console_mgr.lock_or_recover().write_chars(row, col, &data, cp);
         NO_ERROR
     }
@@ -505,43 +514,95 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioGetState (ordinal 49): the request at `p_state` (`cb`, `type`, …).
-    /// Warpine answers type 0 (palette registers: the EGA / VGA text-mode
-    /// defaults), 1 (overscan: black) and 2 (intensity: 1, bright
-    /// backgrounds, which its renderer draws instead of blinking); the
-    /// hardware requests (colour registers, underline, target) are refused
-    /// with `ERROR_VIO_INVALID_PARMS`.
-    fn vio_get_state(&self, p_state: u32) -> u32 {
-        const VS_PALETTE: u16 = 0;
-        const VS_OVERSCAN: u16 = 1;
-        const VS_INTENSITY: u16 = 2;
-        /// cb of `VIOOVERSCAN` / `VIOINTENSITY`, and of `VIOPALSTATE` with no colour.
-        const STATE_HEADER: u16 = 6;
-        const PALETTE: [u16; 16] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07,
-                                    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F];
-        const BRIGHT_BACKGROUND: u16 = 1;
-        let (Some(cb), Some(kind)) = (self.guest_read::<u16>(p_state), self.guest_read::<u16>(p_state + 2)) else {
-            return ERROR_VIO_INVALID_PARMS;
+    /// The screen's codepage, which VIO text is decoded with
+    /// (`VioSetCp`, or the process's, `DosSetProcessCp`).
+    fn vio_codepage(&self) -> u32 {
+        u32::from(self.shared.console_mgr.lock_or_recover().codepage)
+    }
+
+    /// VioSetCp (ordinal 42): the screen's codepage, one Warpine knows
+    /// (`ERROR_VIO_BAD_CP`), or 0 for the process's.
+    fn vio_set_cp(&self, reserved: u32, cp: u32) -> u32 {
+        if reserved & 0xFFFF != 0 { return ERROR_VIO_INVALID_PARMS; }
+        let cp = match cp & 0xFFFF {
+            0 => self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed),
+            cp if super::stubs::is_supported_codepage(cp) => cp,
+            _ => return ERROR_VIO_BAD_CP,
         };
+        debug!("  VioSetCp({cp})");
+        self.shared.console_mgr.lock_or_recover().codepage = cp as u16;
+        NO_ERROR
+    }
+
+    /// The `cb` and `type` of a `VioGetState` / `VioSetState` request.
+    fn vio_state_header(&self, p: u32) -> Option<(u16, u16)> {
+        Some((self.guest_read::<u16>(p)?, self.guest_read::<u16>(p + 2)?))
+    }
+
+    /// VioGetState (ordinal 49): the request at `p_state` (`cb`, `type`, …):
+    /// palette registers (type 0), overscan (1) and intensity (2), as
+    /// `VioSetState` left them; the hardware requests (colour registers,
+    /// underline, target) are refused with `ERROR_VIO_INVALID_PARMS`.
+    fn vio_get_state(&self, p_state: u32) -> u32 {
+        let Some((cb, kind)) = self.vio_state_header(p_state) else { return ERROR_VIO_INVALID_PARMS };
         debug!("  VioGetState(cb={cb}, type={kind})");
+        let state = self.shared.console_mgr.lock_or_recover().vio_state.clone();
         let w = |off: u32, v: u16| self.guest_write::<u16>(p_state + off, v);
         let done = match kind {
             VS_PALETTE => {
-                if cb < STATE_HEADER + 2 || cb % 2 != 0 { return ERROR_VIO_INVALID_LENGTH; }
-                let Some(first) = self.guest_read::<u16>(p_state + 4) else { return ERROR_VIO_INVALID_PARMS };
-                let count = usize::from((cb - STATE_HEADER) / 2);
-                let Some(colors) = PALETTE.get(usize::from(first)..usize::from(first) + count) else {
-                    return ERROR_VIO_INVALID_PARMS;
-                };
-                colors.iter().zip(0u32..).all(|(&c, i)| w(6 + 2 * i, c).is_some())
+                let (first, count) = match self.vio_palette_range(p_state, cb) { Ok(r) => r, Err(e) => return e };
+                state.palette[first..first + count].iter().zip(0u32..).all(|(&c, i)| w(6 + 2 * i, c).is_some())
             }
             VS_OVERSCAN | VS_INTENSITY => {
                 if cb != STATE_HEADER { return ERROR_VIO_INVALID_LENGTH; }
-                w(4, if kind == VS_INTENSITY { BRIGHT_BACKGROUND } else { 0 }).is_some()
+                w(4, if kind == VS_INTENSITY { state.intensity } else { state.overscan }).is_some()
             }
             _ => return ERROR_VIO_INVALID_PARMS,
         };
         if done { NO_ERROR } else { ERROR_VIO_INVALID_PARMS }
+    }
+
+    /// VioSetState (ordinal 51): set what `VioGetState` reports — palette
+    /// registers, the overscan colour, blink or bright backgrounds (0 / 1);
+    /// other types are refused. The renderer does not act on them.
+    fn vio_set_state(&self, p_state: u32) -> u32 {
+        let Some((cb, kind)) = self.vio_state_header(p_state) else { return ERROR_VIO_INVALID_PARMS };
+        debug!("  VioSetState(cb={cb}, type={kind})");
+        let r = |off: u32| self.guest_read::<u16>(p_state + off);
+        match kind {
+            VS_PALETTE => {
+                let (first, count) = match self.vio_palette_range(p_state, cb) { Ok(r) => r, Err(e) => return e };
+                let Some(colors) = (0..count as u32).map(|i| r(6 + 2 * i)).collect::<Option<Vec<u16>>>() else {
+                    return ERROR_VIO_INVALID_PARMS;
+                };
+                self.shared.console_mgr.lock_or_recover().vio_state.palette[first..first + count].copy_from_slice(&colors);
+            }
+            VS_OVERSCAN | VS_INTENSITY => {
+                if cb != STATE_HEADER { return ERROR_VIO_INVALID_LENGTH; }
+                let Some(v) = r(4) else { return ERROR_VIO_INVALID_PARMS };
+                let mut console = self.shared.console_mgr.lock_or_recover();
+                if kind == VS_OVERSCAN {
+                    console.vio_state.overscan = v;
+                } else if v <= 1 {
+                    console.vio_state.intensity = v;
+                } else {
+                    return ERROR_VIO_INVALID_PARMS;
+                }
+            }
+            _ => return ERROR_VIO_INVALID_PARMS,
+        }
+        NO_ERROR
+    }
+
+    /// A `VIOPALSTATE`'s first register and count: `cb` must hold the
+    /// header and at least one colour, and the registers must exist.
+    fn vio_palette_range(&self, p_state: u32, cb: u16) -> Result<(usize, usize), u32> {
+        const PALETTE_REGISTERS: usize = 16;
+        if cb < STATE_HEADER + 2 || !cb.is_multiple_of(2) { return Err(ERROR_VIO_INVALID_LENGTH); }
+        let first = usize::from(self.guest_read::<u16>(p_state + 4).ok_or(ERROR_VIO_INVALID_PARMS)?);
+        let count = usize::from((cb - STATE_HEADER) / 2);
+        if first + count > PALETTE_REGISTERS { return Err(ERROR_VIO_INVALID_PARMS); }
+        Ok((first, count))
     }
 
     /// VioGetConfig (ordinal 46): get video adapter configuration.
@@ -1103,5 +1164,33 @@ mod tests {
         assert_eq!(loader.vio_get_state(buf), ERROR_VIO_INVALID_PARMS, "past register 15");
         for (off, v) in [(0u32, 6u16), (2, 3)] { loader.guest_write::<u16>(buf + off, v).unwrap(); }
         assert_eq!(loader.vio_get_state(buf), ERROR_VIO_INVALID_PARMS, "colour registers are refused");
+    }
+
+    /// VioSetCp changes the codepage VIO text is decoded with; VioSetState
+    /// keeps what VioGetState reports.
+    #[test]
+    fn vio_set_cp_and_set_state() {
+        use super::super::constants::{NO_ERROR, ERROR_VIO_BAD_CP, ERROR_VIO_INVALID_LENGTH};
+        let loader = Loader::new_mock();
+        assert_eq!(loader.vio_set_cp(0, 12345), ERROR_VIO_BAD_CP);
+        assert_eq!(loader.vio_set_cp(1, 850), ERROR_VIO_INVALID_PARMS, "the reserved word");
+        assert_eq!(loader.vio_set_cp(0, 850), NO_ERROR);
+        assert_eq!(loader.vio_codepage(), 850);
+        let p = 0x0020_0000;
+        // VIOPALSTATE: registers 2 and 3 set, then read back.
+        for (off, v) in [(0u32, 10u16), (2, 0), (4, 2), (6, 0x11), (8, 0x22)] { loader.guest_write::<u16>(p + off, v).unwrap(); }
+        assert_eq!(loader.vio_set_state(p), NO_ERROR);
+        for (off, v) in [(6u32, 0u16), (8, 0)] { loader.guest_write::<u16>(p + off, v).unwrap(); }
+        assert_eq!(loader.vio_get_state(p), NO_ERROR);
+        assert_eq!((loader.guest_read::<u16>(p + 6), loader.guest_read::<u16>(p + 8)), (Some(0x11), Some(0x22)));
+        // VIOINTENSITY: blink (0) kept; 2 refused; a wrong cb refused.
+        for (off, v) in [(0u32, 6u16), (2, 2), (4, 0)] { loader.guest_write::<u16>(p + off, v).unwrap(); }
+        assert_eq!(loader.vio_set_state(p), NO_ERROR);
+        assert_eq!(loader.vio_get_state(p), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(p + 4), Some(0));
+        loader.guest_write::<u16>(p + 4, 2).unwrap();
+        assert_eq!(loader.vio_set_state(p), ERROR_VIO_INVALID_PARMS);
+        loader.guest_write::<u16>(p, 8).unwrap();
+        assert_eq!(loader.vio_set_state(p), ERROR_VIO_INVALID_LENGTH);
     }
 }

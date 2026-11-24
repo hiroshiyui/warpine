@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="1026" viewBox="0 0 760 1026" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
 <title id="t">Warpine API coverage</title>
-<desc id="d">Share of the charted OS/2 API that Warpine implements: OS/2 2.0 70% (737 of 1049), OS/2 Warp 3 68% (768 of 1122), OS/2 Warp 4 67% (822 of 1230).</desc>
+<desc id="d">Share of the charted OS/2 API that Warpine implements: OS/2 2.0 70% (739 of 1049), OS/2 Warp 3 69% (773 of 1122), OS/2 Warp 4 68% (831 of 1230).</desc>
 <rect width="760" height="1026" rx="8" fill="#fcfcfb"/>
 <text x="24" y="34" font-size="17" font-weight="600" fill="#0b0b0b">Warpine API coverage of OS/2 2.0, Warp 3 and Warp 4</text>
 <text x="24" y="55" font-size="12.5" fill="#52514e">Share of each version's API that Warpine implements (stubs not counted)</text>
@@ -21,12 +21,12 @@
 <line x1="614" y1="98" x2="614" y2="954" stroke="#e4e3df" stroke-width="1"/>
 <text x="614" y="970" font-size="11" text-anchor="middle" fill="#898781">100%</text>
 <text x="24" y="128" font-size="12.5" font-weight="600" fill="#0b0b0b">All charted APIs</text>
-<path d="M214 104h277a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-277z" fill="#2a78d6"><title>OS/2 2.0: 70% (737 of 1049)</title></path>
-<text x="501" y="114" font-size="11" fill="#52514e">70% · 737/1049</text>
-<path d="M214 118h270a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-270z" fill="#eb6834"><title>OS/2 Warp 3: 68% (768 of 1122)</title></path>
-<text x="494" y="128" font-size="11" fill="#52514e">68% · 768/1122</text>
-<path d="M214 132h263a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-263z" fill="#1baf7a"><title>OS/2 Warp 4: 67% (822 of 1230)</title></path>
-<text x="487" y="142" font-size="11" fill="#52514e">67% · 822/1230</text>
+<path d="M214 104h278a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-278z" fill="#2a78d6"><title>OS/2 2.0: 70% (739 of 1049)</title></path>
+<text x="502" y="114" font-size="11" fill="#52514e">70% · 739/1049</text>
+<path d="M214 118h272a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-272z" fill="#eb6834"><title>OS/2 Warp 3: 69% (773 of 1122)</title></path>
+<text x="496" y="128" font-size="11" fill="#52514e">69% · 773/1122</text>
+<path d="M214 132h266a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-266z" fill="#1baf7a"><title>OS/2 Warp 4: 68% (831 of 1230)</title></path>
+<text x="490" y="142" font-size="11" fill="#52514e">68% · 831/1230</text>
 <text x="24" y="182" font-size="12.5" font-weight="400" fill="#0b0b0b">32-bit os2386.lib APIs</text>
 <path d="M214 158h273a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-273z" fill="#2a78d6"><title>OS/2 2.0: 69% (596 of 862)</title></path>
 <text x="497" y="168" font-size="11" fill="#52514e">69% · 596/862</text>
@@ -42,12 +42,12 @@
 <path d="M214 240h315a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-315z" fill="#1baf7a"><title>OS/2 Warp 4: 80% (173 of 217)</title></path>
 <text x="539" y="250" font-size="11" fill="#52514e">80% · 173/217</text>
 <text x="24" y="290" font-size="12.5" font-weight="400" fill="#0b0b0b">Video, keyboard, mouse</text>
-<path d="M214 266h267a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-267z" fill="#2a78d6"><title>OS/2 2.0: 68% (67 of 99)</title></path>
-<text x="491" y="276" font-size="11" fill="#52514e">68% · 67/99</text>
-<path d="M214 280h267a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-267z" fill="#eb6834"><title>OS/2 Warp 3: 68% (69 of 102)</title></path>
-<text x="491" y="290" font-size="11" fill="#52514e">68% · 69/102</text>
-<path d="M214 294h267a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-267z" fill="#1baf7a"><title>OS/2 Warp 4: 68% (69 of 102)</title></path>
-<text x="491" y="304" font-size="11" fill="#52514e">68% · 69/102</text>
+<path d="M214 266h275a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-275z" fill="#2a78d6"><title>OS/2 2.0: 70% (69 of 99)</title></path>
+<text x="499" y="276" font-size="11" fill="#52514e">70% · 69/99</text>
+<path d="M214 280h274a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-274z" fill="#eb6834"><title>OS/2 Warp 3: 70% (71 of 102)</title></path>
+<text x="498" y="290" font-size="11" fill="#52514e">70% · 71/102</text>
+<path d="M214 294h274a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-274z" fill="#1baf7a"><title>OS/2 Warp 4: 70% (71 of 102)</title></path>
+<text x="498" y="304" font-size="11" fill="#52514e">70% · 71/102</text>
 <text x="24" y="344" font-size="12.5" font-weight="400" fill="#0b0b0b">Window manager (PMWIN)</text>
 <path d="M214 320h339a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-339z" fill="#2a78d6"><title>OS/2 2.0: 86% (217 of 253)</title></path>
 <text x="563" y="330" font-size="11" fill="#52514e">86% · 217/253</text>
@@ -114,14 +114,14 @@
 <text x="24" y="830" font-size="12.5" font-weight="400" fill="#0b0b0b">Unicode (UCONV)</text>
 <text x="220" y="816" font-size="11" fill="#52514e">—</text>
 <text x="220" y="830" font-size="11" fill="#52514e">—</text>
-<path d="M214 834h218a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-218z" fill="#1baf7a"><title>OS/2 Warp 4: 56% (5 of 9)</title></path>
-<text x="442" y="844" font-size="11" fill="#52514e">56% · 5/9</text>
+<path d="M214 834h396a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-396z" fill="#1baf7a"><title>OS/2 Warp 4: 100% (9 of 9)</title></path>
+<text x="620" y="844" font-size="11" fill="#52514e">100% · 9/9</text>
 <text x="24" y="884" font-size="12.5" font-weight="400" fill="#0b0b0b">Multimedia (MMPM/2)</text>
 <text x="220" y="870" font-size="11" fill="#52514e">—</text>
-<path d="M214 874h146a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-146z" fill="#eb6834"><title>OS/2 Warp 3: 38% (3 of 8)</title></path>
-<text x="370" y="884" font-size="11" fill="#52514e">38% · 3/8</text>
-<path d="M214 888h146a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-146z" fill="#1baf7a"><title>OS/2 Warp 4: 38% (3 of 8)</title></path>
-<text x="370" y="898" font-size="11" fill="#52514e">38% · 3/8</text>
+<path d="M214 874h296a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-296z" fill="#eb6834"><title>OS/2 Warp 3: 75% (6 of 8)</title></path>
+<text x="520" y="884" font-size="11" fill="#52514e">75% · 6/8</text>
+<path d="M214 888h296a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-296z" fill="#1baf7a"><title>OS/2 Warp 4: 75% (6 of 8)</title></path>
+<text x="520" y="898" font-size="11" fill="#52514e">75% · 6/8</text>
 <text x="24" y="938" font-size="12.5" font-weight="400" fill="#0b0b0b">TCP/IP sockets</text>
 <text x="220" y="924" font-size="11" fill="#52514e">—</text>
 <text x="220" y="938" font-size="11" fill="#52514e">—</text>

@@ -104,6 +104,8 @@ pub struct VioManager {
     pub scr_lock: Option<u32>,
     /// The logical keyboard's state (KBD calls).
     pub kbd: super::vio_text::KbdState,
+    /// The palette, overscan and intensity (`VioSetState`).
+    pub vio_state: super::vio_text::VioState,
 }
 
 impl Default for VioManager {
@@ -138,6 +140,7 @@ impl VioManager {
             popup: None,
             scr_lock: None,
             kbd: super::vio_text::KbdState::default(),
+            vio_state: super::vio_text::VioState::default(),
         }
     }
 

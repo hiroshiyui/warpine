@@ -735,24 +735,29 @@ on two lines.
 ABC0003P: Continue (Y/N)?
 ```
 
-### MDM / MMPM/2 (3 APIs)
+### MDM / MMPM/2 (6 APIs)
 
-mciSendCommand (10241), mciSendString (10242), mciGetErrorString (10243) — the ordinals of Open Watcom's `mmpm2.lib` (it has no MDM 4).
+mciSendCommand (10241), mciSendString (10242), mciGetErrorString (10243), mciSetSysValue (10250), mciQuerySysValue (10251), mciGetDeviceID (10256) — MDM 1–3, 10, 11 and 16, the ordinals of Open Watcom's `mmpm2.lib` (it has no MDM 4).
 
 Device type: `waveaudio` (WAV files: uncompressed 8/16/24/32-bit PCM or 32-bit float). Constants, parameter blocks and error codes follow `<mcios2.h>` / `<meerror.h>`.
 
 - **`mciSendCommand`:** `MCI_OPEN` (`MCI_OPEN_ELEMENT`, `MCI_OPEN_ALIAS`, `MCI_OPEN_TYPE_ID`), `MCI_CLOSE`, `MCI_PLAY` (`MCI_FROM`, `MCI_WAIT`, `MCI_NOTIFY` → `MM_MCINOTIFY`: mp1 = the notify code and the command's user parameter, mp2 = the device and `MCI_PLAY`), `MCI_STOP`, `MCI_SEEK`, `MCI_SET` (`MCI_SET_AUDIO | MCI_SET_VOLUME`, also changes a playing sound), `MCI_STATUS` (mode, length, position); `MCI_RECORD` returns `MCIERR_UNSUPPORTED_FUNCTION`.
 - **`mciSendString`:** `open <file | waveaudio> [type t] [alias a] [wait]`, `play <a> [wait] [notify]`, `stop`, `close`, `seek <a> to <ms>`, `set <a> audio volume to <n>`, `status <a> mode`; devices are named by alias, element name or device ID.
 - **`mciGetErrorString(ulError, pszBuffer, usLength)`:** the low word of `ulError` is the error code, the high word a device ID (0 for none; one that is not open gives `MCIERR_INVALID_DEVICE_ID`). The text and its NUL are copied, at most `usLength` bytes of them (a short buffer gets the text cut, without a NUL); a code `<meerror.h>` does not define gives `MCIERR_OUTOFRANGE`, a null or unwritable buffer `MCIERR_INVALID_BUFFER`. The texts are the codes' names in words ("File not found"; IBM's texts are not public, unverified).
+- **`mciGetDeviceID(pszName)`:** the device opened under that alias (any case), 0 when there is none.
+- **`mciQuerySysValue` / `mciSetSysValue(iSysValue, pValue)`:** the `MSV_*` system values per process — closed captioning, master volume (0–100, 100 at first), headphones, speakers (on at first), the work path (`C:\` at first; a `CCHMAXPATH` buffer), the QoS value and error flag. A query returns `MCIERR_SUCCESS` (`MCIERR_INVALID_FLAG` for an unknown value), a set TRUE or FALSE (an unknown value, a volume above 100, an empty or overlong path). Warpine keeps the values; playback does not act on them.
 - **Output:** sound is played by the main-thread SDL3 loop; headless runs (`WARPINE_HEADLESS=1`, or a CLI program whose stdout is not a terminal) are silent, and `DosBeep` then returns at once.
 
-### UCONV (5 APIs)
+### UCONV (9 APIs)
 
-UniCreateUconvObject (12289), UniUconvToUcs (12290), UniUconvFromUcs (12291), UniFreeUconvObject (12292), UniMapCpToUcsCp (12298) — UCONV 1–4 and 10, the ordinals of Open Watcom's `libconv.lib`.
+UniCreateUconvObject (12289), UniUconvToUcs (12290), UniUconvFromUcs (12291), UniFreeUconvObject (12292), UniQueryUconvObject (12295), UniSetUconvObject (12296), UniMapCpToUcsCp (12298), UniStrFromUcs (12299), UniStrToUcs (12300) — UCONV 1–4, 7, 8 and 10–12, the ordinals of Open Watcom's `libconv.lib`.
 
-UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`.
+UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`. Return codes are `<ulserrno.h>`'s (`ULS_INVALID` 0x2040E, `ULS_BADOBJECT` 0x2040F, `ULS_BUFFERFULL` 0x20412, `ULS_BADATTR` 0x20415); an unknown codepage name is `ULS_INVALID`.
 
-### VIOCALLS (33 APIs: 29 implemented, 4 stub)
+- **`UniStrToUcs(uobj, ucsbuf, str, size)` / `UniStrFromUcs(uobj, outbuf, ucsstr, size)`:** a NUL-terminated string converted with its NUL; `size` is the room in UniChars / bytes; a short buffer gets the characters that fit whole and `ULS_BUFFERFULL`. `UniStrFromUcs` always substitutes what the codepage lacks.
+- **`UniQueryUconvObject` / `UniSetUconvObject`:** the object's `uconv_attribute_t` (version 0, 60 bytes): the lengths and `esid` computed from the codepage (SBCS PC 1 / 1, mixed DBCS 1 / 2, UTF-8 1 / 3), the settable fields as `UniSetUconvObject` left them (substitution `UCONV_OPTION_SUBSTITUTE_FROM_UNICODE`, `?` and U+FFFD, `DSPMASK_DATA` at first); `first` gives each byte's character length as a first byte, `other` whether it can follow one; no user-defined ranges. `UniSetUconvObject` refuses (`ULS_BADATTR`) a version other than 0, an unknown option or endian, substitution strings longer than their arrays. The conversions do not act on the attributes yet.
+
+### VIOCALLS (33 APIs: 31 implemented, 2 stub)
 
 **Implemented:**
 VioEndPopUp (1), VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioWrtCellStr (10), VioPopUp (11), VioScrollRt (12), VioWrtCharStr (13), VioSetCurPos (15), VioScrUnLock (18), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioScrLock (23), VioReadCellStr (24), VioWrtNAttr (26), VioGetCurType (27), VioReadCharStr (30), VioSetCurType (32), VioGetCp (40), VioScrollLf (44), VioGetConfig (46), VioScrollDn (47), VioWrtCharStrAtt (48), VioGetState (49), VioWrtNCell (52), VioWrtNChar (53), VioCheckCharType (75)
@@ -768,8 +773,10 @@ The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which p
 
 **ANSI.** `VioWrtTTY` and `DosWrite` to the screen interpret ANSI escape sequences while ANSI is on (the default; `VioSetAnsi` / `VioGetAnsi`): cursor position and movement, save / restore (`ESC[s` / `ESC[u`), `ESC[2J`, `ESC[K`, colours and attributes (`ESC[…m`) wrap mode (`ESC[=7h` / `ESC[=7l`) and the text display modes `ESC[=0h` … `ESC[=3h` (40 or 80 columns by 25 rows, cleared; the graphics modes 4–6 are ignored). Text written to a host pipe or file goes out as UTF-8 of the process codepage. `ESC[6n` and key reassignment are not implemented; unknown sequences are swallowed.
 
+- **`VioSetCp`** sets the screen's codepage, which VIO text is decoded with (`ERROR_VIO_BAD_CP` for one Warpine does not know; 0 is the process's); `DosSetProcessCp` sets it too. **`VioSetState`** sets what `VioGetState` reports: palette registers, the overscan colour, blink (0) or bright backgrounds (1); the renderer does not act on them.
+
 **Stubs:**
-VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
+VioGetBuf (31), VioShowBuf (43)
 
 ### KBDCALLS (14 APIs)
 
@@ -1193,7 +1200,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 540 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 547 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1201,11 +1208,11 @@ Counts are taken from the static registry (`api_registry.rs`, 540 entries) and t
 | QUECALLS | registry | 8 | 0 | 8 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 4 | 0 | 4 |
-| MDM (MMPM/2) | registry | 3 | 0 | 3 |
-| UCONV | registry | 5 | 0 | 5 |
+| MDM (MMPM/2) | registry | 6 | 0 | 6 |
+| UCONV | registry | 9 | 0 | 9 |
 | SO32DLL (sockets) | registry | 30 | 0 | 30 |
 | TCP32DLL (sockets, resolver, utilities) | registry | 46 | 0 | 46 |
-| VIOCALLS | sub-dispatcher | 29 | 4 | 33 |
+| VIOCALLS | sub-dispatcher | 31 | 2 | 33 |
 | KBDCALLS | sub-dispatcher | 14 | 0 | 14 |
 | MOUCALLS | sub-dispatcher | 27 | 0 | 27 |
 | PMSHAPI (profiles, applications, switch list) | registry | 18 | 0 | 18 |
@@ -1220,7 +1227,7 @@ Counts are taken from the static registry (`api_registry.rs`, 540 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **956** | **21** | **977** |
+| **Total** | | **965** | **19** | **984** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 
