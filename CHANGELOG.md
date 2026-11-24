@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`KbdStringIn` follows the keyboard's mode**: ASCII mode edits with Backspace, ends at the turnaround character `KbdSetStatus` set and echoes only with echo on; binary mode keeps every byte, never echoes, and ends when the buffer is full. The keyboard now starts as the KBD reference says, in ASCII mode (with echo on), and `KbdGetStatus` reports it so. `vio_kbd_test` has 59 checks.
 - **Extended LIBPATHs are inherited**: a child starts with its parent's BEGINLIBPATH and ENDLIBPATH, and `DosSetExtLIBPATH` expands `%BeginLIBPATH%` / `%EndLIBPATH%` and keeps to 1024 bytes. `libpath_test` has 17 checks and a child.
 
+### Changed
+- **The keyboard starts in ASCII mode with echo on**, as the KBD reference names ASCII the default; `KbdGetStatus` reported binary mode with echo off before, while `KbdStringIn` behaved as ASCII mode anyway.
+
 ### Fixed
 - **A long host name overran the TCP/IP record buffer**: `gethostbyname` stored the name in a 256-byte buffer without a limit, and the servent shared that buffer, so a name over 24 bytes overwrote it and a longer one the memory after. Each record now has its own region and names are cut to fit.
 - **`DosRead` of a file returned `NO_ERROR` when it could not write the program's buffer**: it now returns `ERROR_INVALID_PARAMETER`, as for a pipe.
