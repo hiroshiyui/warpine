@@ -75,7 +75,7 @@ pub const LOW_GUARD: u32 = EXE_AREA_START;
 /// maps, then the next 4 MB ([`ARENA_CHUNK`]), a supervisor-only large
 /// page. Its pages are supervisor-only in every thread's tables, so a
 /// guest at ring 3 reaches nothing in it. It starts with the process's
-/// page tables (ADR-0114), then holds the first 482 threads' paging
+/// page tables (ADR-0114), then holds the first 480 threads' paging
 /// blocks; the rest lie in [`PAGING_EXTRA_BASE`].
 pub const PAGING_ARENA_BASE: u32 = RING0_WINDOW + PAGE_SIZE;
 pub const PAGING_ARENA_END: u32 = (ARENA_CHUNK + 1) << LARGE_PAGE_SHIFT;
@@ -93,16 +93,25 @@ const _: () = assert!(DYNAMIC_ALLOC_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT
 /// (ADR-0114); the first holds the not-present low 64 KB (ADR-0110).
 pub const EXE_CHUNKS: u32 = EXE_AREA_END >> LARGE_PAGE_SHIFT;
 const _: () = assert!(EXE_AREA_END.trailing_zeros() >= LARGE_PAGE_SHIFT && EXE_CHUNKS == STUB_CHUNK);
+/// The session's shared arena (ADR-0049) in 4 MB chunks: mapped through
+/// process tables too, so a process reaches only the blocks it holds, with
+/// the access it holds them with (ADR-0049 addendum, `shared_arena.rs`).
+pub const SHARED_FIRST_CHUNK: u32 = SHARED_ARENA_BASE >> LARGE_PAGE_SHIFT;
+pub const SHARED_CHUNKS: u32 = SHARED_ARENA_SIZE >> LARGE_PAGE_SHIFT;
+const _: () = assert!(SHARED_ARENA_SIZE.trailing_zeros() >= LARGE_PAGE_SHIFT);
 /// The process tables: one page table per chunk of the program area, then
-/// one per allocator chunk, shared by all of a process's threads, so a
-/// change of a page's state reaches them all.
+/// one per allocator chunk, then one per chunk of the shared arena, shared
+/// by all of a process's threads, so a change of a page's state reaches
+/// them all.
 pub const PROCESS_TABLES: u32 = PAGING_ARENA_BASE;
 /// The allocator's tables, after the program area's.
 pub const ALLOC_TABLES: u32 = PROCESS_TABLES + EXE_CHUNKS * PAGE_SIZE;
-pub const PROCESS_TABLES_SIZE: u32 = (EXE_CHUNKS + ALLOC_CHUNKS) * PAGE_SIZE;
+/// The shared arena's tables, after the allocator's.
+pub const SHARED_TABLES: u32 = ALLOC_TABLES + ALLOC_CHUNKS * PAGE_SIZE;
+pub const PROCESS_TABLES_SIZE: u32 = (EXE_CHUNKS + ALLOC_CHUNKS + SHARED_CHUNKS) * PAGE_SIZE;
 /// Where the paging blocks start, after the process tables.
 pub const PAGING_BLOCKS_BASE: u32 = PROCESS_TABLES + PROCESS_TABLES_SIZE;
-/// Blocks after the process tables (482).
+/// Blocks after the process tables (480).
 const MAIN_BLOCKS: u32 = (PAGING_ARENA_END - PAGING_BLOCKS_BASE) / PAGING_BLOCK_SIZE;
 const _: () = assert!(PAGING_ARENA_BASE >> LARGE_PAGE_SHIFT == TLM_CHUNK && MAIN_BLOCKS >= 480);
 /// The 4 MB between the API thunks' and the system area's (ADR-0115):
@@ -115,7 +124,7 @@ const _: () = assert!(EXTRA_CHUNK + 1 == TLM_CHUNK && PAGING_EXTRA_END == SYSTEM
     && PAGING_EXTRA_BASE as u64 >= MAGIC_API_BASE + STUB_AREA_SIZE as u64);
 /// Blocks in the extra 4 MB (256).
 const EXTRA_BLOCKS: u32 = (PAGING_EXTRA_END - PAGING_EXTRA_BASE) / PAGING_BLOCK_SIZE;
-/// Blocks the arena holds: the most threads a process can have (738).
+/// Blocks the arena holds: the most threads a process can have (736).
 pub const PAGING_BLOCKS: u32 = MAIN_BLOCKS + EXTRA_BLOCKS;
 const _: () = assert!(PAGING_BLOCKS >= 736);
 /// The 4 MB holding the API thunks (`MAGIC_API_BASE`): read-only, so no
@@ -158,12 +167,13 @@ pub fn process_pte(addr: u32, access: PageAccess) -> u32 {
 }
 
 /// Where the process-table entry of the page holding `addr` lies; None
-/// outside the program area and the allocator's region.
+/// outside the program area, the allocator's region and the shared arena
+/// (whose tables follow the allocator's).
 pub fn process_pte_at(addr: u32) -> Option<u32> {
     if addr < EXE_AREA_END {
         Some(PROCESS_TABLES + (addr >> PAGE_SHIFT) * 4)
     } else {
-        (DYNAMIC_ALLOC_BASE..SHARED_ARENA_BASE).contains(&addr)
+        (DYNAMIC_ALLOC_BASE..SHARED_ARENA_BASE + SHARED_ARENA_SIZE).contains(&addr)
             .then(|| ALLOC_TABLES + ((addr - DYNAMIC_ALLOC_BASE) >> PAGE_SHIFT) * 4)
     }
 }
@@ -262,6 +272,8 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_SUPERVISOR | PDE_LARGE);
         } else if (ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS).contains(&i) {
             put(4 * i, (ALLOC_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS);
+        } else if (SHARED_FIRST_CHUNK..SHARED_FIRST_CHUNK + SHARED_CHUNKS).contains(&i) {
+            put(4 * i, (SHARED_TABLES + (i - SHARED_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS);
         } else {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
         }
@@ -426,7 +438,10 @@ impl super::Loader {
         let exe = (0..EXE_CHUNKS * ENTRIES).map(|i| i << PAGE_SHIFT)
             .map(|page| if page < LOW_GUARD { 0 } else { page | PTE_FLAGS });
         let alloc = (0..ALLOC_CHUNKS * ENTRIES).map(|i| DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT));
-        let tables: Vec<u8> = exe.chain(alloc).flat_map(u32::to_le_bytes).collect();
+        // The shared arena's, not present until a block held is touched
+        // (`shared_arena.rs`).
+        let shared = (0..SHARED_CHUNKS * ENTRIES).map(|i| SHARED_ARENA_BASE + (i << PAGE_SHIFT));
+        let tables: Vec<u8> = exe.chain(alloc).chain(shared).flat_map(u32::to_le_bytes).collect();
         if self.system_write_bytes(PROCESS_TABLES, &tables).is_none() {
             warn!("the process page tables could not be written");
         }
@@ -523,7 +538,12 @@ mod tests {
             assert_eq!(entry(&b, 4 * i), (ALLOC_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS,
                        "allocator chunk {i}: through its process table");
         }
-        for i in (EXE_CHUNKS..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i)) {
+        let shared = SHARED_FIRST_CHUNK..SHARED_FIRST_CHUNK + SHARED_CHUNKS;
+        for i in shared.clone() {
+            assert_eq!(entry(&b, 4 * i), (SHARED_TABLES + (i - SHARED_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS,
+                       "shared arena chunk {i}: through its process table");
+        }
+        for i in (EXE_CHUNKS..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i) && !shared.contains(&i)) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
             let flags = match i {
@@ -619,8 +639,10 @@ mod tests {
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE), Some(ALLOC_TABLES));
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x234), Some(ALLOC_TABLES));
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x1234), Some(ALLOC_TABLES + 4));
-        assert_eq!(process_pte_at(SHARED_ARENA_BASE - 1), Some(PAGING_BLOCKS_BASE - 4));
-        assert_eq!(process_pte_at(SHARED_ARENA_BASE), None, "the shared arena keeps its large pages");
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE - 1), Some(SHARED_TABLES - 4));
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE), Some(SHARED_TABLES), "the shared arena's tables follow");
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE + SHARED_ARENA_SIZE - 1), Some(PAGING_BLOCKS_BASE - 4));
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE + SHARED_ARENA_SIZE), None);
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE - 1), None);
         let page = DYNAMIC_ALLOC_BASE + 0x5000;
         assert_eq!(process_pte(page + 7, PageAccess::ReadWrite), page | PTE_FLAGS);

@@ -28,7 +28,7 @@ pub const MEMORY_MAX_ENV: &str = "WARPINE_SESSION_MEMORY_MAX";
 pub const TASKS_MAX_ENV: &str = "WARPINE_SESSION_TASKS_MAX";
 /// 8 GB: room for a few dozen processes of 256 MB of guest memory each.
 pub const DEFAULT_MEMORY_MAX: u64 = 8 << 30;
-/// Enough for a process at its 738 threads (ADR-0115) and many more.
+/// Enough for a process at its 736 threads (ADR-0115) and many more.
 pub const DEFAULT_TASKS_MAX: u64 = 8192;
 /// The tool that sends the request, from systemd.
 const BUSCTL: &str = "busctl";

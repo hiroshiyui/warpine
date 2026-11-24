@@ -283,10 +283,26 @@ impl super::SharedState {
     /// The exit code of child host process `host` that ended with
     /// `status`: its whole report when it sent one (`exit_report.rs`), else
     /// the host status; `None` when killed by a host signal. Every reaping
-    /// path calls it, so the report's pipe is closed.
+    /// path calls it, so the report's pipe is closed, and the session's
+    /// shared blocks and semaphores are swept at once: a child killed
+    /// before it could let them go leaves nothing behind (ADR-0049 and
+    /// ADR-0050 addenda).
     pub(crate) fn child_exit_code(&self, host: u32, status: std::process::ExitStatus) -> Option<u32> {
         let read = self.exit_reports.lock_or_recover().remove(&host);
-        super::exit_report::full_code(read, status)
+        let code = super::exit_report::full_code(read, status);
+        self.sweep_after_child();
+        code
+    }
+
+    /// Drop the holders and openers of the session's shared blocks and
+    /// semaphores that are gone (a child just reaped among them).
+    pub(crate) fn sweep_after_child(&self) {
+        if self.arena.get().is_some() {
+            let _ = self.with_arena_table(|_, _, _| ());
+        }
+        if let Some(sems) = self.shared_sems.get() {
+            sems.with_lock(|l| l.sweep());
+        }
     }
 
     /// This process's OS/2 id (`pib_ulpid`).

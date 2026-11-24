@@ -15,6 +15,12 @@
  * block of its own unfreed (gone when it ends) and gives the parent a
  * block it then lets go (kept by the parent).
  *
+ * Guest code reaches only the blocks its process holds, with the access
+ * it holds them with (ADR-0049 addendum): the child cannot touch the
+ * gettable block before DosGetSharedMem, can only read it after getting it
+ * with PAG_READ, and cannot touch a block after DosFreeMem. A probe that
+ * faults is left by longjmp from an exception handler.
+ *
  * Each check is written to stdout:
  *
  *   shmem_test: <name>: ok
@@ -27,6 +33,7 @@
 #define INCL_DOS
 #define INCL_DOSERRORS
 #include <os2.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +72,47 @@ static void check_str( const char *name, const char *got, const char *want )
     check( name, strcmp( got, want ) == 0, 1 );
 }
 
+/* ---------- probes: an access violation left by longjmp ---------- */
+
+static jmp_buf        probe_env;
+static volatile ULONG probe_code, probe_sink;
+
+static ULONG APIENTRY probe_handler( PEXCEPTIONREPORTRECORD rep, PEXCEPTIONREGISTRATIONRECORD reg,
+                                     PCONTEXTRECORD ctx, PVOID unused )
+{
+    (void)reg; (void)ctx; (void)unused;
+    if( rep->fHandlerFlags & (EH_UNWINDING | EH_EXIT_UNWIND) ) return XCPT_CONTINUE_SEARCH;
+    if( rep->ExceptionNum == XCPT_ACCESS_VIOLATION ) {
+        probe_code = rep->ExceptionNum;
+        longjmp( probe_env, 1 );
+    }
+    return XCPT_CONTINUE_SEARCH;
+}
+
+static void read_at( PVOID p )  { probe_sink = *(volatile ULONG *)p; }
+static void write_at( PVOID p ) { *(volatile ULONG *)p = 0x12345678UL; }
+
+/* Whether the probe at p raises an access violation. */
+static ULONG faults( void (*probe)( PVOID ), PVOID p )
+{
+    EXCEPTIONREGISTRATIONRECORD rec;
+
+    memset( &rec, 0, sizeof( rec ) );
+    rec.ExceptionHandler = probe_handler;
+    probe_code = 0;
+    DosSetExceptionHandler( &rec );
+    if( setjmp( probe_env ) == 0 ) probe( p );
+    DosUnsetExceptionHandler( &rec );
+    return probe_code == XCPT_ACCESS_VIOLATION;
+}
+
+/* DosQueryMem's flags for the page at p. */
+static ULONG query_flags( PVOID p )
+{
+    ULONG cb = 4096, fl = 0;
+    return DosQueryMem( p, &cb, &fl ) == NO_ERROR ? fl : 0xFFFFFFFFUL;
+}
+
 /* The command line's arguments: the second string at pib_pchcmd. */
 static const char *command_args( void )
 {
@@ -95,8 +143,13 @@ static int child_main( const char *args )
     for( i = 0; i < 100 && !sh->go; i++ ) DosSleep( 100 );
     check( "the parent gave its block", sh->go, 1 );
     check_str( "a given block outlives the giver's DosFreeMem", given, "given" );
-    check( "DosGetSharedMem(gettable)", DosGetSharedMem( gettable, PAG_READ ), NO_ERROR );
+    check( "a gettable block not got yet cannot be read", faults( read_at, gettable ), 1 );
+    check( "-> DosQueryMem: free to this process", query_flags( gettable ), PAG_FREE );
+    check( "DosGetSharedMem(gettable, read only)", DosGetSharedMem( gettable, PAG_READ ), NO_ERROR );
     check_str( "a gettable block's data", gettable, "gettable" );
+    check( "a block got read-only cannot be written", faults( write_at, gettable ), 1 );
+    check( "-> DosQueryMem: shared, committed, read-only",
+           query_flags( gettable ), PAG_SHARED | PAG_COMMIT | PAG_READ | PAG_BASE );
     check( "DosGetSharedMem(not gettable)", DosGetSharedMem( given, PAG_READ ), ERROR_ACCESS_DENIED );
     check( "DosAllocSharedMem(left to the process end)",
            DosAllocSharedMem( &other, (PSZ)CHILD_NAME, 4096, PAG_COMMIT | ACCESS ), NO_ERROR );
@@ -108,6 +161,7 @@ static int child_main( const char *args )
     check( "DosFreeMem(given away)", DosFreeMem( kept ), NO_ERROR );
     check( "DosFreeMem(the given block)", DosFreeMem( given ), NO_ERROR );
     check( "DosFreeMem(twice)", DosFreeMem( given ), ERROR_INVALID_ADDRESS );
+    check( "a block let go cannot be read", faults( read_at, given ), 1 );
     strcpy( sh->reply, "child was here" );
     DosFreeMem( gettable );
     DosFreeMem( named );
@@ -183,7 +237,9 @@ int main( void )
            DosGetNamedSharedMem( &other, (PSZ)CHILD_NAME, PAG_READ ), ERROR_FILE_NOT_FOUND );
     check( "a block the child gave outlives it", sh->kept != 0 && strcmp( (char *)sh->kept, "kept" ) == 0, 1 );
     check( "DosFreeMem(the kept block)", DosFreeMem( (PVOID)sh->kept ), NO_ERROR );
+    check( "the parent still writes the block the child reads", faults( write_at, gettable ), 0 );
     check( "DosFreeMem(gettable)", DosFreeMem( gettable ), NO_ERROR );
+    check( "a block let go cannot be written", faults( write_at, gettable ), 1 );
     check( "DosFreeMem(named)", DosFreeMem( named ), NO_ERROR );
     check( "the name is free again",
            DosGetNamedSharedMem( &again, (PSZ)NAMED, PAG_READ ), ERROR_FILE_NOT_FOUND );

@@ -47,3 +47,7 @@ The 4 MB after the TLM table's (`0x01C00000`–`0x02000000`, up to the allocator
 
 - OS/2's own limit of threads per process: Warpine's 738 (482 before) comes from its own layout, not from OS/2.
 - `ERROR_MAX_THRDS_REACHED` for a process's own limit (the reference lists it for "too many threads", without saying which limit).
+
+## Addendum (2026-11-24): 736 threads
+
+The shared arena's eight page tables (ADR-0049 addendum) follow the allocator's in the process tables, before the paging blocks: 480 blocks after them, 736 in all (`PAGING_BLOCKS`), so a process can have 736 threads (`a_process_gets_736_threads`).

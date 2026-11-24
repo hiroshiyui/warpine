@@ -55,3 +55,23 @@ OS/2 places a shared object at the same linear address in every process that use
   - holding a block twice counting once;
   - `ERROR_INVALID_ADDRESS` from `DosGetSharedMem` for an address that is not a block;
   - `ERROR_NOT_ENOUGH_MEMORY` when a block has `MAX_HOLDERS`.
+
+## Addendum (2026-11-24): access enforced by paging; a reaped child's blocks swept at once
+
+Guests now run paged (ADR-0088, ADR-0113, ADR-0114), so the limits above that came from flat memory can go.
+
+- **The arena goes through process tables.** Its 32 MB get eight page tables after the allocator's (`paging.rs`: `SHARED_TABLES`, `SHARED_CHUNKS`), in the supervisor-only paging arena; the directory entries of its chunks lead to them instead of large pages. Every page starts not present. The paging arena loses two thread blocks to them: 736 threads a process (was 738, ADR-0115).
+- **A block comes in when touched.** A page fault in the arena (`Loader::arena_fault`) looks the address up in the session's table: a block this process holds is written into its tables with the access it holds it with, and the instruction runs again; a block it does not hold, or a write to one it holds read-only, is `XCPT_ACCESS_VIOLATION`. Blocks given to the process by another one need no notice: they come in at the first touch.
+- **A block goes out when let go.** `with_arena_table` compares the process's holds before and after each change (`lost_blocks`); the pages of every block it no longer holds leave its tables and every vCPU's TLB (`unmap_arena_blocks`, the TLB epoch as in ADR-0114).
+- **Access per holder.** A holder's line in the table is its OS/2 id, followed by `r` when it may only read (`warpine-shmem 2`; an older table is not read). The allocator gets the block's access; `DosGetNamedSharedMem` / `DosGetSharedMem` read-only unless their flags have `PAG_WRITE`, `DosGiveSharedMem` likewise for the receiver; a block allocated without `PAG_WRITE` is read-only to everyone. Asking again keeps the larger access.
+- **`DosQueryMem` in the arena** reports a block this process holds as `PAG_SHARED | PAG_COMMIT | PAG_READ` (`PAG_WRITE` when it may write, `PAG_EXECUTE` when the block has it), to the block's end, `PAG_BASE` on its first page; any other arena page is `PAG_FREE` to it.
+- **Reaping a child sweeps.** Every path that reaps a child (`SharedState::child_exit_code`) sweeps the table at once, so a child killed before it could let its blocks go leaves nothing behind once its parent has seen it end. A process whose parent never waits for it is still swept at the next use of the table.
+
+Remaining limits:
+- The host side does not check holds: an API call given an address in a block the caller does not hold reads or writes it, as it reads any guest memory the call is given (the host never walks the guest's tables).
+- 16-bit programs run without process tables for the arena and still reach all of it.
+- `PAG_EXECUTE` alone reads (32-bit paging has no execute-only pages).
+
+Unverified (Warpine's own): read-only unless `PAG_WRITE` is asked for on a get or give; asking again keeping the larger access; `PAG_FREE` for an arena page the process does not hold.
+
+Tests: `holders_have_their_own_access`, `lost_blocks_are_those_let_go`, `reaping_a_child_sweeps_the_table_at_once`, `the_process_tables_map_the_allocators_region`, `no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page`; `samples/shmem_test` (a gettable block not got yet faults and is free to `DosQueryMem`, a block got read-only cannot be written, a block let go cannot be touched; 31 checks + 18 in the child).

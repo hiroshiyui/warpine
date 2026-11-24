@@ -57,3 +57,7 @@ The shared-memory table of ADR-0049 is a file read under a directory lock, which
   - a semaphore that only a killed process had open is deleted only when another process next creates or opens one;
   - without a session, shared semaphores stay within the process.
 - Unverified: the limits OS/2 itself places on shared semaphores (Warpine reports `ERROR_TOO_MANY_SEMAPHORES` and `ERROR_TOO_MANY_OPENS` at its own limits).
+
+## Addendum (2026-11-24): a reaped child's semaphores swept at once
+
+Every path that reaps a child (`SharedState::child_exit_code`) sweeps the segment (`Locked::sweep`) as well as the shared-memory table (ADR-0049 addendum): a semaphore only a killed child had open is deleted, and a mutex it owned is in the owner-died state, as soon as its parent has seen it end, not at the next look by any process.

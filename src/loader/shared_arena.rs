@@ -45,6 +45,7 @@ use log::{debug, warn};
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use super::paging::{process_pte, process_pte_at, PageAccess};
 use super::session_threads::SHARED_MEM_TABLE;
 
 /// The descriptor of the session's arena a child inherits.
@@ -60,7 +61,7 @@ pub const MAX_NAME_BYTES: usize = 255;
 /// Largest table file: a header and `MAX_SHARED_BLOCKS` full lines.
 const MAX_TABLE_BYTES: usize = 64 + MAX_SHARED_BLOCKS * (3 * 9 + 2 * MAX_NAME_BYTES + 2 + MAX_HOLDERS * 11 + 1);
 /// First line of a table.
-const HEADER: &str = "warpine-shmem 1";
+const HEADER: &str = "warpine-shmem 2";
 /// The name prefix of named shared memory.
 pub const SHAREMEM_PREFIX: &str = "\\SHAREMEM\\";
 /// The allocation flags a block keeps.
@@ -81,6 +82,9 @@ pub struct ArenaBlock {
     pub name: Option<String>,
     /// OS/2 process ids, sorted, no duplicates, never empty.
     pub holders: Vec<u32>,
+    /// The holders that may only read it (they got or were given it
+    /// without `PAG_WRITE`): sorted, each one a holder.
+    pub read_only: Vec<u32>,
 }
 
 /// Which arena a table belongs to: its memfd's device and inode.
@@ -145,24 +149,31 @@ impl ArenaBlock {
         let holders_text = parts.next()?;
         if parts.next().is_some() { return None; }
         let mut holders = Vec::new();
+        let mut read_only = Vec::new();
         for h in holders_text.split(',') {
+            // `12` holds the block with its access; `12r` may only read it.
+            let (h, reads) = h.strip_suffix('r').map_or((h, false), |h| (h, true));
             let pid = u32::try_from(dec_u64(h)?).ok()?;
             if pid == 0 || pid > MAX_PROCESS_ID || holders.len() >= MAX_HOLDERS { return None; }
             holders.push(pid);
+            if reads { read_only.push(pid); }
         }
         holders.sort_unstable();
         holders.dedup();
+        read_only.sort_unstable();
+        read_only.dedup();
         let end = offset.checked_add(size)?;
         if !offset.is_multiple_of(PAGE) || size == 0 || !size.is_multiple_of(PAGE)
             || end > SHARED_ARENA_SIZE || flags & !BLOCK_FLAGS != 0 {
             return None;
         }
-        Some(ArenaBlock { offset, size, flags, name, holders })
+        Some(ArenaBlock { offset, size, flags, name, holders, read_only })
     }
 
     fn encode(&self, out: &mut String) {
         let name = self.name.as_deref().map_or_else(|| "-".to_string(), hex_name);
-        let holders: Vec<String> = self.holders.iter().map(u32::to_string).collect();
+        let holders: Vec<String> = self.holders.iter()
+            .map(|p| if self.read_only.contains(p) { format!("{p}r") } else { p.to_string() }).collect();
         let _ = writeln!(out, "{:x} {:x} {:x} {} {}", self.offset, self.size, self.flags, name, holders.join(","));
     }
 
@@ -170,6 +181,23 @@ impl ArenaBlock {
     pub fn addr(&self) -> u32 { SHARED_ARENA_BASE + self.offset }
 
     fn end(&self) -> u32 { self.offset + self.size }
+
+    /// Whether process `pid` holds the block.
+    pub fn held_by(&self, pid: u32) -> bool { self.holders.binary_search(&pid).is_ok() }
+
+    /// What process `pid`'s guest code may do with the block's pages
+    /// (ADR-0049 addendum): nothing unless it holds it; write when the
+    /// block allows it and `pid` did not get it read-only; read otherwise
+    /// (`PAG_EXECUTE` alone reads too: 32-bit paging cannot tell them apart).
+    pub fn access_of(&self, pid: u32) -> PageAccess {
+        if !self.held_by(pid) {
+            PageAccess::None
+        } else if self.flags & PAG_WRITE != 0 && self.read_only.binary_search(&pid).is_err() {
+            PageAccess::ReadWrite
+        } else {
+            PageAccess::Read
+        }
+    }
 }
 
 /// What a get or give asks: the holder to add.
@@ -190,7 +218,7 @@ impl ArenaTable {
         let mut lines = text.lines();
         let Some(header) = lines.next() else { return table };
         let mut head = header.split(' ');
-        if head.next() != Some("warpine-shmem") || head.next() != Some("1") { return table; }
+        if head.next() != Some("warpine-shmem") || head.next() != Some("2") { return table; }
         table.arena = match (head.next().and_then(dec_u64), head.next().and_then(dec_u64), head.next()) {
             (Some(dev), Some(ino), None) => Some((dev, ino)),
             _ => None,
@@ -228,6 +256,7 @@ impl ArenaTable {
         let mut freed = Vec::new();
         self.blocks.retain_mut(|b| {
             b.holders.retain(|p| live.contains(p));
+            b.read_only.retain(|p| live.contains(p));
             if b.holders.is_empty() { freed.push((b.offset, b.size)); }
             !b.holders.is_empty()
         });
@@ -247,7 +276,7 @@ impl ArenaTable {
         }
         if index == self.blocks.len() && SHARED_ARENA_SIZE - at < size { return None; }
         self.blocks.insert(index, ArenaBlock {
-            offset: at, size, flags: flags & BLOCK_FLAGS, name, holders: vec![holder],
+            offset: at, size, flags: flags & BLOCK_FLAGS, name, holders: vec![holder], read_only: Vec::new(),
         });
         Some(at)
     }
@@ -260,13 +289,32 @@ impl ArenaTable {
         self.blocks.iter().find(|b| b.offset == offset)
     }
 
-    /// Add `pid` to the holders of the block at `offset` (already one: no
-    /// change).
+    /// The block holding byte `offset` of the arena.
+    pub fn containing(&self, offset: u32) -> Option<&ArenaBlock> {
+        self.blocks.iter().find(|b| (b.offset..b.end()).contains(&offset))
+    }
+
+    /// Add `pid` to the holders of the block at `offset`, with the block's
+    /// access (already one: no change but the access, see [`Self::hold_as`]).
     pub fn hold(&mut self, offset: u32, pid: u32) -> Result<(), HoldError> {
+        self.hold_as(offset, pid, true)
+    }
+
+    /// Add `pid` to the holders of the block at `offset`; it may write the
+    /// block (if the block allows it) when `write`. A holder asking again
+    /// keeps the larger access (unverified).
+    pub fn hold_as(&mut self, offset: u32, pid: u32, write: bool) -> Result<(), HoldError> {
         let b = self.blocks.iter_mut().find(|b| b.offset == offset).ok_or(HoldError::NoBlock)?;
-        if let Err(i) = b.holders.binary_search(&pid) {
-            if b.holders.len() >= MAX_HOLDERS { return Err(HoldError::Full); }
-            b.holders.insert(i, pid);
+        let reads = b.read_only.binary_search(&pid);
+        match b.holders.binary_search(&pid) {
+            Ok(_) => {
+                if write && let Ok(i) = reads { b.read_only.remove(i); }
+            }
+            Err(i) => {
+                if b.holders.len() >= MAX_HOLDERS { return Err(HoldError::Full); }
+                b.holders.insert(i, pid);
+                if !write && let Err(j) = reads { b.read_only.insert(j, pid); }
+            }
         }
         Ok(())
     }
@@ -278,6 +326,7 @@ impl ArenaTable {
         let b = &mut self.blocks[i];
         let at = b.holders.binary_search(&pid).ok()?;
         b.holders.remove(at);
+        b.read_only.retain(|&p| p != pid);
         if b.holders.is_empty() {
             let b = self.blocks.remove(i);
             return Some(Some((b.offset, b.size)));
@@ -417,7 +466,7 @@ impl super::SharedState {
         let arena = self.arena.get().ok_or(TableUnavailable)?;
         let slots = self.thread_slots.lock_or_recover();
         let session = slots.session().ok_or(TableUnavailable)?;
-        let run = || -> std::io::Result<R> {
+        let run = || -> std::io::Result<(R, Vec<(u32, u32)>)> {
             let t = session.tables()?;
             let bytes = t.read(SHARED_MEM_TABLE, MAX_TABLE_BYTES)?.unwrap_or_default();
             let mut table = ArenaTable::parse(&bytes);
@@ -445,15 +494,37 @@ impl super::SharedState {
             for (offset, size) in freed {
                 arena.zero(offset, size);
             }
-            Ok(r)
+            Ok((r, lost_blocks(&before, &table, self.process_id())))
         };
         match run() {
-            Ok(r) => Ok(r),
+            Ok((r, lost)) => {
+                self.unmap_arena_blocks(&lost);
+                Ok(r)
+            }
             Err(e) => {
                 warn!("shared arena: the session's table cannot be used: {e}");
                 Err(TableUnavailable)
             }
         }
+    }
+
+    /// This process's guest code no longer reaches the blocks at `ranges`
+    /// (offset, size), which it let go: their pages leave the process
+    /// tables and every vCPU's TLB (ADR-0049 addendum).
+    fn unmap_arena_blocks(&self, ranges: &[(u32, u32)]) {
+        if ranges.is_empty() || !self.process_tables_ready.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        for &(offset, size) in ranges {
+            for page in (offset..offset.saturating_add(size)).step_by(PAGE as usize) {
+                let addr = SHARED_ARENA_BASE + page;
+                if let Some(at) = process_pte_at(addr) {
+                    self.guest_mem.write_system::<u32>(at, process_pte(addr, PageAccess::None));
+                }
+            }
+        }
+        self.tlb_epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.threads.table.lock_or_recover().kick_all_but(0);
     }
 
     /// Map the session's arena over the top of guest memory: the one a
@@ -492,6 +563,16 @@ impl super::SharedState {
     }
 }
 
+/// The blocks `pid` held in `before` and no longer holds in `after`, as
+/// (offset, size): their pages must leave its tables.
+fn lost_blocks(before: &ArenaTable, after: &ArenaTable, pid: u32) -> Vec<(u32, u32)> {
+    before.blocks.iter()
+        .filter(|b| b.held_by(pid))
+        .filter(|b| !after.at(b.offset).is_some_and(|a| a.size == b.size && a.held_by(pid)))
+        .map(|b| (b.offset, b.size))
+        .collect()
+}
+
 /// Whether guest address `addr` lies in the arena.
 pub fn in_arena(addr: u32) -> bool {
     (SHARED_ARENA_BASE..SHARED_ARENA_BASE.wrapping_add(SHARED_ARENA_SIZE)).contains(&addr)
@@ -525,13 +606,14 @@ impl super::Loader {
         })
     }
 
-    /// `DosGetNamedSharedMem` in the arena (`name` canonical).
-    pub(super) fn arena_get_named(&self, ppb: u32, name: &str) -> Option<u32> {
+    /// `DosGetNamedSharedMem` in the arena (`name` canonical); the caller
+    /// may write the block only when `flag` has `PAG_WRITE`.
+    pub(super) fn arena_get_named(&self, ppb: u32, name: &str, flag: u32) -> Option<u32> {
         if self.guest_ptr(ppb, 4).is_none() { return Some(ERROR_INVALID_PARAMETER); }
         let me = self.shared.process_id();
         let r = self.shared.with_arena_table(|t, _, _| {
             let offset = t.by_name(name).map(|b| b.offset).ok_or(ERROR_FILE_NOT_FOUND)?;
-            t.hold(offset, me).map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
+            t.hold_as(offset, me, flag & PAG_WRITE != 0).map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
             Ok(offset)
         }).ok()?;
         Some(match r {
@@ -540,14 +622,15 @@ impl super::Loader {
         })
     }
 
-    /// `DosGetSharedMem` in the arena: the block at `pb` must be gettable.
-    pub(super) fn arena_get(&self, pb: u32) -> Option<u32> {
+    /// `DosGetSharedMem` in the arena: the block at `pb` must be gettable;
+    /// the caller may write it only when `flag` has `PAG_WRITE`.
+    pub(super) fn arena_get(&self, pb: u32, flag: u32) -> Option<u32> {
         let me = self.shared.process_id();
         let offset = pb.wrapping_sub(SHARED_ARENA_BASE);
         let r = self.shared.with_arena_table(|t, _, _| {
             let block = t.at(offset).ok_or(ERROR_INVALID_ADDRESS)?;
             if block.flags & OBJ_GETTABLE == 0 { return Err(ERROR_ACCESS_DENIED); }
-            t.hold(offset, me).map_err(|_| ERROR_NOT_ENOUGH_MEMORY)
+            t.hold_as(offset, me, flag & PAG_WRITE != 0).map_err(|_| ERROR_NOT_ENOUGH_MEMORY)
         }).ok()?;
         Some(r.err().unwrap_or(NO_ERROR))
     }
@@ -565,9 +648,65 @@ impl super::Loader {
             }
             if pid == me { return Ok(()); }
             if pid == 0 || !live.contains(&pid) { return Err(ERROR_INVALID_PROCID); }
-            t.hold(offset, pid).map_err(|_| ERROR_NOT_ENOUGH_MEMORY)
+            t.hold_as(offset, pid, perm & PAG_WRITE != 0).map_err(|_| ERROR_NOT_ENOUGH_MEMORY)
         }).ok()?;
         Some(r.err().unwrap_or(NO_ERROR))
+    }
+
+    /// A page fault at `addr` in the arena from guest code (a write when
+    /// `write`; ADR-0049 addendum): a block this process holds comes into
+    /// its tables with the access it holds it with, and the instruction
+    /// runs again; anything else is an access violation. None: not in the
+    /// arena, or no session table.
+    pub(crate) fn arena_fault(&self, addr: u32, write: bool) -> Option<super::vmem::FaultKind> {
+        use super::vmem::FaultKind;
+        if !in_arena(addr) { return None; }
+        let me = self.shared.process_id();
+        let offset = addr - SHARED_ARENA_BASE;
+        let held = self.shared.with_arena_table(|t, _, _| {
+            t.containing(offset).map(|b| (b.offset, b.size, b.access_of(me)))
+        }).ok()?;
+        let Some((base, size, access)) = held.filter(|&(_, _, a)| a != PageAccess::None) else {
+            return Some(FaultKind::Violation);
+        };
+        let present = self.guest_read::<u32>(process_pte_at(addr)?).is_some_and(|e| e & 1 != 0);
+        if present && (!write || access == PageAccess::ReadWrite) {
+            // Mapped meanwhile by another thread, or a stale TLB entry.
+            return Some(FaultKind::Retry);
+        }
+        if write && access != PageAccess::ReadWrite {
+            return Some(FaultKind::Violation);
+        }
+        for page in (base..base + size).step_by(PAGE as usize) {
+            let a = SHARED_ARENA_BASE + page;
+            if let Some(at) = process_pte_at(a) {
+                self.system_write::<u32>(at, process_pte(a, access));
+            }
+        }
+        Some(FaultKind::Retry)
+    }
+
+    /// `DosQueryMem` in the arena (ADR-0049 addendum): a block this
+    /// process holds is committed shared memory with the access it holds it
+    /// with, to the block's end (`PAG_BASE` on its first page); any other
+    /// page is free to it (unverified). None: not in the arena, or no
+    /// session table.
+    pub(crate) fn arena_query(&self, pb: u32, cb: u32) -> Option<(u32, u32)> {
+        if !in_arena(pb) || self.shared.arena.get().is_none() { return None; }
+        let me = self.shared.process_id();
+        let page = (pb - SHARED_ARENA_BASE) & !(PAGE - 1);
+        let held = self.shared.with_arena_table(|t, _, _| {
+            t.containing(page).map(|b| (b.offset, b.end(), b.flags, b.access_of(me)))
+        }).ok()?;
+        let limit = cb.div_ceil(PAGE).max(1).saturating_mul(PAGE);
+        Some(match held {
+            Some((base, end, flags, access)) if access != PageAccess::None => {
+                let write = if access == PageAccess::ReadWrite { PAG_WRITE } else { 0 };
+                let first = if page == base { PAG_BASE } else { 0 };
+                ((end - page).min(limit), PAG_COMMIT | PAG_SHARED | PAG_READ | write | (flags & PAG_EXECUTE) | first)
+            }
+            _ => (PAGE, PAG_FREE),
+        })
     }
 
     /// `DosFreeMem` of an arena block: the caller lets it go; it is gone
@@ -629,6 +768,52 @@ mod tests {
         assert_eq!(t.hold(o, 999), Err(HoldError::Full));
     }
 
+    /// A holder's access (ADR-0049 addendum): the block's, or read only
+    /// when it got the block without `PAG_WRITE`; asking again keeps the
+    /// larger; a read-only block is read-only to all; the table keeps it.
+    #[test]
+    fn holders_have_their_own_access() {
+        let mut t = ArenaTable { arena: Some((1, 2)), blocks: Vec::new() };
+        let o = t.alloc(1, PAG_READ | PAG_WRITE | OBJ_GETTABLE, None, 5).unwrap();
+        assert_eq!(t.at(o).unwrap().access_of(5), PageAccess::ReadWrite, "the allocator");
+        assert_eq!(t.at(o).unwrap().access_of(6), PageAccess::None, "not a holder");
+        t.hold_as(o, 6, false).unwrap();
+        assert_eq!(t.at(o).unwrap().access_of(6), PageAccess::Read);
+        let text = String::from_utf8(t.encode()).unwrap();
+        assert!(text.ends_with(" - 5,6r\n"), "{text}");
+        assert_eq!(ArenaTable::parse(text.as_bytes()), t, "read-only holders round-trip");
+        t.hold_as(o, 6, true).unwrap();
+        assert_eq!(t.at(o).unwrap().access_of(6), PageAccess::ReadWrite, "asking again for more");
+        t.hold_as(o, 6, false).unwrap();
+        assert_eq!(t.at(o).unwrap().access_of(6), PageAccess::ReadWrite, "and less keeps more");
+        t.hold_as(o, 7, false).unwrap();
+        assert_eq!(t.release(o, 7), Some(None));
+        assert!(t.at(o).unwrap().read_only.is_empty(), "a holder leaving leaves no read-only mark");
+        let r = t.alloc(1, PAG_READ, None, 5).unwrap();
+        assert_eq!(t.at(r).unwrap().access_of(5), PageAccess::Read, "a read-only block");
+        assert_eq!(t.containing(r + 0xFFF).map(|b| b.offset), Some(r));
+        assert_eq!(t.containing(r + 0x1000).map(|b| b.offset), None);
+        assert!(ArenaTable::parse(b"warpine-shmem 2 1 2\n0 1000 3 - 5,x6r\n").blocks().is_empty(), "bad holder");
+    }
+
+    /// The blocks a process stops holding are the ones whose pages leave
+    /// its tables: let go, or gone; not those it still holds, nor others'.
+    #[test]
+    fn lost_blocks_are_those_let_go() {
+        let mut t = ArenaTable::default();
+        let a = t.alloc(1, PAG_READ, None, 1).unwrap();
+        let b = t.alloc(0x2000, PAG_READ, None, 1).unwrap();
+        let c = t.alloc(1, PAG_READ, None, 2).unwrap();
+        t.hold(b, 2).unwrap();
+        let before = t.clone();
+        t.release(a, 1);
+        t.release(b, 1);
+        t.release(c, 2);
+        assert_eq!(lost_blocks(&before, &t, 1), [(a, 0x1000), (b, 0x2000)]);
+        assert_eq!(lost_blocks(&before, &t, 2), [(c, 0x1000)]);
+        assert!(lost_blocks(&before, &before, 1).is_empty());
+    }
+
     #[test]
     fn dead_processes_lose_their_blocks() {
         let mut t = ArenaTable::default();
@@ -651,9 +836,9 @@ mod tests {
         let bytes = t.encode();
         assert_eq!(ArenaTable::parse(&bytes), t);
         let text = String::from_utf8(bytes).unwrap();
-        assert!(text.starts_with("warpine-shmem 1 7 42\n"));
+        assert!(text.starts_with("warpine-shmem 2 7 42\n"));
         let n = hex_name("\\SHAREMEM\\X");
-        let junk = format!("warpine-shmem 1 7 42\n\
+        let junk = format!("warpine-shmem 2 7 42\n\
             0 1000 3 - 1\n\
             800 1000 3 - 1\n\
             1000 1000 3 {n} 1\n\
@@ -672,7 +857,8 @@ mod tests {
         assert_eq!(offsets, [0, 0x1000], "overlaps, duplicate names, bad holders, flags, ranges and names dropped");
         assert_eq!(ArenaTable::parse(b"other 1\n0 1000 3 - 1\n"), ArenaTable::default());
         assert_eq!(ArenaTable::parse(b"\xff\xfe"), ArenaTable::default());
-        assert_eq!(ArenaTable::parse(b"warpine-shmem 1\n").arena, None);
+        assert_eq!(ArenaTable::parse(b"warpine-shmem 2\n").arena, None);
+        assert!(ArenaTable::parse(b"warpine-shmem 1 7 42\n0 1000 3 - 1\n").blocks().is_empty(), "an older table");
     }
 
     #[test]
@@ -714,11 +900,11 @@ mod tests {
         assert_eq!(a, SHARED_ARENA_BASE);
         assert_eq!(l.arena_alloc(ppb, name, 100, PAG_READ), Some(ERROR_ALREADY_EXISTS));
         assert_eq!(l.arena_alloc(0x7FFF_FFF0, None, 100, PAG_READ), Some(ERROR_INVALID_PARAMETER));
-        assert_eq!(l.arena_get_named(ppb, "\\SHAREMEM\\NONE"), Some(ERROR_FILE_NOT_FOUND));
-        assert_eq!(l.arena_get_named(ppb + 4, "\\SHAREMEM\\T"), Some(NO_ERROR));
+        assert_eq!(l.arena_get_named(ppb, "\\SHAREMEM\\NONE", PAG_READ | PAG_WRITE), Some(ERROR_FILE_NOT_FOUND));
+        assert_eq!(l.arena_get_named(ppb + 4, "\\SHAREMEM\\T", PAG_READ | PAG_WRITE), Some(NO_ERROR));
         assert_eq!(l.guest_read::<u32>(ppb + 4), Some(a));
-        assert_eq!(l.arena_get(a), Some(ERROR_ACCESS_DENIED), "not gettable");
-        assert_eq!(l.arena_get(a + 4096), Some(ERROR_INVALID_ADDRESS));
+        assert_eq!(l.arena_get(a, PAG_READ), Some(ERROR_ACCESS_DENIED), "not gettable");
+        assert_eq!(l.arena_get(a + 4096, PAG_READ), Some(ERROR_INVALID_ADDRESS));
         assert_eq!(l.arena_give(a, 0x7777, PAG_READ), Some(ERROR_INVALID_PROCID));
         assert_eq!(l.arena_give(a, l.shared.process_id(), PAG_READ), Some(NO_ERROR));
         assert_eq!(l.arena_give(a, 0x7777, PAG_WRITE), Some(ERROR_ACCESS_DENIED), "more than allowed");
@@ -728,12 +914,33 @@ mod tests {
         assert_eq!(t.blocks().len(), 1);
         assert_eq!(l.arena_free(a), Some(NO_ERROR));
         assert_eq!(l.arena_free(a), Some(ERROR_INVALID_ADDRESS));
-        assert_eq!(l.arena_get_named(ppb, "\\SHAREMEM\\T"), Some(ERROR_FILE_NOT_FOUND));
+        assert_eq!(l.arena_get_named(ppb, "\\SHAREMEM\\T", PAG_READ | PAG_WRITE), Some(ERROR_FILE_NOT_FOUND));
         // A block of a process that ended is let go.
         assert_eq!(l.arena_alloc(ppb, None, 1, PAG_READ), Some(NO_ERROR));
         l.shared.release_shared_arena();
         let t = ArenaTable::parse(&std::fs::read(d.path().join("s").join(SHARED_MEM_TABLE)).unwrap());
         assert!(t.blocks().is_empty());
+        l.shared.leave_thread_session();
+    }
+
+    /// Reaping a child sweeps the table at once (ADR-0049 addendum): a
+    /// block only a dead process held is gone from the file, without
+    /// waiting for the next call on the table; a live holder stays.
+    #[test]
+    fn reaping_a_child_sweeps_the_table_at_once() {
+        let d = tempfile::tempdir().unwrap();
+        let l = loader_in_session(d.path());
+        let me = l.shared.process_id();
+        let path = d.path().join("s").join(SHARED_MEM_TABLE);
+        let mut t = ArenaTable { arena: Some(l.shared.arena.get().unwrap().id()), blocks: Vec::new() };
+        let dead = t.alloc(1, PAG_READ, Some("\\SHAREMEM\\DEAD".into()), 0x7777).unwrap();
+        let shared = t.alloc(1, PAG_READ, None, 0x7777).unwrap();
+        t.hold(shared, me).unwrap();
+        std::fs::write(&path, t.encode()).unwrap();
+        l.shared.sweep_after_child();
+        let t = ArenaTable::parse(&std::fs::read(&path).unwrap());
+        assert!(t.at(dead).is_none() && t.by_name("\\SHAREMEM\\DEAD").is_none(), "the dead process's block is gone");
+        assert_eq!(t.at(shared).map(|b| b.holders.clone()), Some(vec![me]), "the live holder keeps its block");
         l.shared.leave_thread_session();
     }
 

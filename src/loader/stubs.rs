@@ -179,7 +179,7 @@ impl super::Loader {
         let Some(name) = super::shared_arena::canonical_name(&raw) else {
             return ERROR_INVALID_NAME;
         };
-        if let Some(r) = self.arena_get_named(ppb, &name) {
+        if let Some(r) = self.arena_get_named(ppb, &name, flag) {
             return r;
         }
         if let Some(addr) = self.shared.shmem_mgr.lock_or_recover().find_by_name(&name) {
@@ -234,7 +234,7 @@ impl super::Loader {
         if flag & !SHARED_ACCESS_FLAGS != 0 || flag & (PAG_READ | PAG_WRITE | PAG_EXECUTE) == 0 {
             return ERROR_INVALID_PARAMETER;
         }
-        if super::shared_arena::in_arena(pb) && let Some(r) = self.arena_get(pb) {
+        if super::shared_arena::in_arena(pb) && let Some(r) = self.arena_get(pb, flag) {
             return r;
         }
         match self.shared.shmem_mgr.lock_or_recover().block(pb) {

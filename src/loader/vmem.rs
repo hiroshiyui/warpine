@@ -609,6 +609,9 @@ impl super::Loader {
     /// map (shared memory, Warpine's own areas) reads as committed and
     /// writable, a page at a time, `PAG_SHARED` in the shared arena.
     fn query_untracked(&self, pb: u32, cb: u32) -> (u32, u32) {
+        if let Some(answer) = self.arena_query(pb, cb) {
+            return answer;
+        }
         self.sync_allocations();
         let first = pb & !(PAGE_SIZE - 1);
         let limit = cb.div_ceil(PAGE_SIZE).max(1);
@@ -650,6 +653,9 @@ impl super::Loader {
     /// it means, with the guard taken off a guard page. None: the page is
     /// in no tracked allocation.
     pub(crate) fn page_fault_kind(&self, addr: u32, write: bool) -> Option<FaultKind> {
+        if super::shared_arena::in_arena(addr) {
+            return self.arena_fault(addr, write);
+        }
         let (kind, changes) = self.shared.vmem.lock_or_recover().fault(addr, write)?;
         self.apply_page_changes(&changes);
         Some(kind)
@@ -798,8 +804,8 @@ mod tests {
         assert_eq!(query(a + PAGE_SIZE, PAGE_SIZE), (PAGE_SIZE, PAG_COMMIT | PAG_READ), "a read-only data page: no PAG_EXECUTE");
         l.free_module_objects([a]);
         assert_eq!(query(a, PAGE_SIZE), (PAGE_SIZE, PAG_FREE), "freed: no PAG_EXECUTE left");
-        let (_, shared) = query(SHARED_ARENA_BASE, PAGE_SIZE);
-        assert_ne!(shared & PAG_SHARED, 0);
+        // Without a session the arena holds no block (ADR-0049 addendum).
+        assert_eq!(query(SHARED_ARENA_BASE, PAGE_SIZE), (PAGE_SIZE, PAG_FREE));
     }
 
     /// A sparse stack: its top page committed, a guard below, the rest
