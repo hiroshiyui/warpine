@@ -1,0 +1,40 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* nerrno.h - the socket error codes sock_errno() returns (OS/2 TCP/IP
+ * 4.0: SOCBASEERR plus the BSD error number), for GCC and clang. */
+#ifndef WARPINE_NERRNO_H
+#define WARPINE_NERRNO_H
+
+#define SOCBASEERR          10000
+#define SOCEINTR            (SOCBASEERR+4)
+#define SOCEBADF            (SOCBASEERR+9)
+#define SOCEACCES           (SOCBASEERR+13)
+#define SOCEFAULT           (SOCBASEERR+14)
+#define SOCEINVAL           (SOCBASEERR+22)
+#define SOCEMFILE           (SOCBASEERR+24)
+#define SOCEWOULDBLOCK      (SOCBASEERR+35)
+#define SOCEINPROGRESS      (SOCBASEERR+36)
+#define SOCEALREADY         (SOCBASEERR+37)
+#define SOCENOTSOCK         (SOCBASEERR+38)
+#define SOCEDESTADDRREQ     (SOCBASEERR+39)
+#define SOCEMSGSIZE         (SOCBASEERR+40)
+#define SOCEPROTOTYPE       (SOCBASEERR+41)
+#define SOCENOPROTOOPT      (SOCBASEERR+42)
+#define SOCEPROTONOSUPPORT  (SOCBASEERR+43)
+#define SOCESOCKTNOSUPPORT  (SOCBASEERR+44)
+#define SOCEOPNOTSUPP       (SOCBASEERR+45)
+#define SOCEAFNOSUPPORT     (SOCBASEERR+47)
+#define SOCEADDRINUSE       (SOCBASEERR+48)
+#define SOCEADDRNOTAVAIL    (SOCBASEERR+49)
+#define SOCENETDOWN         (SOCBASEERR+50)
+#define SOCENETUNREACH      (SOCBASEERR+51)
+#define SOCECONNABORTED     (SOCBASEERR+53)
+#define SOCECONNRESET       (SOCBASEERR+54)
+#define SOCENOBUFS          (SOCBASEERR+55)
+#define SOCEISCONN          (SOCBASEERR+56)
+#define SOCENOTCONN         (SOCBASEERR+57)
+#define SOCETIMEDOUT        (SOCBASEERR+60)
+#define SOCECONNREFUSED     (SOCBASEERR+61)
+#define SOCEHOSTDOWN        (SOCBASEERR+64)
+#define SOCEHOSTUNREACH     (SOCBASEERR+65)
+
+#endif /* WARPINE_NERRNO_H */

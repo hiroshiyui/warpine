@@ -907,6 +907,9 @@ fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
             .or_else(|| line.split_once("SOMLINK ")) {
             let name = leading_ident(after);
             if !name.is_empty() && after.trim_start()[name.len()..].trim_start().starts_with('(') {
+                // An import declared under another C name links as the
+                // name OS2_IMPORT gives (arpa/inet.h's inet_makeaddr).
+                let name = line.split_once("OS2_IMPORT(").map_or(name, |(_, n)| leading_ident(n));
                 decls.push(HeaderDecl { name: name.to_owned(), pascal: false, origin });
             }
         }
@@ -1033,6 +1036,10 @@ fn header_constant_problems(header: &[(String, u32)], warpine: &HashMap<String, 
     }).collect()
 }
 
+/// The TCP/IP headers at the top of sdk/include, and its TCP/IP directories.
+const TCPIP_HEADERS: &[&str] = &["types.h", "netdb.h", "resolv.h", "nerrno.h"];
+const TCPIP_DIRS: &[&str] = &["sys", "netinet", "arpa"];
+
 fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -> bool {
     let dir = include_dir.join("os2");
     let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
@@ -1042,11 +1049,19 @@ fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -
             return false;
         }
     };
-    // The SOM headers (som.h, somapi.h, somcdev.h; ADR-0122) sit beside os2.h.
+    // The SOM headers (som.h, somapi.h, somcdev.h; ADR-0122) and the TCP/IP
+    // headers (types.h, netdb.h, resolv.h, nerrno.h, and sys/, netinet/,
+    // arpa/; ADR-0123) sit beside os2.h.
     if let Ok(read) = fs::read_dir(include_dir) {
         files.extend(read.flatten().map(|e| e.path()).filter(|p| {
-            p.extension().is_some_and(|e| e == "h") && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("som"))
+            p.extension().is_some_and(|e| e == "h") && p.file_name().and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("som") || TCPIP_HEADERS.contains(&n))
         }));
+    }
+    for sub in TCPIP_DIRS {
+        if let Ok(read) = fs::read_dir(include_dir.join(sub)) {
+            files.extend(read.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "h")));
+        }
     }
     files.sort();
     let mut decls = Vec::new();
@@ -1567,11 +1582,12 @@ mod tests {
                     SOMEXTERN somId SOMLINK somIdFromString( zString s );\n\
                     typedef void SOMLINK somMethodProc( void );\n\
                     OS2_PASCAL_API(APIRET16, VioWrtTTY, (PCCH pch, USHORT cb, HVIO hvio),\n\
-                    \x20              (ULONG hvio, ULONG cb, PCCH pch), (hvio, cb, pch))\n";
+                    \x20              (ULONG hvio, ULONG cb, PCCH pch), (hvio, cb, pch))\n\
+                    u_long APIENTRY _wrp_inet_makeaddr(u_long net, u_long lna) OS2_IMPORT(inet_makeaddr);\n";
         let decls = parse_header_decls(text, "x.h");
         let found: Vec<(&str, bool)> = decls.iter().map(|d| (d.name.as_str(), d.pascal)).collect();
         assert_eq!(found, [("DosWrite", false), ("DosExit", false), ("WinDefWindowProc", false), ("somIdFromString", false),
-                           ("VioWrtTTY", true)]);
+                           ("VioWrtTTY", true), ("inet_makeaddr", false)]);
         assert_eq!(decls[0].origin, "x.h:4");
     }
 

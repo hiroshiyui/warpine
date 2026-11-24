@@ -46,7 +46,7 @@ OS2RC=${OS2RC:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/os2rc}
 # samples only Open Watcom builds (shapes; wcxx_throw_test, Open Watcom
 # C++), and the SOM samples whose classes come from the SOM compiler's
 # C++ and IDL output.
-SKIP=" ne_hello ne_ring_test c_hello c_sdk_test c_pm_test c_gdb_test c_msg_test c_som_test som_idl_test cxx_test wcxx_throw_test rust_hello shapes som_test build "
+SKIP=" ne_hello ne_ring_test c_hello c_sdk_test c_socket_test c_pm_test c_gdb_test c_msg_test c_som_test som_idl_test cxx_test wcxx_throw_test rust_hello shapes som_test build "
 
 for tool in "$LX_LINK" "$OS2RC"; do
     [ -x "$tool" ] || { echo "build_sdk.sh: $tool is missing (cargo build --bin lx_link --bin os2rc)" >&2; exit 1; }

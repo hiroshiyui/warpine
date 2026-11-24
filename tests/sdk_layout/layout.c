@@ -20,6 +20,16 @@
 #include <os2me.h>
 #include <stdio.h>
 #include <stddef.h>
+/* The TCP/IP structures both stacks share (ADR-0123): Open Watcom's headers
+ * are the BSD 4.4 stack's, whose sockaddr begins with a length byte, so the
+ * socket addresses are not compared. */
+#include <types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <sys/uio.h>
+#ifdef __WATCOMC__
+#include <sys/time.h>
+#endif
 
 #define P(name, value) printf("%s %u\n", name, (unsigned)(value))
 

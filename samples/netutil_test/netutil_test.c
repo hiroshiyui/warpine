@@ -47,7 +47,7 @@ struct iovec {
 #define SOCK_DGRAM  2
 #define FIONBIO     0x8004667EUL
 #define FIONREAD    0x4004667FUL
-#define SOCEWOULDBLOCK 35
+#define SOCEWOULDBLOCK 10035 /* SOCBASEERR + 35 (<nerrno.h>) */
 
 typedef u_long (_System *PFN_STR)(const char *);
 typedef char  *(_System *PFN_NTOA)(u_long);

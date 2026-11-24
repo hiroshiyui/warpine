@@ -46,6 +46,9 @@ use super::MutexExt;
 
 // ── SOCE* error code constants ────────────────────────────────────────────────
 
+/// What `sock_errno` adds to the BSD numbers below (<nerrno.h>; 0 only
+/// for the stack's own kernel code).
+pub const SOCBASEERR: u32 = 10000;
 pub const SOCE_INTR:           i32 = 4;
 pub const SOCE_BADF:           i32 = 9;
 pub const SOCE_ACCES:          i32 = 13;
@@ -382,10 +385,12 @@ impl super::Loader {
     //
     //   Return the error code from the last failed socket call.
 
+    /// The last socket error as programs see it: `SOCBASEERR` plus the BSD
+    /// number (`SOCEWOULDBLOCK` is 10035, <nerrno.h>), 0 for none.
     pub fn so_sock_errno(&self) -> u32 {
         let code = self.shared.socket_mgr.lock_or_recover().last_sock_errno.load(Ordering::Relaxed);
         debug!("sock_errno() → {}", code);
-        code as u32
+        if code == 0 { 0 } else { SOCBASEERR + code as u32 }
     }
 
     // ── psock_errno (ordinal 21) ──────────────────────────────────────────────
@@ -1546,7 +1551,7 @@ mod tests {
         let loader = Loader::new_mock();
         // soclose on an invalid handle → sets sock_errno to SOCE_BADF.
         loader.so_close(0xDEAD);
-        assert_eq!(loader.so_sock_errno(), SOCE_BADF as u32);
+        assert_eq!(loader.so_sock_errno(), SOCBASEERR + SOCE_BADF as u32);
     }
 
     /// Sockets are close-on-exec: a child process started by DosExecPgm
@@ -1771,14 +1776,14 @@ mod tests {
         // A number that is no socket, a bad count, a bad timeout.
         loader.guest_write_bytes(rfds, &write_fd_list(&[0x1234])).unwrap();
         assert_eq!(loader.so_select(0, rfds, 0, 0, tv), SOCK_ERROR);
-        assert_eq!(loader.so_sock_errno(), super::SOCE_NOTSOCK as u32);
+        assert_eq!(loader.so_sock_errno(), super::SOCBASEERR + super::SOCE_NOTSOCK as u32);
         loader.guest_write::<u16>(rfds, 65).unwrap();
         assert_eq!(loader.so_select(0, rfds, 0, 0, tv), SOCK_ERROR);
-        assert_eq!(loader.so_sock_errno(), super::SOCE_INVAL as u32);
+        assert_eq!(loader.so_sock_errno(), super::SOCBASEERR + super::SOCE_INVAL as u32);
         loader.guest_write_bytes(rfds, &write_fd_list(&[srv])).unwrap();
         loader.guest_write::<i32>(tv + 4, 1_000_000).unwrap();
         assert_eq!(loader.so_select(0, rfds, 0, 0, tv), SOCK_ERROR);
-        assert_eq!(loader.so_sock_errno(), super::SOCE_INVAL as u32);
+        assert_eq!(loader.so_sock_errno(), super::SOCBASEERR + super::SOCE_INVAL as u32);
         loader.so_close(srv);
         loader.so_close(quiet);
     }
@@ -1905,7 +1910,7 @@ mod tests {
     fn a_guest_cannot_open_or_reach_a_unix_socket() {
         let loader = Loader::new_mock();
         assert_eq!(loader.so_socket(1, 1, 0), SOCK_ERROR);
-        assert_eq!(loader.so_sock_errno(), SOCE_AFNOSUPPORT as u32);
+        assert_eq!(loader.so_sock_errno(), SOCBASEERR + SOCE_AFNOSUPPORT as u32);
         // An Internet socket connecting to a sockaddr_un is refused before
         // the host sees it.
         let s = loader.so_socket(2, 1, 0);
@@ -1915,10 +1920,10 @@ mod tests {
         sun.resize(110, 0);
         loader.guest_write_bytes(0x9000, &sun).unwrap();
         assert_eq!(loader.so_connect(s, 0x9000, sun.len() as u32), SOCK_ERROR);
-        assert_eq!(loader.so_sock_errno(), SOCE_AFNOSUPPORT as u32);
+        assert_eq!(loader.so_sock_errno(), SOCBASEERR + SOCE_AFNOSUPPORT as u32);
         assert_eq!(loader.so_bind(s, 0x9000, sun.len() as u32), SOCK_ERROR);
         assert_eq!(loader.so_connect(s, 0x9000, 8), SOCK_ERROR, "shorter than a sockaddr_in");
-        assert_eq!(loader.so_sock_errno(), SOCE_INVAL as u32);
+        assert_eq!(loader.so_sock_errno(), SOCBASEERR + SOCE_INVAL as u32);
         loader.so_close(s);
     }
 }
