@@ -1717,6 +1717,29 @@ fn the_syscall_filter_is_installed_per_role() {
                format!("Ok(Filtered)\nseccomp: 2\nfilters: {filters}\nthread: ok\nexec: EPERM\n"));
 }
 
+/// A new session removes the thread-accounting directories that killed
+/// sessions left in the runtime directory (`session_threads::sweep_stale`):
+/// one whose creator is gone goes, one of a live process stays.
+#[test]
+fn a_new_session_sweeps_stale_session_directories() {
+    use std::os::unix::fs::MetadataExt;
+    const SAMPLE: &str = "samples/hello/hello.exe";
+    if !can_run(SAMPLE) { return; }
+    let run = tempfile::tempdir().unwrap();
+    let uid = std::fs::metadata(run.path()).unwrap().uid();
+    // PID_MAX_LIMIT: never a live process; this test's own pid: alive.
+    let stale = run.path().join(format!("warpine-threads-{uid}-4194304"));
+    let live = run.path().join(format!("warpine-threads-{uid}-{}", std::process::id()));
+    for dir in [&stale, &live] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    let (out, code) = run_sample_args(SAMPLE, &[], 20, &[("XDG_RUNTIME_DIR", run.path().to_str().unwrap())]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!stale.exists(), "the stale directory is gone");
+    assert!(live.exists(), "a live process's directory stays");
+}
+
 /// xcpt_unwind_test (ADR-0110): DosUnwindException calls the handlers
 /// above its target with EH_UNWINDING, newest first, and unlinks them
 /// (to a record, END_OF_CHAIN, UNWIND_ALL; a stray target refused);

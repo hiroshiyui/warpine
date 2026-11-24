@@ -247,7 +247,11 @@ impl SessionDir {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute() && p.is_dir())
             .unwrap_or_else(std::env::temp_dir);
-        Self::at(base.join(format!("warpine-threads-{}-{}", euid(), std::process::id())))
+        let own = base.join(format!("{SESSION_PREFIX}{}-{}", euid(), std::process::id()));
+        // A new session: remove what killed sessions left behind.
+        let start_time: StartTimeFn = Arc::new(proc_start_time);
+        sweep_stale(&base, &own, &start_time);
+        Self::at(own)
     }
 
     pub fn path(&self) -> &PathBuf { &self.path }
@@ -279,6 +283,59 @@ impl SessionDir {
         }
         Err(std::io::Error::other("thread directory keeps disappearing"))
     }
+}
+
+/// The start of a session directory's name: `warpine-threads-<uid>-<pid>`.
+pub const SESSION_PREFIX: &str = "warpine-threads-";
+/// Most entries of the runtime directory a sweep looks at.
+const MAX_SWEPT: usize = 4096;
+
+/// Remove this user's session directories in `base` that no live process
+/// uses any more, except `own`: a session whose last process was killed
+/// leaves its directory behind (`ThreadSession::leave` removes it
+/// otherwise). A directory stays while a record names a live process, or
+/// while it has no record and the process its name gives lives (it may be
+/// starting). Only the files a session writes are removed, so a directory
+/// holding anything else stays too. Returns how many were removed.
+pub fn sweep_stale(base: &std::path::Path, own: &std::path::Path, start_time: &StartTimeFn) -> usize {
+    let prefix = format!("{SESSION_PREFIX}{}-", euid());
+    let Ok(entries) = std::fs::read_dir(base) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.take(MAX_SWEPT).flatten() {
+        let name = entry.file_name();
+        let Some(creator) = name.to_str().and_then(|n| n.strip_prefix(&prefix)).and_then(parse_u32) else { continue };
+        let path = entry.path();
+        if path == own { continue; }
+        if remove_if_stale(&path, creator, start_time) {
+            log::debug!("removed the stale session directory {}", path.display());
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// [`sweep_stale`] for one directory, under its lock.
+fn remove_if_stale(path: &std::path::Path, creator: u32, start_time: &StartTimeFn) -> bool {
+    // Not made again by `lock` when it is gone meanwhile.
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) { return false; }
+    let Ok(l) = SessionDir::at(path.to_path_buf()).lock() else { return false };
+    let Ok(entries) = std::fs::read_dir(l.path("")) else { return false };
+    let mut records = Vec::new();
+    for e in entries.take(MAX_ENTRIES).flatten() {
+        let file = e.file_name();
+        if parse_name(&file).is_none() { continue; }
+        let Some(name) = file.to_str() else { continue };
+        match l.read(name) {
+            Ok(Some(Some(rec))) if start_time(rec.who.pid) == Some(rec.who.start) => return false,
+            Ok(_) => records.push(name.to_string()),
+            Err(_) => return false,
+        }
+    }
+    if records.is_empty() && start_time(creator).is_some() { return false; }
+    for name in records.iter().map(String::as_str).chain([PID_COUNTER]).chain(TABLES) {
+        l.remove(name);
+    }
+    std::fs::remove_dir(path).is_ok()
 }
 
 fn euid() -> u32 {
@@ -759,6 +816,38 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
         v.sort();
         v
+    }
+
+    /// A session directory whose processes are all gone is removed when a
+    /// new session starts; one with a live process, a creator still
+    /// starting, a file of something else, or the caller's own, stays.
+    #[test]
+    fn stale_session_directories_are_swept() {
+        let base = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let dir = |pid: u32| base.path().join(format!("{SESSION_PREFIX}{}-{pid}", euid()));
+        let join = |pid: u32| {
+            let me = procs.spawn(pid);
+            let mut s = ThreadSession::new(SessionDir::at(dir(pid)), 64, me, procs.f());
+            s.join(None).unwrap();
+            s
+        };
+        let _dead = join(10);
+        let _live = join(20);
+        let _odd = join(30);
+        std::fs::write(dir(30).join("note"), b"not the session's").unwrap();
+        let _own = join(40);
+        std::fs::DirBuilder::new().mode(0o700).create(dir(50)).unwrap();
+        procs.spawn(50); // made, not joined yet: starting
+        std::fs::DirBuilder::new().mode(0o700).create(base.path().join("warpine-threads-x")).unwrap();
+        assert_eq!(sweep_stale(base.path(), &dir(40), &procs.f()), 0, "all alive");
+        for pid in [10, 30, 40, 50] { procs.kill(pid); }
+        assert_eq!(sweep_stale(base.path(), &dir(40), &procs.f()), 2, "10 and 50");
+        assert!(!dir(10).exists() && !dir(50).exists());
+        assert!(dir(20).exists(), "a live process");
+        assert!(dir(30).exists(), "something else's file");
+        assert!(dir(40).exists(), "the caller's own");
+        assert!(base.path().join("warpine-threads-x").exists(), "not a session's name");
     }
 
     #[test]
