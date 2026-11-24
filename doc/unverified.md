@@ -231,6 +231,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 - **The Landlock sandbox** (ADR-0111): the display and sound paths (tested with SDL's dummy drivers only); the whole runtime directory and `/dev` writable; the library directories executable; the program's directory readable.
 - **Shared memory access** (ADR-0049 addendum): a get or give without `PAG_WRITE` is read-only to that process; asking again keeps the larger access; `DosQueryMem` reports an arena page the process does not hold as `PAG_FREE`.
 - **No address randomisation in the guest** (ADR-0125): whether OS/2 itself randomised anything is not known.
+- **`PrfQueryProfile` / `PrfReset`**: lengths counting the NUL; `PMERR_BUFFER_TOO_SMALL` for a short buffer; `PMERR_INVALID_PARM` when `pszSysName` is not the system profile; `PL_ALTERED` posted with 0, 0 to every queue of the session; the user profile changed for the whole session (kept in its directory).
+- **`WinSetCp(0)`** refused as an unknown codepage (`PMERR_RESOURCE_NOT_FOUND`): the PM Reference lists the codepages a queue takes and gives 0 no meaning.
 - **The ANSI cursor position report** (`ESC[6n`): `ESC[row;colR` without zero padding and without a CR after it; served to `DosRead` of the console but not of redirected standard input; at most 256 bytes waiting.
 - **The system-call filter** (ADR-0124): the deny list (checked on SDL's dummy drivers only); `clone3` answering `ENOSYS` relying on the C library's fallback to `clone`; the desktop server refusing `execve`; `personality`, `kcmp` and the NUMA calls left allowed.
 - **Fuzzing** (ADR-0112): a minute per target in CI; the protocol target's shims for four constants and a helper.

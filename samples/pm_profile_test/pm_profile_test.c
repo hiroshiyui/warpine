@@ -18,6 +18,11 @@
  *   - PrfOpenProfile of a private file (same handle when opened again),
  *     PrfCloseProfile, bad handles (PMERR_INVALID_INI_FILE_HANDLE), and
  *     PMERR_INI_FILE_IS_SYS_OR_USER for OS2.INI
+ *   - PrfQueryProfile: the lengths the names need, the names, a short
+ *     buffer (cut, PMERR_BUFFER_TOO_SMALL)
+ *   - PrfReset: a wrong system profile refused, a new user profile
+ *     (C:\NEWUSER.INI, made) that HINI_USERPROFILE then reads and writes,
+ *     PL_ALTERED posted to the queue, and back to OS2.INI
  *
  * Help Manager:
  *   - WinCreateHelpInstance returns a handle and clears ulReturnCode
@@ -262,6 +267,60 @@ static void help_checks( HAB hab, HWND frame, HWND client )
            WinLoadHelpTable( help, HELP_TABLE_ID, NULLHANDLE ), FALSE );
 }
 
+/* PrfQueryProfile and PrfReset. */
+static void reset_checks( HAB hab )
+{
+    PRFPROFILE prof;
+    char       user[64], sys[64];
+    QMSG       qmsg;
+    LONG       n;
+
+    prof.cchUserName = 0;
+    prof.cchSysName = 0;
+    check( "PrfQueryProfile(lengths)", PrfQueryProfile( hab, &prof ), TRUE );
+    check( "-> the user profile's name needs 15 bytes", prof.cchUserName, 15 );
+    check( "-> the system profile's 18", prof.cchSysName, 18 );
+    prof.pszUserName = user;
+    prof.pszSysName = sys;
+    check( "PrfQueryProfile(names)", PrfQueryProfile( hab, &prof ), TRUE );
+    check( "-> C:\\OS2\\OS2.INI", strcmp( user, "C:\\OS2\\OS2.INI" ), 0 );
+    check( "-> C:\\OS2\\OS2SYS.INI", strcmp( sys, "C:\\OS2\\OS2SYS.INI" ), 0 );
+    prof.cchUserName = 5;
+    prof.cchSysName = sizeof( sys );
+    check( "PrfQueryProfile(short buffer) fails", PrfQueryProfile( hab, &prof ), FALSE );
+    check_error( hab, "-> PMERR_BUFFER_TOO_SMALL", PMERR_BUFFER_TOO_SMALL );
+    check( "-> the name cut to fit", strcmp( user, "C:\\O" ), 0 );
+
+    prof.pszUserName = "C:\\NEWUSER.INI";
+    prof.pszSysName = "C:\\OTHER.INI";
+    prof.cchUserName = prof.cchSysName = 0;
+    check( "PrfReset(another system profile) fails", PrfReset( hab, &prof ), FALSE );
+    prof.pszSysName = "c:\\os2\\os2sys.ini";
+    check( "PrfReset(C:\\NEWUSER.INI)", PrfReset( hab, &prof ), TRUE );
+    check( "-> PL_ALTERED is posted",
+           WinPeekMsg( hab, &qmsg, NULLHANDLE, PL_ALTERED, PL_ALTERED, PM_REMOVE ), TRUE );
+    prof.pszUserName = user;
+    prof.pszSysName = sys;
+    prof.cchUserName = sizeof( user );
+    prof.cchSysName = sizeof( sys );
+    PrfQueryProfile( hab, &prof );
+    check( "-> PrfQueryProfile names it", strcmp( user, "C:\\NEWUSER.INI" ), 0 );
+    check( "-> the new user profile is empty",
+           PrfQueryProfileString( HINI_USERPROFILE, APP, "Greeting", NULL, user, sizeof( user ) ), 0 );
+    check( "-> HINI_USERPROFILE writes it",
+           PrfWriteProfileString( HINI_USERPROFILE, "NewUser", "Key", "new" ), TRUE );
+    n = PrfQueryProfileString( HINI_USERPROFILE, "NewUser", "Key", NULL, user, sizeof( user ) );
+    check( "-> and reads it", n, 4 );
+    check( "-> PrfOpenProfile of it fails", PrfOpenProfile( hab, "C:\\NEWUSER.INI" ), NULLHANDLE );
+    check_error( hab, "-> PMERR_INI_FILE_IS_SYS_OR_USER", PMERR_INI_FILE_IS_SYS_OR_USER );
+    prof.pszUserName = "C:\\OS2\\OS2.INI";
+    prof.pszSysName = "C:\\OS2\\OS2SYS.INI";
+    check( "PrfReset(back to OS2.INI)", PrfReset( hab, &prof ), TRUE );
+    WinPeekMsg( hab, &qmsg, NULLHANDLE, PL_ALTERED, PL_ALTERED, PM_REMOVE );
+    n = PrfQueryProfileString( HINI_USERPROFILE, APP, "Greeting", NULL, user, sizeof( user ) );
+    check( "-> its data is back", n, 6 );
+}
+
 int main( void )
 {
     HAB    hab;
@@ -277,6 +336,7 @@ int main( void )
                                 "PM Profile Test", 0, NULLHANDLE, 0, &client );
 
     profile_checks( hab );
+    reset_checks( hab );
     help_checks( hab, frame, client );
 
     WinDestroyWindow( frame );

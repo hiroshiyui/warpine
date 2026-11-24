@@ -29,6 +29,18 @@ BOOL    APIENTRY PrfQueryProfileSize(HINI hini, PCSZ pszApp, PCSZ pszKey, PULONG
 BOOL    APIENTRY PrfQueryProfileData(HINI hini, PCSZ pszApp, PCSZ pszKey, PVOID pBuffer, PULONG pulBuffLen);
 BOOL    APIENTRY PrfWriteProfileData(HINI hini, PCSZ pszApp, PCSZ pszKey, PVOID pData, ULONG cchDataLen);
 
+/* The names of the user and system profiles (PrfQueryProfile, PrfReset). */
+typedef struct _PRFPROFILE {
+    ULONG cchUserName;
+    PSZ   pszUserName;
+    ULONG cchSysName;
+    PSZ   pszSysName;
+} PRFPROFILE, *PPRFPROFILE;
+#define PL_ALTERED 0x008E
+
+BOOL    APIENTRY PrfQueryProfile(HAB hab, PPRFPROFILE pPrfProfile);
+BOOL    APIENTRY PrfReset(HAB hab, PPRFPROFILE pPrfProfile);
+
 /* ── The switch list ────────────────────────────────────────────────── */
 typedef LHANDLE HSWITCH, *PHSWITCH;
 typedef LHANDLE HPROGRAM;

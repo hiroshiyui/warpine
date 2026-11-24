@@ -3825,15 +3825,17 @@ fn gui_pm_error_test_reports_last_errors() {
 /// pm_profile_test: PMSHAPI profiles — PrfWriteProfileString / Data,
 /// PrfQueryProfileString / Int / Size / Data with defaults, truncation,
 /// enumeration and deletion, PrfOpenProfile / PrfCloseProfile and their
-/// PMERR_* codes — and the HELPMGR calls (help instance, association,
-/// help tables, HM_* messages accepted). Drive C: is a temporary
-/// directory; the profiles left there are Warpine's text format.
+/// PMERR_* codes, PrfQueryProfile and PrfReset (a new user profile made
+/// and used, PL_ALTERED posted, back to OS2.INI) — and the HELPMGR calls
+/// (help instance, association, help tables, HM_* messages accepted).
+/// Drive C: is a temporary directory; the profiles left there are
+/// Warpine's text format.
 #[test]
 fn gui_pm_profile_test_reads_and_writes_profiles() {
     let drive = tempfile::tempdir().expect("tempdir");
     let xdg = drive.path().to_str().unwrap();
     if !assert_scripted_checks_pass_env("samples/pm_profile_test/pm_profile_test.exe",
-                                        "pm_profile_test", 65, "5000 quit\n",
+                                        "pm_profile_test", 85, "5000 quit\n",
                                         &[("XDG_DATA_HOME", xdg)]) {
         return;
     }
@@ -3849,7 +3851,9 @@ fn gui_pm_profile_test_reads_and_writes_profiles() {
     let mut names: Vec<_> = std::fs::read_dir(&drive_c).unwrap().flatten()
         .map(|e| e.file_name().into_string().unwrap()).collect();
     names.sort();
-    assert_eq!(names, ["OS2", "PRFTEST.INI"]);
+    assert_eq!(names, ["NEWUSER.INI", "OS2", "PRFTEST.INI"]);
+    let new_user = std::fs::read_to_string(drive_c.join("NEWUSER.INI")).expect("PrfReset's user profile");
+    assert!(new_user.contains("[\"NewUser\"]\n\"Key\" = \"new\\0\"\n"), "{new_user}");
 }
 
 /// nest_test: a program that starts itself without end stops at the

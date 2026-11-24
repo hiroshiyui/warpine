@@ -42,12 +42,31 @@ struct OpenProfile {
 pub struct ProfileTable {
     open: HashMap<u32, OpenProfile>,
     next: u32,
+    /// The user profile's absolute OS/2 path: `USER_PROFILE_PATH` until
+    /// `PrfReset` names another (the session's choice, `USER_PROFILE_TABLE`).
+    user: String,
 }
 
 impl Default for ProfileTable {
     fn default() -> Self {
-        ProfileTable { open: HashMap::new(), next: FIRST_PROFILE_HANDLE }
+        ProfileTable { open: HashMap::new(), next: FIRST_PROFILE_HANDLE, user: USER_PROFILE_PATH.into() }
     }
+}
+
+/// The session table naming the user profile `PrfReset` chose (one line:
+/// the absolute OS/2 path); no table: `USER_PROFILE_PATH`.
+pub const USER_PROFILE_TABLE: &str = "user-profile";
+/// Longest profile path kept (OS/2's `CCHMAXPATH`, 260, with its NUL).
+const MAX_PROFILE_PATH: usize = 259;
+
+/// A user-profile path read from the session table: an absolute OS/2 path
+/// (`X:\…`) of printable characters, at most `MAX_PROFILE_PATH` bytes.
+fn parse_profile_path(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
+    let b = text.as_bytes();
+    let ok = b.len() >= 4 && b.len() <= MAX_PROFILE_PATH && b[0].is_ascii_alphabetic() && &b[1..3] == b":\\"
+        && !text.chars().any(char::is_control);
+    ok.then(|| text.to_string())
 }
 
 /// Why a `Prf*` call failed: the `PMERR_*` code for `WinGetLastError`.
@@ -72,8 +91,8 @@ impl ProfileTable {
     /// The files `hini` reads from, in search order.
     fn read_paths(&self, hini: u32) -> PrfResult<Vec<String>> {
         match hini {
-            HINI_PROFILE => Ok(vec![USER_PROFILE_PATH.into(), SYSTEM_PROFILE_PATH.into()]),
-            HINI_USERPROFILE => Ok(vec![USER_PROFILE_PATH.into()]),
+            HINI_PROFILE => Ok(vec![self.user.clone(), SYSTEM_PROFILE_PATH.into()]),
+            HINI_USERPROFILE => Ok(vec![self.user.clone()]),
             HINI_SYSTEMPROFILE => Ok(vec![SYSTEM_PROFILE_PATH.into()]),
             h => self.open.get(&h).map(|p| vec![p.path.clone()]).ok_or(PMERR_INVALID_INI_FILE_HANDLE),
         }
@@ -82,7 +101,7 @@ impl ProfileTable {
     /// The file `hini` writes to: `HINI_PROFILE` writes the user profile.
     fn write_path(&self, hini: u32) -> PrfResult<String> {
         Ok(match hini {
-            HINI_PROFILE | HINI_USERPROFILE => USER_PROFILE_PATH.into(),
+            HINI_PROFILE | HINI_USERPROFILE => self.user.clone(),
             HINI_SYSTEMPROFILE => SYSTEM_PROFILE_PATH.into(),
             h => self.open.get(&h).map(|p| p.path.clone()).ok_or(PMERR_INVALID_INI_FILE_HANDLE)?,
         })
@@ -92,7 +111,7 @@ impl ProfileTable {
     /// `os2_path`.
     pub fn open_profile(&mut self, dm: &DriveManager, os2_path: &str) -> PrfResult<u32> {
         let (id, abs) = file_id(dm, os2_path).ok_or(PMERR_OPENING_INI_FILE)?;
-        for special in [USER_PROFILE_PATH, SYSTEM_PROFILE_PATH] {
+        for special in [self.user.as_str(), SYSTEM_PROFILE_PATH] {
             if file_id(dm, special).is_some_and(|(sid, _)| sid == id) {
                 return Err(PMERR_INI_FILE_IS_SYS_OR_USER);
             }
@@ -221,6 +240,109 @@ impl super::Loader {
         Ok(Some(bytes[..n].to_vec()))
     }
 
+    /// The process's profile table, locked, with the session's user profile
+    /// (`PrfReset` in any process of the session) brought in.
+    fn profile_table(&self) -> std::sync::MutexGuard<'_, ProfileTable> {
+        let chosen = self.session_user_profile();
+        let mut table = self.shared.profiles.lock_or_recover();
+        if let Some(path) = chosen {
+            table.user = path;
+        }
+        table
+    }
+
+    /// The user profile the session's `USER_PROFILE_TABLE` names, if any.
+    fn session_user_profile(&self) -> Option<String> {
+        let slots = self.shared.thread_slots.lock_or_recover();
+        let t = slots.session()?.tables().ok()?;
+        parse_profile_path(&t.read(USER_PROFILE_TABLE, MAX_PROFILE_PATH + 1).ok()??)
+    }
+
+    /// PrfQueryProfile(hab, pPrfProfile) → BOOL: the names of the user and
+    /// system profiles into the `PRFPROFILE`. A length of 0 asks for the
+    /// bytes a name needs (its NUL included, unverified); a buffer too small
+    /// gets the name cut to fit (NUL-terminated) and the call fails with
+    /// `PMERR_BUFFER_TOO_SMALL` (unverified).
+    pub fn prf_query_profile(&self, tid: u32, _hab: u32, p_profile: u32) -> u32 {
+        let r = (|| {
+            if p_profile == 0 || self.guest_read_bytes(p_profile, PRFPROFILE_SIZE as usize).is_none() {
+                return Err(PMERR_INVALID_PARM);
+            }
+            let user = self.profile_table().user.clone();
+            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+            let mut fits = true;
+            for (off, name) in [(0, user.as_str()), (8, SYSTEM_PROFILE_PATH)] {
+                let mut bytes = super::codepage::cp_encode(name, cp);
+                bytes.push(0);
+                let cch = self.guest_read::<u32>(p_profile + off).ok_or(PMERR_INVALID_PARM)?;
+                if cch == 0 {
+                    self.guest_write::<u32>(p_profile + off, bytes.len() as u32);
+                    continue;
+                }
+                let psz = self.guest_read::<u32>(p_profile + off + 4).ok_or(PMERR_INVALID_PARM)?;
+                if bytes.len() > cch as usize {
+                    fits = false;
+                    bytes.truncate(cch as usize - 1);
+                    bytes.push(0);
+                }
+                self.prf_put(psz, &bytes)?;
+            }
+            if fits { Ok(1) } else { Err(PMERR_BUFFER_TOO_SMALL) }
+        })();
+        self.prf_result(tid, r)
+    }
+
+    /// PrfReset(hab, pPrfProfile) → BOOL: make `pszUserName` the user
+    /// profile of the session (made when missing; relative to the current
+    /// directory), then post `PL_ALTERED` to every message queue of the
+    /// session. Only the user profile can change: `pszSysName` must name the
+    /// system profile (else `PMERR_INVALID_PARM`, unverified), and the user
+    /// profile cannot be the system profile (`PMERR_INI_FILE_IS_SYS_OR_USER`,
+    /// unverified); a file that cannot be made or read as a profile is
+    /// `PMERR_OPENING_INI_FILE`.
+    pub fn prf_reset(&self, tid: u32, _hab: u32, p_profile: u32) -> u32 {
+        let r = (|| {
+            if p_profile == 0 { return Err(PMERR_INVALID_PARM); }
+            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+            let name_at = |off: u32| -> PrfResult<String> {
+                let psz = self.guest_read::<u32>(p_profile + off + 4).ok_or(PMERR_INVALID_PARM)?;
+                let raw = self.prf_string(psz)?.filter(|n| !n.is_empty()).ok_or(PMERR_INVALID_PARM)?;
+                Ok(super::codepage::cp_decode(&raw, cp))
+            };
+            let (user, sys) = (name_at(0)?, name_at(8)?);
+            let abs = {
+                let table = self.profile_table();
+                let dm = self.shared.drive_mgr.lock_or_recover();
+                let (sys_id, _) = file_id(&dm, SYSTEM_PROFILE_PATH).ok_or(PMERR_OPENING_INI_FILE)?;
+                if file_id(&dm, &sys).map(|(id, _)| id) != Some(sys_id.clone()) {
+                    return Err(PMERR_INVALID_PARM);
+                }
+                let (id, abs) = file_id(&dm, &user).ok_or(PMERR_OPENING_INI_FILE)?;
+                if id == sys_id { return Err(PMERR_INI_FILE_IS_SYS_OR_USER); }
+                if abs.len() > MAX_PROFILE_PATH { return Err(PMERR_OPENING_INI_FILE); }
+                let existing = profile::load(&dm, &abs).map_err(|_| PMERR_OPENING_INI_FILE)?;
+                if !profile::exists(&dm, &abs) {
+                    profile::save(&dm, &abs, &existing, false).map_err(|_| PMERR_OPENING_INI_FILE)?;
+                }
+                drop(table);
+                abs
+            };
+            {
+                let slots = self.shared.thread_slots.lock_or_recover();
+                if let Some(t) = slots.session().and_then(|s| s.tables().ok()) {
+                    t.write(USER_PROFILE_TABLE, format!("{abs}\n").as_bytes()).map_err(|_| PMERR_OPENING_INI_FILE)?;
+                }
+            }
+            self.shared.profiles.lock_or_recover().user = abs;
+            Ok(1)
+        })();
+        if r == Ok(1) {
+            // Every program of the session re-reads its settings.
+            let _ = self.win_broadcast_msg(tid, HWND_DESKTOP, PL_ALTERED, 0, 0, super::pm_message::BMSG_POSTQUEUE);
+        }
+        self.prf_result(tid, r)
+    }
+
     /// Record the failure of a `Prf*` call and return 0 (FALSE / NULLHANDLE).
     fn prf_result(&self, tid: u32, r: PrfResult<u32>) -> u32 {
         r.unwrap_or_else(|code| { self.pm_error(tid, code); 0 })
@@ -243,7 +365,7 @@ impl super::Loader {
             let name = self.prf_string(psz_file)?.ok_or(PMERR_INVALID_PARM)?;
             let name = super::codepage::cp_decode(&name, self.shared.active_codepage
                 .load(std::sync::atomic::Ordering::Relaxed));
-            let mut table = self.shared.profiles.lock_or_recover();
+            let mut table = self.profile_table();
             let dm = self.shared.drive_mgr.lock_or_recover();
             table.open_profile(&dm, &name)
         })();
@@ -252,7 +374,7 @@ impl super::Loader {
 
     /// PrfCloseProfile(hini) → BOOL.
     pub fn prf_close_profile(&self, tid: u32, hini: u32) -> u32 {
-        let r = self.shared.profiles.lock_or_recover().close_profile(hini).map(|()| 1);
+        let r = self.profile_table().close_profile(hini).map(|()| 1);
         self.prf_result(tid, r)
     }
 
@@ -265,7 +387,7 @@ impl super::Loader {
             let app = self.prf_string(psz_app)?;
             let key = match app { Some(_) => self.prf_string(psz_key)?, None => None };
             let default = self.prf_string(psz_default)?;
-            let table = self.shared.profiles.lock_or_recover();
+            let table = self.profile_table();
             let dm = self.shared.drive_mgr.lock_or_recover();
             match (&app, &key) {
                 (Some(a), Some(k)) => {
@@ -312,7 +434,7 @@ impl super::Loader {
         let r = (|| {
             let app = self.prf_string(psz_app)?.ok_or(PMERR_INVALID_PARM)?;
             let key = self.prf_string(psz_key)?.ok_or(PMERR_INVALID_PARM)?;
-            let table = self.shared.profiles.lock_or_recover();
+            let table = self.profile_table();
             let dm = self.shared.drive_mgr.lock_or_recover();
             table.query_value(&dm, hini, &app, &key)
         })();
@@ -339,7 +461,7 @@ impl super::Loader {
     fn prf_query(&self, hini: u32, psz_app: u32, psz_key: u32) -> PrfResult<Vec<u8>> {
         let app = self.prf_string(psz_app)?;
         let key = match app { Some(_) => self.prf_string(psz_key)?, None => None };
-        let table = self.shared.profiles.lock_or_recover();
+        let table = self.profile_table();
         let dm = self.shared.drive_mgr.lock_or_recover();
         match (app, key) {
             (Some(a), Some(k)) => table.query_value(&dm, hini, &a, &k),
@@ -404,7 +526,7 @@ impl super::Loader {
     fn prf_write(&self, hini: u32, app: &[u8], key: Option<&[u8]>, data: Option<&[u8]>)
         -> PrfResult<u32>
     {
-        let table = self.shared.profiles.lock_or_recover();
+        let table = self.profile_table();
         let dm = self.shared.drive_mgr.lock_or_recover();
         table.write(&dm, hini, app, key, data).map(|()| 1)
     }
@@ -464,6 +586,60 @@ mod tests {
         let n = l.prf_query_profile_string(TID, hini, app.map_or(0, |a| put(l, STR_A, a)),
             key.map_or(0, |k| put(l, STR_B, k)), default.map_or(0, |d| put(l, STR_C, d)), BUF, max);
         (n, read(l, BUF, n))
+    }
+
+    /// A `PRFPROFILE` at `at` (`BUF`): lengths and buffers.
+    fn prfprofile(l: &Loader, at: u32, user: (u32, u32), sys: (u32, u32)) {
+        for (off, v) in [(0, user.0), (4, user.1), (8, sys.0), (12, sys.1)] {
+            l.guest_write::<u32>(at + off, v).unwrap();
+        }
+    }
+
+    /// PrfQueryProfile: lengths for 0, the names, a short buffer cut and
+    /// refused; PrfReset: the system profile must be named, a new user
+    /// profile is made and used, the system profile cannot be the user's.
+    #[test]
+    fn query_profile_and_reset_name_the_user_profile() {
+        let (l, tmp) = loader();
+        prfprofile(&l, BUF, (0, 0), (0, 0));
+        assert_eq!(l.prf_query_profile(TID, 0, BUF), 1);
+        assert_eq!(l.guest_read::<u32>(BUF), Some(USER_PROFILE_PATH.len() as u32 + 1));
+        assert_eq!(l.guest_read::<u32>(BUF + 8), Some(SYSTEM_PROFILE_PATH.len() as u32 + 1));
+        prfprofile(&l, BUF, (64, STR_A), (64, STR_B));
+        assert_eq!(l.prf_query_profile(TID, 0, BUF), 1);
+        assert_eq!(read(&l, STR_A, 15), b"C:\\OS2\\OS2.INI\0");
+        prfprofile(&l, BUF, (3, STR_A), (64, STR_B));
+        assert_eq!(l.prf_query_profile(TID, 0, BUF), 0);
+        assert_eq!(last_error(&l), PMERR_BUFFER_TOO_SMALL);
+        assert_eq!(read(&l, STR_A, 3), b"C:\0", "cut, NUL-terminated");
+        assert_eq!(l.prf_query_profile(TID, 0, 0), 0);
+        assert_eq!(last_error(&l), PMERR_INVALID_PARM);
+
+        let user = put(&l, STR_A, b"C:\\HOME.INI");
+        prfprofile(&l, BUF, (0, user), (0, put(&l, STR_B, b"C:\\ELSE.INI")));
+        assert_eq!(l.prf_reset(TID, 0, BUF), 0, "another system profile");
+        assert_eq!(last_error(&l), PMERR_INVALID_PARM);
+        prfprofile(&l, BUF, (0, put(&l, STR_C, b"C:\\OS2\\OS2SYS.INI")), (0, put(&l, STR_B, b"c:\\os2\\os2sys.ini")));
+        assert_eq!(l.prf_reset(TID, 0, BUF), 0, "the system profile as the user's");
+        assert_eq!(last_error(&l), PMERR_INI_FILE_IS_SYS_OR_USER);
+        prfprofile(&l, BUF, (0, user), (0, put(&l, STR_B, b"c:\\os2\\os2sys.ini")));
+        assert_eq!(l.prf_reset(TID, 0, BUF), 1);
+        assert!(tmp.path().join("HOME.INI").exists(), "made");
+        assert_eq!(write_string(&l, HINI_USERPROFILE, b"App", b"Key", b"v"), 1);
+        assert!(std::fs::read_to_string(tmp.path().join("HOME.INI")).unwrap().contains("\"Key\" = \"v\\0\""));
+        prfprofile(&l, BUF, (64, BUF + 0x100), (64, BUF + 0x200));
+        assert_eq!(l.prf_query_profile(TID, 0, BUF), 1);
+        assert_eq!(read(&l, BUF + 0x100, 12), b"C:\\HOME.INI\0");
+    }
+
+    #[test]
+    fn profile_paths_from_the_session_are_checked() {
+        assert_eq!(parse_profile_path(b"C:\\HOME.INI\n").as_deref(), Some("C:\\HOME.INI"));
+        for bad in [&b"C:\\HOME.INI"[..], b"HOME.INI\n", b"C:HOME.INI\n", b"C:\\\n", b"C:\\A\tB\n", b"\xff:\\A\n"] {
+            assert_eq!(parse_profile_path(bad), None, "{bad:?}");
+        }
+        let long = format!("C:\\{}\n", "A".repeat(MAX_PROFILE_PATH));
+        assert_eq!(parse_profile_path(long.as_bytes()), None);
     }
 
     #[test]

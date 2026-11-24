@@ -89,7 +89,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Threads per process**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
 - [ ] **Profiles**:
-  - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
+  - the program-list calls, the `PRF16*` / `WIN16*` exports;
   - binary OS/2 INI files (format unpublished).
 - [ ] **CONFIG.SYS** (ADR-0032, 0092):
   - check the `THREADS=` range (32 or 64? 4095 or 4096?) and the parsing rules against IBM's Command Reference itself (`CMDREF.INF`): a web search found only secondary sources, which disagree (`config_sys.rs`);
@@ -204,7 +204,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - a program that stops reading input delays everyone for `INPUT_STALL` (5 s);
   - pointers larger than 128 × 128 show as the arrow;
   - the clipboard between programs is asynchronous: a program's text reaches the others through its GUI thread and the server's broadcast, so another program told by other means that it changed can still read the old text (the race ADR-0108 fixed for activation).
-- [ ] **Codepages**: decide whether `WinSetCp(0)` means "the process codepage" (it is rejected now).
 
 ### Graphics
 

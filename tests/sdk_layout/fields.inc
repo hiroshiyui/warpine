@@ -990,6 +990,11 @@
     P("VIOINTENSITY.cb", offsetof(VIOINTENSITY, cb));
     P("VIOINTENSITY.type", offsetof(VIOINTENSITY, type));
     P("VIOINTENSITY.fs", offsetof(VIOINTENSITY, fs));
+    P("PRFPROFILE", sizeof(PRFPROFILE));
+    P("PRFPROFILE.cchUserName", offsetof(PRFPROFILE, cchUserName));
+    P("PRFPROFILE.pszUserName", offsetof(PRFPROFILE, pszUserName));
+    P("PRFPROFILE.cchSysName", offsetof(PRFPROFILE, cchSysName));
+    P("PRFPROFILE.pszSysName", offsetof(PRFPROFILE, pszSysName));
     P("KBDTRANS", sizeof(KBDTRANS));
     P("KBDTRANS.chChar", offsetof(KBDTRANS, chChar));
     P("KBDTRANS.chScan", offsetof(KBDTRANS, chScan));

@@ -773,6 +773,8 @@ MOUCALLS.30   MouSetThreshold
 PMSHAPI.101   PrfQueryProfileSize
 PMSHAPI.102   PrfOpenProfile
 PMSHAPI.103   PrfCloseProfile
+PMSHAPI.107   PrfQueryProfile
+PMSHAPI.108   PrfReset
 PMSHAPI.114   PrfQueryProfileInt
 PMSHAPI.115   PrfQueryProfileString
 PMSHAPI.116   PrfWriteProfileString

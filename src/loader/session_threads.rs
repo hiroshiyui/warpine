@@ -70,7 +70,7 @@ const MAX_COUNTER: usize = 16;
 /// The shared-memory table (`shared_arena.rs`); not a record either.
 pub const SHARED_MEM_TABLE: &str = "shmem";
 /// Session-wide tables removed with the last process.
-const TABLES: [&str; 1] = [SHARED_MEM_TABLE];
+const TABLES: [&str; 2] = [SHARED_MEM_TABLE, super::pmshapi::USER_PROFILE_TABLE];
 
 /// A process: pid and start time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

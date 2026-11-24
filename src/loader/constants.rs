@@ -2269,6 +2269,11 @@ pub const DT_ERASERECT:       u32 = 0x0000_8000;
 
 // Profile (Prf*) errors (<pmerr.h>).
 pub const PMERR_BUFFER_TOO_SMALL:         u32 = 0x110B;
+/// `PRFPROFILE` (`PrfQueryProfile`, `PrfReset`): cchUserName, pszUserName,
+/// cchSysName, pszSysName.
+pub const PRFPROFILE_SIZE: u32 = 16;
+/// Posted to every message queue when `PrfReset` changes the user profile.
+pub const PL_ALTERED: u32 = 0x008E;
 pub const PMERR_INVALID_INI_FILE_HANDLE:  u32 = 0x1115;
 pub const PMERR_INI_FILE_IS_SYS_OR_USER:  u32 = 0x1124;
 pub const PMERR_OPENING_INI_FILE:         u32 = 0x1301;
