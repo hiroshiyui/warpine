@@ -128,6 +128,19 @@ typedef boolean    SOMLINK somTP_SOMObject_somCastObj( SOMObject *, SOMClass * )
 typedef boolean    SOMLINK somTP_SOMObject_somResetObj( SOMObject * );
 typedef somTP_SOMObject_somCastObj  *somTD_SOMObject_somCastObj;
 typedef somTP_SOMObject_somResetObj *somTD_SOMObject_somResetObj;
+/* Dispatch method resolution (ADR-0126): the method named methodId, its
+ * arguments in ap (the target object first), its result to retValue. The
+ * somDispatchX forms call somDispatch (somDispatchD is not available). */
+typedef boolean    SOMLINK somTP_SOMObject_somDispatch( SOMObject *, somToken *, somId, va_list );
+typedef boolean    SOMLINK somTP_SOMObject_somClassDispatch( SOMObject *, SOMClass *, somToken *, somId, va_list );
+typedef void       SOMLINK somTP_SOMObject_somDispatchV( SOMObject *, somId, somId, va_list );
+typedef long       SOMLINK somTP_SOMObject_somDispatchL( SOMObject *, somId, somId, va_list );
+typedef void      *SOMLINK somTP_SOMObject_somDispatchA( SOMObject *, somId, somId, va_list );
+typedef somTP_SOMObject_somDispatch      *somTD_SOMObject_somDispatch;
+typedef somTP_SOMObject_somClassDispatch *somTD_SOMObject_somClassDispatch;
+typedef somTP_SOMObject_somDispatchV     *somTD_SOMObject_somDispatchV;
+typedef somTP_SOMObject_somDispatchL     *somTD_SOMObject_somDispatchL;
+typedef somTP_SOMObject_somDispatchA     *somTD_SOMObject_somDispatchA;
 
 #define _somInit( o )           SOM_Resolve( o, SOMObject, somInit )( (SOMObject *)(o) )
 #define _somUninit( o )         SOM_Resolve( o, SOMObject, somUninit )( (SOMObject *)(o) )
@@ -158,6 +171,15 @@ typedef somTP_SOMObject_somResetObj *somTD_SOMObject_somResetObj;
 #define SOMObject_somIsA( o, c )       _somIsA( o, c )
 #define SOMObject_somPrintSelf( o )    _somPrintSelf( o )
 #define SOMObject_somDumpSelf( o, l )  _somDumpSelf( o, l )
+/* va_list forms, and the varargs forms (the target object and the
+ * method's arguments after methodId). */
+#define SOMObject_somDispatch( o, r, id, ap ) \
+    SOM_Resolve( o, SOMObject, somDispatch )( (SOMObject *)(o), (somToken *)(r), (id), (ap) )
+#define SOMObject_somClassDispatch( o, c, r, id, ap ) \
+    SOM_Resolve( o, SOMObject, somClassDispatch )( (SOMObject *)(o), (SOMClass *)(c), (somToken *)(r), (id), (ap) )
+#define SOMObject_somDispatchV( o, id, d, ap ) SOM_Resolve( o, SOMObject, somDispatchV )( (SOMObject *)(o), (id), (d), (ap) )
+#define SOMObject_somDispatchL( o, id, d, ap ) SOM_Resolve( o, SOMObject, somDispatchL )( (SOMObject *)(o), (id), (d), (ap) )
+#define SOMObject_somDispatchA( o, id, d, ap ) SOM_Resolve( o, SOMObject, somDispatchA )( (SOMObject *)(o), (id), (d), (ap) )
 
 /* SOMClass */
 typedef SOMObject *SOMLINK somTP_SOMClass_somNew( SOMClass * );
@@ -287,6 +309,36 @@ typedef somTP_SOMClass__get_somInstanceDataOffsets *somTD_SOMClass__get_somInsta
 
 /* The binding macros and Warpine's initializer protocol, which uses the
  * method types above. */
+
 #include <somcdev.h>
+
+/* The varargs forms of somDispatch and somClassDispatch (ADR-0126): the
+ * target object and the method's arguments after methodId. */
+#ifdef __GNUC__
+#define WRP_SOM_UNUSED __attribute__((__unused__))
+#else
+#define WRP_SOM_UNUSED
+#endif
+static WRP_SOM_UNUSED boolean somva_SOMObject_somDispatch( SOMObject *somSelf, somToken *retValue, somId methodId, ... )
+{
+    boolean r;
+    va_list ap;
+    va_start( ap, methodId );
+    r = SOMObject_somDispatch( somSelf, retValue, methodId, ap );
+    va_end( ap );
+    return( r );
+}
+static WRP_SOM_UNUSED boolean somva_SOMObject_somClassDispatch( SOMObject *somSelf, SOMClass *clsObj, somToken *retValue,
+                                                 somId methodId, ... )
+{
+    boolean r;
+    va_list ap;
+    va_start( ap, methodId );
+    r = SOMObject_somClassDispatch( somSelf, clsObj, retValue, methodId, ap );
+    va_end( ap );
+    return( r );
+}
+#define _somDispatch      somva_SOMObject_somDispatch
+#define _somClassDispatch somva_SOMObject_somClassDispatch
 
 #endif

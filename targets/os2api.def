@@ -958,6 +958,13 @@ SOM.3098   somExceptionValue
 SOM.3099   somExceptionFree
 SOM.3100   somMainProgram
 SOM.3101   somEnvironmentEnd
+SOM.3102   somApply
+SOM.3103   somVaBuf_create
+SOM.3104   somVaBuf_add
+SOM.3105   somVaBuf_get_valist
+SOM.3106   somVaBuf_destroy
+SOM.3107   somvalistGetTarget
+SOM.3108   somvalistSetTarget
 SOM.3198   WrpSomMethodNotImplemented
 SOM.3199   WrpSomMethodError
 SOM.3200   WrpSOMObject_somInit
@@ -984,6 +991,11 @@ SOM.3220   WrpSOMObject_somDefaultVAssign
 SOM.3221   WrpSOMObject_somDefaultConstVAssign
 SOM.3222   WrpSOMObject_somCastObj
 SOM.3223   WrpSOMObject_somResetObj
+SOM.3224   WrpSOMObject_somDispatch
+SOM.3225   WrpSOMObject_somClassDispatch
+SOM.3226   WrpSOMObject_somDispatchV
+SOM.3227   WrpSOMObject_somDispatchL
+SOM.3228   WrpSOMObject_somDispatchA
 SOM.3300   WrpSOMClass_somNew
 SOM.3301   WrpSOMClass_somNewNoInit
 SOM.3302   WrpSOMClass_somGetName

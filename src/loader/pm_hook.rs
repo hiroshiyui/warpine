@@ -341,6 +341,12 @@ pub(crate) enum ChainThen {
     StartProcess,
     /// `somFree` called the object's `somUninit` (`som.rs`): free it.
     SomFree { obj: u32 },
+    /// A root method applied (`som_dispatch.rs`): its result word to `at`
+    /// (0: none), TRUE returned.
+    SomStoreLast { at: u32 },
+    /// `somDispatchL` / `A`: return the word at `at` (a scratch block,
+    /// freed).
+    SomReturnScratch { at: u32 },
     /// `WinLoadLibrary` ran the `_DLL_InitTerm`s of module `hmod` (and the
     /// modules loaded with it): return the handle (0 when one failed) and
     /// free the scratch word at `scratch` (`pm_winutil.rs`).
@@ -489,6 +495,8 @@ impl Loader {
             ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
             ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
+            ChainThen::SomStoreLast { at } => ChainEnd::Return(self.som_store_last(at, chain.last)),
+            ChainThen::SomReturnScratch { at } => ChainEnd::Return(self.som_return_scratch(at)),
             ChainThen::SomWalkDone { ctrl, obj, result } => ChainEnd::Return(self.som_walk_done(ctrl, obj, result)),
             ChainThen::LoadLibrary { hmod, scratch } => ChainEnd::Return(self.load_library_done(hmod, scratch, chain)),
             ChainThen::FreeLibrary { hmod } => ChainEnd::Return(self.free_library_done(hmod)),

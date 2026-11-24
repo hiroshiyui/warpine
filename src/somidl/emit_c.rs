@@ -582,6 +582,59 @@ impl<'a> Emitter<'a> {
 
     // ─── ih ──────────────────────────────────────────────────────────────
 
+    /// The apply stub of method `m` (ADR-0126): it reads the method's
+    /// arguments, widened as in a va_list, from `somArgs` (the target
+    /// object first), calls the method and stores its result at
+    /// `somRetVal` when that is not NULL; and the `somApplyInfo` that
+    /// registers it.
+    fn apply_stub(&self, c: &Class, m: &Operation, out: &mut String) -> Res<()> {
+        let n = &c.name;
+        let mut locals = vec![format!("    {n} *somSelf;")];
+        let mut reads = vec![format!("    somSelf = *({n} **)somArgs; somArgs += 4;")];
+        let mut call = vec!["somSelf".to_string()];
+        if !c.oidl {
+            locals.push("    Environment *ev;".into());
+            reads.push("    ev = *(Environment **)somArgs; somArgs += 4;".into());
+            call.push("ev".into());
+        }
+        for p in &m.params {
+            let base = self.c_type(&p.ty)?;
+            let (ty, widened) = if p.dir == Direction::In {
+                let widened = match p.ty {
+                    Type::Short | Type::Char | Type::Boolean | Type::Octet => "int".to_string(),
+                    Type::UShort => "unsigned int".to_string(),
+                    Type::Float => "double".to_string(),
+                    _ => base.clone(),
+                };
+                (base, widened)
+            } else {
+                let ptr = format!("{}*", spaced(&base));
+                (ptr.clone(), ptr)
+            };
+            let v = format!("somA_{}", p.name);
+            locals.push(format!("    {}{v};", spaced(&ty)));
+            // A cast only where the widened type differs (a structure
+            // cannot be cast).
+            let cast = if ty.trim_end() == widened.trim_end() { String::new() } else { format!("({ty})") };
+            reads.push(format!("    {v} = {cast}*({} *)somArgs; somArgs += SOM_VA_SIZE( {widened} );", widened.trim_end()));
+            call.push(v);
+        }
+        let ret = self.c_type(&m.ret)?;
+        let void = m.ret == Type::Void;
+        if !void { locals.push(format!("    {}somR;", spaced(&ret))); }
+        let _ = writeln!(out, "static void SOMLINK somAP_{n}_{0}( void *somRetVal, somMethodProc *somMethod, char *somArgs )\n{{", m.name);
+        for l in &locals { let _ = writeln!(out, "{l}"); }
+        for r in &reads { let _ = writeln!(out, "{r}"); }
+        let invoke = format!("( (somTD_{n}_{}) somMethod )( {} )", m.name, call.join(", "));
+        if void {
+            let _ = writeln!(out, "    (void)somRetVal;\n    {invoke};");
+        } else {
+            let _ = writeln!(out, "    somR = {invoke};\n    if( somRetVal ) *({}*)somRetVal = somR;", spaced(&ret));
+        }
+        let _ = writeln!(out, "}}\nstatic somApplyInfo somAI_{n}_{0} = {{ SOM_APPLY_INFO_MAGIC, somAP_{n}_{0} }};", m.name);
+        Ok(())
+    }
+
     fn implementation(&self, c: &Class, out: &mut String) -> Res<()> {
         let n = &c.name;
         let _ = writeln!(out, "/* ---- {n} ---- */");
@@ -661,9 +714,13 @@ impl<'a> Emitter<'a> {
         for o in &c.overrides {
             let _ = writeln!(out, "static char somON_{n}_{o}_t[] = \"{o}\";\nstatic char *somON_{n}_{o}_s = somON_{n}_{o}_t;\nstatic somId somON_{n}_{o} = &somON_{n}_{o}_s;");
         }
+        for m in &c.methods {
+            self.apply_stub(c, m, out)?;
+        }
         let _ = writeln!(out, "static somStaticMethod_t somSM_{n}[] = {{");
         for m in &c.methods {
-            let _ = writeln!(out, "    {{ &{n}ClassData.{0}, &somMN_{n}_{0}, 0, (somMethodProc *){1}{0}, 0, 0 }},", m.name, c.prefix);
+            let _ = writeln!(out, "    {{ &{n}ClassData.{0}, &somMN_{n}_{0}, 0, (somMethodProc *){1}{0}, 0, (somMethodProc *)&somAI_{n}_{0} }},",
+                             m.name, c.prefix);
         }
         let _ = writeln!(out, "    {{ 0, 0, 0, 0, 0, 0 }}\n}};");
         let _ = writeln!(out, "static somOverrideMethod_t somOM_{n}[] = {{");

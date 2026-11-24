@@ -294,7 +294,12 @@ mod tests {
                      "SOM_Scope void SOMLINK c_somInit( Counter *somSelf );",
                      "SOM_Scope void SOMLINK c_somDestruct( Counter *somSelf, octet doFree, somDestructCtrl *ctrl );",
                      "#define Counter_parent_SOMObject_somInit( somSelf ) \\\n    SOM_ParentNumResolve( SOMObject, 1, CounterCClassData.parentMtab, somInit )( (SOMObject *)(somSelf) )",
-                     "{ &CounterClassData.add, &somMN_Counter_add, 0, (somMethodProc *)c_add, 0, 0 },",
+                     "{ &CounterClassData.add, &somMN_Counter_add, 0, (somMethodProc *)c_add, 0, (somMethodProc *)&somAI_Counter_add },",
+                     // The apply stub (ADR-0126): the arguments read widened, the result stored.
+                     "static void SOMLINK somAP_Counter_add( void *somRetVal, somMethodProc *somMethod, char *somArgs )",
+                     "    somA_n = *(long *)somArgs; somArgs += SOM_VA_SIZE( long );",
+                     "    somR = ( (somTD_Counter_add) somMethod )( somSelf, ev, somA_n );\n    if( somRetVal ) *(long *)somRetVal = somR;",
+                     "static somApplyInfo somAI_Counter_add = { SOM_APPLY_INFO_MAGIC, somAP_Counter_add };",
                      "{ &somON_Counter_somInit, (somMethodProc *)c_somInit },",
                      "    1, 2, 2, 0, 0, 0, 1, 2, sizeof( CounterData ), 2, 1, &somCN_Counter_s, 0, 0,",
                      "#define Kid_parent_Counter_add( somSelf, ev, n ) \\\n    SOM_ParentNumResolve( Counter, 1, KidCClassData.parentMtab, add )( (Counter *)(somSelf), (ev), (n) )",
@@ -303,6 +308,20 @@ mod tests {
             assert!(ih.contains(want), "{want:?} missing in\n{ih}");
         }
         assert!(!ih.contains("SOMObject_MajorVersion"), "the root classes' NewClass takes any version");
+    }
+
+    /// Apply stubs widen as a va_list does: short and char to int, float
+    /// to double; out arguments are pointers; a void method stores nothing.
+    #[test]
+    fn apply_stubs_read_widened_arguments() {
+        let ih = emitted("#include <somobj.idl>\ninterface W : SOMObject { void f(in short s, in float x, in char c, out double d); };", "ih");
+        for want in ["    somA_s = (short)*(int *)somArgs; somArgs += SOM_VA_SIZE( int );",
+                     "    somA_x = (float)*(double *)somArgs; somArgs += SOM_VA_SIZE( double );",
+                     "    somA_c = (char)*(int *)somArgs; somArgs += SOM_VA_SIZE( int );",
+                     "    somA_d = *(double * *)somArgs; somArgs += SOM_VA_SIZE( double * );",
+                     "    (void)somRetVal;\n    ( (somTD_W_f) somMethod )( somSelf, ev, somA_s, somA_x, somA_c, somA_d );"] {
+            assert!(ih.contains(want), "{want:?} missing in\n{ih}");
+        }
     }
 
     #[test]

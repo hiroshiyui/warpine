@@ -98,6 +98,76 @@ int main( void )
         _somFree( g );
     }
 
+    /* Dynamic dispatch (ADR-0126): somDispatch by name, from a varargs
+       call and from a somVaBuf, somClassDispatch, somApply (an apply stub
+       somidl wrote, and a root method), somDispatchL, the va_list's
+       target, and floating point through a va_list. */
+    {
+        Counter    *k = CounterNew();
+        Doubler    *dd = DoublerNew();
+        Calc       *m = CalcNew();
+        somId       addId = somIdFromString( "add" ), mixId = somIdFromString( "mix" );
+        somId       nameId = somIdFromString( "somGetName" ), noneId = somIdFromString( "noSuchMethod" );
+        long        r = 0, n = 7;
+        double      dr = 0, dc = 2.0;
+        short       sa = 3;
+        float       fb = 0.5f;
+        string      name = 0;
+        somVaBuf    vb;
+        va_list     args;
+        somMethodData md;
+        SOMClass   *cc;
+
+        check( "somDispatch (varargs): add", _somDispatch( k, (somToken *)&r, addId, k, ev, 5L ) && r == 105 );
+        vb = somVaBuf_create( 0, 0 );
+        check( "somVaBuf_create", vb != 0 );
+        somVaBuf_add( vb, (char *)&k, tk_pointer );
+        somVaBuf_add( vb, (char *)&ev, tk_pointer );
+        check( "somVaBuf_add", somVaBuf_add( vb, (char *)&n, tk_long ) == 1 );
+        somVaBuf_get_valist( vb, &args );
+        check( "somvalistGetTarget", somvalistGetTarget( args ) == (unsigned long)k );
+        check( "somDispatch (va_list): add", SOMObject_somDispatch( k, &r, addId, args ) && r == 112 );
+        somVaBuf_get_valist( vb, &args );
+        check( "somDispatchL: add", SOMObject_somDispatchL( k, addId, 0, args ) == 119 );
+        check( "somGetMethodData(add)", _somGetMethodData( _Counter, addId, &md ) );
+        somVaBuf_get_valist( vb, &args );
+        check( "somApply: an apply stub somidl wrote", somApply( (SOMObject *)k, (somToken *)&r, &md, args ) && r == 126 );
+        somVaBuf_get_valist( vb, &args );
+        somvalistSetTarget( args, (unsigned long)dd );
+        check( "somvalistSetTarget: the target changes", somvalistGetTarget( args ) == (unsigned long)dd );
+        check( "somDispatch on the new target (Doubler's add)", SOMObject_somDispatch( dd, &r, addId, args ) && r == 114 );
+        check( "somClassDispatch as Counter: Counter's add", _somClassDispatch( dd, _Counter, (somToken *)&r, addId, dd, ev, 1L )
+               && r == 115 );
+        check( "an unknown method: FALSE", !_somDispatch( k, (somToken *)&r, noneId, k, ev ) );
+        somVaBuf_destroy( vb );
+
+        check( "a short, a float and a double, a double result",
+               _somDispatch( m, (somToken *)&dr, mixId, m, ev, sa, fb, dc ) && dr == 3.5 );
+        vb = somVaBuf_create( 0, 0 );
+        somVaBuf_add( vb, (char *)&m, tk_pointer );
+        somVaBuf_add( vb, (char *)&ev, tk_pointer );
+        somVaBuf_add( vb, (char *)&sa, tk_short );
+        somVaBuf_add( vb, (char *)&fb, tk_float );
+        somVaBuf_add( vb, (char *)&dc, tk_double );
+        somVaBuf_get_valist( vb, &args );
+        dr = 0;
+        check( "... from a somVaBuf (widened)", SOMObject_somDispatch( m, &dr, mixId, args ) && dr == 3.5 );
+        somVaBuf_destroy( vb );
+
+        /* The reference's example: somGetName through somApply. */
+        cc = _Counter;
+        check( "somGetMethodData(somGetName)", _somGetMethodData( _somGetClass( cc ), nameId, &md ) );
+        vb = somVaBuf_create( 0, 0 );
+        somVaBuf_add( vb, (char *)&cc, tk_ulong );
+        somVaBuf_get_valist( vb, &args );
+        check( "somApply: a root method", somApply( (SOMObject *)cc, (somToken *)&name, &md, args )
+               && name && strcmp( name, "Counter" ) == 0 );
+        somVaBuf_destroy( vb );
+        _somFree( k );
+        _somFree( dd );
+        _somFree( m );
+    }
+
     printf( "som_idl_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );
 }

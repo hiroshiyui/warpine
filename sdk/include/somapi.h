@@ -17,6 +17,7 @@
 #define WARPINE_SOMAPI_H
 
 #include <stddef.h>
+#include <stdarg.h>
 
 /* SOM functions and methods use the system calling convention: the
  * caller pops the arguments, as for APIENTRY. */
@@ -320,5 +321,47 @@ typedef struct somMethodData {
     somMethodPtr   method;
     void          *shared;
 } somMethodData;
+
+/* ---- Dynamic dispatch (ADR-0126) ---- */
+
+/* TCKind: the kinds of TypeCodes, in the order the SOM Programming
+ * Reference lists them (TypeCode_kind); somVaBuf_add takes the scalar
+ * ones. The values follow from C's numbering (unverified against IBM's
+ * headers). */
+typedef enum TCKind {
+    tk_null, tk_void, tk_short, tk_long, tk_ushort, tk_ulong, tk_float,
+    tk_double, tk_boolean, tk_char, tk_octet, tk_any, tk_TypeCode,
+    tk_Principal, tk_objref, tk_struct, tk_union, tk_enum, tk_string,
+    tk_sequence, tk_array, tk_pointer, tk_self, tk_foreign
+} TCKind;
+
+/* A buffer of arguments for a va_list (opaque). */
+typedef void *somVaBuf;
+
+/* Warpine's apply stubs: somidl writes one for each method of a class;
+ * it reads the method's arguments (widened, as in a va_list) from args,
+ * calls method with them and stores the result at retVal (when not NULL).
+ * A class registers it with somAddStaticMethod's applyStub argument as a
+ * somApplyInfo; anything else there is not used, and somApply of such a
+ * method returns FALSE. */
+typedef void SOMLINK somApplyStub( void *retVal, somMethodProc *method, char *args );
+#define SOM_APPLY_INFO_MAGIC 0x53504157UL   /* "WAPS" */
+typedef struct somApplyInfo {
+    unsigned long magic;
+    somApplyStub *stub;
+} somApplyInfo;
+/* The bytes a value of type t takes in a va_list (widened). */
+#define SOM_VA_SIZE( t ) ( ( sizeof( t ) + 3 ) & ~3 )
+
+/* somApply: calls the method mdPtr describes on objPtr with the arguments
+ * of args (objPtr first), its result to retVal; FALSE when the method has
+ * no apply stub. */
+SOMEXTERN boolean       SOMLINK somApply( SOMObject *objPtr, somToken *retVal, somMethodData *mdPtr, va_list args );
+SOMEXTERN somVaBuf      SOMLINK somVaBuf_create( char *vb, int size );
+SOMEXTERN long          SOMLINK somVaBuf_add( somVaBuf vb, char *arg, int type );
+SOMEXTERN void          SOMLINK somVaBuf_get_valist( somVaBuf vb, va_list *ap );
+SOMEXTERN void          SOMLINK somVaBuf_destroy( somVaBuf vb );
+SOMEXTERN unsigned long SOMLINK somvalistGetTarget( va_list ap );
+SOMEXTERN void          SOMLINK somvalistSetTarget( va_list ap, unsigned long val );
 
 #endif

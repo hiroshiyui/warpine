@@ -205,6 +205,16 @@ pub const SOM_EXCEPTION_FREE: u32 = 3099;
 /// as the process), by name.
 pub const SOM_MAIN_PROGRAM: u32 = 3100;
 pub const SOM_ENVIRONMENT_END: u32 = 3101;
+/// Dynamic dispatch (ADR-0126; IBM's ordinals unknown, so Warpine's):
+/// `somApply`, `somVaBuf_create` / `_add` / `_get_valist` / `_destroy`,
+/// `somvalistGetTarget` / `SetTarget`.
+pub const SOM_APPLY: u32 = 3102;
+pub const SOM_VA_BUF_CREATE: u32 = 3103;
+pub const SOM_VA_BUF_ADD: u32 = 3104;
+pub const SOM_VA_BUF_GET_VALIST: u32 = 3105;
+pub const SOM_VA_BUF_DESTROY: u32 = 3106;
+pub const SOM_VALIST_GET_TARGET: u32 = 3107;
+pub const SOM_VALIST_SET_TARGET: u32 = 3108;
 /// A `somMethodData`'s words: id, type, descriptor, token, method,
 /// shared data.
 const METHOD_DATA_WORDS: u32 = 6;
@@ -245,9 +255,9 @@ pub const SOMOBJECT_METHODS: &[(u32, &str)] = &[
     (3200, "somInit"), (3201, "somUninit"), (3202, "somFree"), (3216, "somDefaultVCopyInit"),
     (3204, "somGetClassName"), (3203, "somGetClass"), (3206, "somIsA"), (3208, "somRespondsTo"),
     (3207, "somIsInstanceOf"), (3205, "somGetSize"), (3210, "somDumpSelf"), (3211, "somDumpSelfInt"),
-    (3209, "somPrintSelf"), (3217, "somDefaultConstVCopyInit"), (NOT_IMPLEMENTED, "somDispatchV"),
-    (NOT_IMPLEMENTED, "somDispatchL"), (NOT_IMPLEMENTED, "somDispatchA"), (NOT_IMPLEMENTED, "somDispatchD"),
-    (NOT_IMPLEMENTED, "somDispatch"), (NOT_IMPLEMENTED, "somClassDispatch"), (3222, "somCastObj"),
+    (3209, "somPrintSelf"), (3217, "somDefaultConstVCopyInit"), (3226, "somDispatchV"),
+    (3227, "somDispatchL"), (3228, "somDispatchA"), (NOT_IMPLEMENTED, "somDispatchD"),
+    (3224, "somDispatch"), (3225, "somClassDispatch"), (3222, "somCastObj"),
     (3223, "somResetObj"), (3212, "somDefaultInit"), (3213, "somDestruct"),
     (NOT_IMPLEMENTED, "somPrivate1"), (NOT_IMPLEMENTED, "somPrivate2"),
     (3214, "somDefaultCopyInit"), (3215, "somDefaultConstCopyInit"),
@@ -535,6 +545,11 @@ pub struct SomRuntime {
     /// Data tokens of instance data at an offset inside a class's part
     /// (`somBuildClass`'s non-internal data): token → (class, offset).
     pub data_tokens: HashMap<u32, (u32, u32)>,
+    /// Apply stubs (ADR-0126): method token → the stub its introducing
+    /// class registered in a `somApplyInfo`.
+    pub apply: HashMap<u32, u32>,
+    /// The buffers of the live `somVaBuf`s.
+    pub va_buffers: HashSet<u32>,
 }
 
 impl SomRuntime {
@@ -1429,9 +1444,32 @@ impl Loader {
         0
     }
 
+    /// The class of SOM object `obj` (`som_dispatch.rs`).
+    pub(crate) fn som_object_class(&self, obj: u32) -> Option<u32> { self.som_class_of(obj) }
+    /// The name a somId stands for (`som_dispatch.rs`).
+    pub(crate) fn som_method_name(&self, id: u32) -> Option<String> { self.som_id_name(id) }
+    /// A zeroed block of the runtime's heap / back to it (`som_dispatch.rs`).
+    pub(crate) fn som_scratch(&self, size: u32) -> Option<u32> { self.som_malloc(size) }
+    pub(crate) fn som_release(&self, at: u32) { self.som_free_mem(at); }
+
     /// `somAddStaticMethod(self, methodId, methodDescriptor, method,
-    /// redispatchStub, applyStub)` → the method's token (0: failed).
-    fn som_add_method(&self, cls: u32, id: u32, method: u32) -> u32 {
+    /// redispatchStub, applyStub)` → the method's token (0: failed). An
+    /// `applyStub` that is a `somApplyInfo` gives a new method its apply
+    /// stub (ADR-0126).
+    fn som_add_method(&self, cls: u32, id: u32, method: u32, apply_info: u32) -> u32 {
+        let token = self.som_add_method_only(cls, id, method);
+        if token != 0 && apply_info != 0
+            && self.guest_read::<u32>(apply_info) == Some(super::som_dispatch::SOM_APPLY_INFO_MAGIC)
+            && let Some(stub) = self.guest_read::<u32>(apply_info + 4).filter(|&s| s != 0)
+        {
+            let mut rt = self.shared.som.lock_or_recover();
+            let introduced = rt.methods.get(token as usize - 1).is_some_and(|m| m.0 == cls);
+            if introduced { rt.apply.insert(token, stub); }
+        }
+        token
+    }
+
+    fn som_add_method_only(&self, cls: u32, id: u32, method: u32) -> u32 {
         let Some(name) = self.som_id_name(id) else { return 0 };
         let mut rt = self.shared.som.lock_or_recover();
         if !rt.classes.get(&cls).is_some_and(|c| !c.ready && !c.name.is_empty()) { return 0; }
@@ -1741,7 +1779,7 @@ impl Loader {
         // method, redispatch stub, apply stub.
         for i in 0..info.num_static_methods {
             let (slot, id_ptr, method) = (entry(info.smt, 24, i, 0), entry(info.smt, 24, i, 1), entry(info.smt, 24, i, 3));
-            let token = self.som_add_method(cls, word(id_ptr), method);
+            let token = self.som_add_method(cls, word(id_ptr), method, entry(info.smt, 24, i, 5));
             if slot != 0 && token != 0 { let _ = self.guest_write::<u32>(slot, token); }
         }
         // somMethods_t (layout 3): type, classData, methodId, descriptor,
@@ -1752,7 +1790,7 @@ impl Loader {
             let (slot, id_ptr, method) = (entry(info.mt, 28, i, 1), entry(info.mt, 28, i, 2), entry(info.mt, 28, i, 4));
             match kind {
                 SCI_MT_STATIC | SCI_MT_DYNAMIC | SCI_MT_NONSTATIC => {
-                    let token = self.som_add_method(cls, word(id_ptr), method);
+                    let token = self.som_add_method(cls, word(id_ptr), method, entry(info.mt, 28, i, 6));
                     if slot != 0 && token != 0 { let _ = self.guest_write::<u32>(slot, token); }
                 }
                 SCI_MT_TOKEN_OVERRIDE => self.som_override_token(cls, word(id_ptr), method),
@@ -2425,6 +2463,20 @@ impl Loader {
             SOM_EXCEPTION_FREE => { if a[0] != 0 { self.som_exception_free(a[0]); } ok(0) }
             SOM_MAIN_PROGRAM => ok(self.shared.som.lock_or_recover().mgr),
             SOM_ENVIRONMENT_END => ok(0),
+            SOM_APPLY => self.som_apply(vcpu, a),
+            SOM_VA_BUF_CREATE => ok(self.som_va_buf_create(a[0], a[1])),
+            SOM_VA_BUF_ADD => ok(self.som_va_buf_add(a[0], a[1], a[2])),
+            SOM_VA_BUF_GET_VALIST => ok(self.som_va_buf_get_valist(a[0], a[1])),
+            SOM_VA_BUF_DESTROY => ok(self.som_va_buf_destroy(a[0])),
+            SOM_VALIST_GET_TARGET => ok(self.som_valist_target(a[0], None)),
+            SOM_VALIST_SET_TARGET => ok(self.som_valist_target(a[0], Some(a[1]))),
+            // somDispatch(retValue, methodId, ap) / somClassDispatch(clsObj,
+            // retValue, methodId, ap) / somDispatchV / L / A(methodId,
+            // descriptor, ap) (ADR-0126).
+            3224 => self.som_dispatch(vcpu, a[0], 0, a[1], a[2], a[3]),
+            3225 => self.som_dispatch(vcpu, a[0], a[1], a[2], a[3], a[4]),
+            3226 => self.som_dispatch_x(vcpu, a, false),
+            3227 | 3228 => self.som_dispatch_x(vcpu, a, true),
             SOM_INIT_WALK => match self.som_root_walk(a[0], false) {
                 Some((steps, ctrl)) => self.start_chain(CallChain::new(vcpu, steps, false,
                                                                        ChainThen::SomWalkDone { ctrl, obj: 0, result: 0 })),
@@ -2677,7 +2729,7 @@ impl Loader {
                 if free == thunk(SOM_FREE_MEM) || free == 0 { self.som_free_mem(a[1]); return ok(0); }
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(free, vec![a[1]], false)], false, ChainThen::Return(0)))
             }
-            3311 => ok(self.som_add_method(a[0], a[1], a[3])),
+            3311 => ok(self.som_add_method(a[0], a[1], a[3], a[5])),
             3312 => ok(self.som_override(a[0], a[1], a[2])),
             3313 => ok(self.som_class_ready(a[0])),
             3314 | 3315 => {
@@ -3835,9 +3887,12 @@ mod tests {
         // somFindClsInFile comes first in SOMClassMgr's.
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, root_token(&l, SOM_CLASS_MGR_CLASS_DATA, 0)])), thunk(3403));
         // A method Warpine lacks: a warning through SOMError, then 0.
-        let dispatch = named_token(&l, SOM_OBJECT_CLASS_DATA, "somDispatch");
-        let proc = ok(call(&l, SOM_RESOLVE, &[mgr, dispatch]));
+        let dispatch_d = named_token(&l, SOM_OBJECT_CLASS_DATA, "somDispatchD");
+        let proc = ok(call(&l, SOM_RESOLVE, &[mgr, dispatch_d]));
         assert_eq!(proc, thunk(SOM_METHOD_NOT_IMPLEMENTED));
+        // somDispatch is Warpine's now (ADR-0126).
+        let dispatch = named_token(&l, SOM_OBJECT_CLASS_DATA, "somDispatch");
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, dispatch])), thunk(3224));
         assert_eq!(ok(call(&l, SOM_METHOD_NOT_IMPLEMENTED, &[mgr])), 0);
         // Every token is distinct and resolves to a procedure.
         let all: HashSet<u32> = (0..32).map(|i| root_token(&l, SOM_OBJECT_CLASS_DATA, i)).collect();

@@ -52,7 +52,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 - [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
 - [ ] **Missing, documented by the Reference** (the rest came 2026-11-24):
   - the class manager's `somSubstituteClass` and `somMergeInto`;
-  - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods: they need method descriptors (argument types), which the kernel does not keep;
+  - dispatch beyond ADR-0126 (somApply, somDispatch, somClassDispatch, somDispatchV / L / A and the somVaBuf helpers are done): `somDispatchD` (a `double` in the FPU), `somAddDynamicMethod` and dynamic methods, and applying classes built with IBM's tools (their apply stubs' protocol is not public);
   - TypeCodes (`any` carries an opaque one).
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
   - ordinals 48 and above: no public source lists them, so SOM.DLL's other exports sit at Warpine's own ordinals (3072 and up), which programs built with `somidl` and the SDK link by name — source-level compatibility (ADR-0123); IBM-built SOM binaries importing by IBM's numbers stay out of reach unless a public list turns up;

@@ -171,3 +171,10 @@ SOM_Scope any SOMLINK g_boxed( Gauge *somSelf, Environment *ev )
     a._value = &_level;
     return( a );
 }
+
+SOM_Scope double SOMLINK m_mix( Calc *somSelf, Environment *ev, short a, float b, double c )
+{
+    (void)somSelf;
+    (void)ev;
+    return( a * b + c );
+}

@@ -141,6 +141,7 @@ pub(crate) mod signals;
 mod interrupt;
 mod exitlist;
 pub mod som;
+pub mod som_dispatch;
 mod critsec;
 pub mod dostimer;
 pub mod suballoc;

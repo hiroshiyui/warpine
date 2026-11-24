@@ -1671,6 +1671,7 @@ Tests: `shared_arena.rs` (allocation and reuse, holders, per-holder access, lost
 - **Copy, assign and exceptions (ADR-0122):** `SOMObject`'s copy and assign initializers (3214–3221) call `som_shallow_copy` without a control block. `somSetException` / `somExceptionId` / `somExceptionValue` / `somExceptionFree` (3096–3099) use an `Environment`'s first three words (`ENV_MAJOR`, `ENV_EXCEPTION_NAME`, `ENV_EXCEPTION_PARAMS`); `som_exception_free` frees a value from the runtime heap. `WrpSomDataExport` (3090) gives a data export's address to programs linked by `lx-link`.
 - **The class manager's methods and freeing (ADR-0062 addendum):** `som_find_via_methods` routes a lookup of an unregistered class through a class manager's own `somLocateClassFile` / `somFindClsInFile` / `somLoadClassFile` (`ChainThen::SomFindInFile`); `som_free_classes` drops a class's records and frees its method table, initializer table and object (`somUnregisterClass`, `somUnloadClassFile`). `SomRuntime::out_char` holds each thread's `somSetOutChar` routine (`som_out_routine`).
 - **More of the release order (ADR-0072 addendum):** `som_renew` (the somRenew family, then `som_initialize`, somNew's initialization), `som_nth_method` / `som_write_method_data` (introspection), `SomRuntime::casts` (somCastObj's saved method tables).
+- **Dynamic dispatch (ADR-0126):** `som_dispatch.rs`. `som_add_method` keeps the apply stub of a `somApplyInfo` (`SOM_APPLY_INFO_MAGIC`) in `SomRuntime::apply` by token, for the introducing class only (`somAddStaticMethod`'s argument, `somStaticMethod_t` word 5, layout 3's word 6). `som_apply_chain` calls the stub (`retVal, method, args`) or, for a root thunk, the method with the registry's `argc` words, ending in `ChainThen::SomStoreLast`; `som_va_args` takes a `va_list` in either form (`va_args`: the one leading to the target or a `somVaBuf` buffer, `SomRuntime::va_buffers`). `somDispatchV` / `L` / `A` call the object's own `somDispatch` with a heap scratch word (`ChainThen::SomReturnScratch`). `somidl`'s `apply_stub` writes `somAP_<class>_<method>` and `somAI_…` per method (widened reads, a cast only for a promoted scalar).
 - **Unloading (ADR-0063):** `som_class_ready` appends to `SomRuntime::ready_order`; `som_find_class` notes its length (`first`) and the block's first word holds the module handle (written by Warpine, or by a program's `SOMLoadModule`); `som_class_loaded` maps every class ready since `first` to that module in `SomRuntime::modules`. `som_unregister` (3406) drops a class from `by_name`; `som_unload_class_file` (3407) drops every class of the module from `by_name`, `modules`, `ready_order` and `mtabs` (their objects then resolve to `SOM_METHOD_ERROR`) and frees the module with `dos_free_module` or a program's `SOMDeleteModule` (a one-step chain, `ReturnLast`).
 - **Unwind tables and the runtime block (ADR-0107):** `DllManager` keeps `unwind_tables` by module key (`module_key_at`: a DLL's handle, or `EXE_MODULE_KEY` for the program's objects), dropped with the DLL in `decrement_refcount`; `wrp_register_unwind_tables` / `wrp_deregister_unwind_tables` / `wrp_query_unwind_tables` / `wrp_query_runtime_block` (`warpine_api.rs`) serve WARPINE.7–10. `RUNTIME_BLOCK` is `TLM_PAGE + 0x800`, beyond the `TLM_WORDS` `DosAllocThreadLocalMemory` hands out, so it is per thread like them.
 - **Module lifecycle (same ADR):** `MemoryManager::alloc_reporting` returns the block and how much of it may be stale (a reused free block, or bump memory below `high_water`); `Loader::alloc_zeroed` clears that part and serves `DosAllocMem`, `DosAllocSharedMem` (outside the arena) and `load_dll_impl`'s objects. `Loader::find_module_file` resolves a plain name by `find_dll_path`, anything else through `DriveManager::resolve_to_host_path`, whose `HostDirBackend::to_host_path` now goes through `resolve_existing` / `enforce_sandbox`. `WrpStartProcess` ends `ChainThen::StartProcess` → `start_inits_done`: a 0 from a `_DLL_InitTerm` gives `ChainEnd::Exit(ERROR_INIT_ROUTINE_FAILED)`, which `continue_call_chain` turns into a call of `DosExit(EXIT_PROCESS, …)` (`ORD_DOS_EXIT`) from the chain's return point. `dos_free_module` refuses a handle of no loaded module (`ERROR_INVALID_HANDLE`).
@@ -1946,7 +1947,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (553 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (565 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -2037,7 +2038,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (553 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (565 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -2199,7 +2200,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2452: 2337 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
+The unit tests (2456: 2340 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 19 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2527,14 +2528,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (553 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (565 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2452 unit tests (2337 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 236 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2456 unit tests (2340 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 19 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 236 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

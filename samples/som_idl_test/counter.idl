@@ -4,7 +4,9 @@
 // a class derived from another of the file, an override calling its
 // parent's, and initializers / destructors in Warpine's protocol; then
 // stage S3: a class with two parents, directinitclasses and an init method;
-// stage S4: exceptions raised through the Environment, a union and an any.
+// stage S4: exceptions raised through the Environment, a union and an any;
+// and a method of widened arguments and a double result for dynamic
+// dispatch (ADR-0126).
 #include <somobj.idl>
 
 interface Counter : SOMObject
@@ -100,6 +102,19 @@ interface Gauge : SOMObject
         releaseorder: set, read, boxed;
         functionprefix = g_;
         long level;
+    };
+#endif
+};
+
+interface Calc : SOMObject
+{
+    double mix(in short a, in float b, in double c);
+    // a * b + c: arguments a va_list widens (short, float), a double result.
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: mix;
+        functionprefix = m_;
     };
 #endif
 };

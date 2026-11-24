@@ -97,4 +97,14 @@ SOMEXTERN long          SOMLINK WrpSomSetDirectInitClasses( SOMClass *cls, long 
     ((somTD_##cls##_##m) somParentNumResolve( (mtabs), (n), cls##ClassData.m ))
 #define SOMMethodDebug( c, m ) SOM_MethodDebug( c, m )
 
+/* Apply stubs (ADR-0126): the record somidl's bindings register with
+ * each method, so the kernel can call it by name (somDispatch). */
+typedef void SOMLINK somApplyStub( void *retVal, somMethodProc *method, char *args );
+#define SOM_APPLY_INFO_MAGIC 0x53504157UL   /* "WAPS" */
+typedef struct somApplyInfo {
+    unsigned long magic;
+    somApplyStub *stub;
+} somApplyInfo;
+#define SOM_VA_SIZE( t ) ( ( sizeof( t ) + 3 ) & ~3 )
+
 #endif
