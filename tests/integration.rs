@@ -1707,8 +1707,14 @@ fn the_syscall_filter_is_installed_per_role() {
     };
     let guest = check("guest");
     if guest.starts_with("Ok(Unsupported)") { return; }
-    assert_eq!(guest, "Ok(Filtered)\nseccomp: 2\nfilters: 1\nthread: ok\nexec: ok\n");
-    assert_eq!(check("desktop-server"), "Ok(Filtered)\nseccomp: 2\nfilters: 1\nthread: ok\nexec: EPERM\n");
+    // One filter more than this test runs under (a container may add its own).
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let ours: u32 = status.lines().find_map(|l| l.strip_prefix("Seccomp_filters:"))
+        .and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    let filters = ours + 1;
+    assert_eq!(guest, format!("Ok(Filtered)\nseccomp: 2\nfilters: {filters}\nthread: ok\nexec: ok\n"));
+    assert_eq!(check("desktop-server"),
+               format!("Ok(Filtered)\nseccomp: 2\nfilters: {filters}\nthread: ok\nexec: EPERM\n"));
 }
 
 /// xcpt_unwind_test (ADR-0110): DosUnwindException calls the handlers
