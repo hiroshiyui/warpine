@@ -6,12 +6,13 @@
 # resource scripts for os2rc, IDL files for somidl, and lx-link's inputs (ELF objects, resource
 # files, DLLs, message files) for lx_link, each behind the byte that picks
 # its kind (fuzz_targets/lx_link.rs), bitmap files for bitmap, and the
-# resource files behind each of res_templates' five kinds.
+# resource files behind each of res_templates' five kinds, pointer and
+# icon files for pointer, and WAV files for wav.
 # desktop_proto starts from nothing;
 # libFuzzer finds its tags quickly.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates
+mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav
 n=0
 while IFS= read -r -d '' f; do
     case $(head -c 2 "$f" | od -An -c | tr -d ' ') in
@@ -55,4 +56,12 @@ while IFS= read -r -d '' f; do
         { printf "\\x0$kind"; cat -- "$f"; } > "corpus/res_templates/$kind-$(sha256sum -- "$f" | cut -c1-16)"
     done
 done < <(find ../samples ../sdk -type f -name '*.res' -size -256k -print0 2>/dev/null)
+while IFS= read -r -d '' f; do
+    cp -- "$f" "corpus/pointer/$(sha256sum -- "$f" | cut -c1-16)"
+done < <(find ../samples ../sdk -type f \( -iname '*.ptr' -o -iname '*.ico' \) -size -1024k -print0)
+while IFS= read -r -d '' f; do
+    cp -- "$f" "corpus/wav/$(sha256sum -- "$f" | cut -c1-16)"
+done < <(find ../samples -type f -iname '*.wav' -size -1024k -print0)
+# No sample ships a WAV file: a minimal one (8 kHz, 8-bit mono, 8 frames).
+printf 'RIFF\x2c\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x08\x00\x00\x00\x80\x80\x80\x80\x80\x80\x80\x80' > corpus/wav/minimal
 echo "fuzz/seed.sh: $n programs and DLLs, $m lx-link inputs as seeds"

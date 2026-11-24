@@ -60,3 +60,5 @@ The "Security Facilities" TODOs named two gaps:
 ## Addendum (2026-11-24): the resource parsers
 
 `res_templates` fuzzes the parsers of the resources a running program hands Warpine — dialog templates, menu templates, accelerator tables, `RT_STRING` / `RT_MESSAGE` bundles and `PRESPARAMS` blocks — moved into `src/loader/res_templates.rs` so that they build alone (code page decoding and class-atom names come in as functions; the old modules re-export). The menu parser now reads a byte slice instead of guest memory and stops nesting at `MAX_MENU_DEPTH` (16): a hostile template could recurse into submenus once per 16 bytes. Two minutes, 1.76 million inputs, nothing found.
+
+Later the same day `pointer` (the `RT_POINTER` decoder, `pointer_codec.rs`) and `wav` (the waveaudio device's WAV parser, `wav.rs`) followed, each taken out of its module the same way: a minute each, 0.87 and 25.8 million inputs, nothing found.

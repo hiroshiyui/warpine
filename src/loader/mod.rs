@@ -12,6 +12,8 @@ mod pm_msgbox;
 mod pm_controls;
 mod pm_dialog;
 pub mod res_templates;
+pub mod pointer_codec;
+pub mod wav;
 mod pm_error;
 mod pm_button;
 mod pm_owner;

@@ -83,3 +83,15 @@ name = "res_templates"
 path = "fuzz_targets/res_templates.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "pointer"
+path = "fuzz_targets/pointer.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wav"
+path = "fuzz_targets/wav.rs"
+test = false
+doc = false
