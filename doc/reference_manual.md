@@ -699,11 +699,16 @@ DosQueryCtryInfo (NLS 5), DosQueryDBCSEnv (NLS 6), DosMapCase (NLS 7), DosQueryC
 - `DosQueryCollate` returns 256 sort weights. IBM's tables (COUNTRY.SYS) are not published: Warpine weighs each byte as its uppercase form, so letters sort without regard to case.
 - The 16-bit `DOS16*` calls (NLS 1–4) are not implemented.
 
-### Sockets (SO32DLL 27, TCP32DLL 24 APIs)
+### Sockets (SO32DLL 30, TCP32DLL 46 APIs)
 
 BSD socket calls on Linux sockets. Socket options use OS/2's BSD numbering (`SOL_SOCKET` 0xFFFF, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_SNDBUF` / `SO_RCVBUF`, `SO_ERROR`, `SO_TYPE`, …, and `TCP_NODELAY`) and are translated; `SO_SNDTIMEO` / `SO_RCVTIMEO` and IP-level options fail with `SOCENOPROTOOPT`.
 
 `select` takes the OS/2 TCP/IP `fd_set` of Open Watcom's `<types.h>`: a count (`u_short fd_count`, then 2 bytes of padding) and an array of up to 64 socket numbers (`int fd_array[64]`), not a bit mask, so any socket number fits (Warpine's start at `0xA000`). Every number must be an open socket (else `SOCENOTSOCK`); a count above 64 or a timeout with negative seconds or microseconds of 1 000 000 or more is `SOCEINVAL`; `nfds` is ignored. On return each set holds the ready sockets in their original order, and the result is their total (0 after the timeout). A socket counts as readable or writable also after an error or a hang-up. A signal interrupts the wait with `SOCEINTR`. `bsdselect` and `os2_select` are not provided; their ordinals are not known (ADR-0041).
+
+**Utility routines** (`tcpip_util.rs`; at Warpine's own ordinals, linked by name — ADR-0123):
+- SO32DLL: ioctl (50; `FIONBIO`, `FIONREAD`, `SIOCATMARK`, others `SOCEINVAL`), readv (51), writev (52) (at most 1024 vectors and 64 KB, one receive or send).
+- TCP32DLL: inet_addr (50; `a`, `a.b`, `a.b.c`, `a.b.c.d`, decimal / octal / hex parts, `INADDR_NONE` for a bad string), inet_network (51), inet_ntoa (52; one buffer per process, overwritten by the next call), inet_makeaddr (53), inet_lnaof (54), inet_netof (55), bswap (56), lswap (57), htonl (58), htons (59), ntohl (60), ntohs (61), dn_comp (62; no compression, the name is written in full and added to `dnptrs`), dn_expand (63; pointers must point backwards), dn_skipname (64), _getshort (65), _getlong (66), putshort (67), putlong (68), setprotoent (69), getprotoent (70), endprotoent (71).
+- The protocol database (`getprotobyname`, `getprotobynumber`, `getprotoent`) is Warpine's own — ip 0, icmp 1, tcp 6, udp 17, each with its upper-case alias — as there is no `%ETC%\PROTOCOL` file.
 
 ### MSG (4 APIs)
 
@@ -1187,7 +1192,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 512 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 537 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1197,8 +1202,8 @@ Counts are taken from the static registry (`api_registry.rs`, 512 entries) and t
 | MSG | registry | 4 | 0 | 4 |
 | MDM (MMPM/2) | registry | 3 | 0 | 3 |
 | UCONV | registry | 5 | 0 | 5 |
-| SO32DLL (sockets) | registry | 27 | 0 | 27 |
-| TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
+| SO32DLL (sockets) | registry | 30 | 0 | 30 |
+| TCP32DLL (sockets, resolver, utilities) | registry | 46 | 0 | 46 |
 | VIOCALLS | sub-dispatcher | 29 | 4 | 33 |
 | KBDCALLS | sub-dispatcher | 14 | 0 | 14 |
 | MOUCALLS | sub-dispatcher | 27 | 0 | 27 |
@@ -1214,7 +1219,7 @@ Counts are taken from the static registry (`api_registry.rs`, 512 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **928** | **21** | **949** |
+| **Total** | | **953** | **21** | **974** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

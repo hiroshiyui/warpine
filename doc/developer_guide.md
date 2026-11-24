@@ -342,6 +342,8 @@ Graphics Primitive Interface, 145 ordinals (see the reference manual for the lis
 
 `tcpip.rs` maps the BSD socket calls onto Linux sockets. OS/2's TCP/IP uses BSD numbering for socket options (toolkit `<sys/socket.h>`: `SOL_SOCKET` 0xFFFF, `SO_REUSEADDR` 4, `SO_TYPE` 0x1008, …), which `linux_sockopt` translates; only options whose value has the same layout on both sides (an `int`, `struct linger`) are mapped, others (`SO_SNDTIMEO` / `SO_RCVTIMEO`, a 32-bit `timeval` on OS/2) fail with `SOCENOPROTOOPT`. Every call passes Linux the length of the host buffer Warpine actually copied, never the guest's claimed length (`setsockopt` values are at most `MAX_SOCKOPT_LEN`). `select` reads the OS/2 TCP/IP count-and-array `fd_set` (Open Watcom `<types.h>`), so sockets numbered from 0xA000 fit; see "Socket select (ADR-0041)".
 
+`tcpip_util.rs` holds the network utility routines that need no network — `inet_addr` / `inet_network` (decimal, octal and hex parts, the `a.b` / `a.b.c` forms), `inet_ntoa` (a per-process guest buffer, `SocketManager::ntoa_addr`), `inet_makeaddr` / `inet_lnaof` / `inet_netof` by address class, the byte swaps, `dn_comp` / `dn_expand` / `dn_skipname` (RFC 1035 labels and pointers; pointers must go backwards, so a loop ends; `dn_comp` writes names uncompressed), `_getshort` / `_getlong` / `putshort` / `putlong`, and the protocol database (`PROTOCOLS`: ip, icmp, tcp, udp; a `protoent` in `SocketManager::protoent_addr`) — and SO32DLL's `ioctl` (`FIONBIO`, `FIONREAD`, `SIOCATMARK`, matched by group and number so the BSD 4.3 and 4.4 encodings both work), `readv` and `writev` (at most `MAX_IOVEC` vectors and `MAX_SOCKET_BUF` bytes, one `recv` / `send`). Their ordinals are Warpine's own (ADR-0123): SO32DLL 50–52, TCP32DLL 50–71.
+
 ### Profiles (PMSHAPI, src/loader/profile.rs + pmshapi.rs)
 
 `profile.rs` is the pure model: a `Profile` holds applications, each with keys and byte values, in insertion order; names are the guest's bytes (never decoded) and compared case-sensitively. Deleting the last key of an application removes the application. `name_list` builds the double-NUL-terminated lists the enumerating calls return; `parse_profile_int` is `PrfQueryProfileInt`'s conversion (optional `-`, digits up to the first other character).
@@ -1939,7 +1941,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (512 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (537 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -2030,7 +2032,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (512 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (537 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -2192,7 +2194,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2416: 2301 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
+The unit tests (2420: 2305 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2515,14 +2517,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (512 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (537 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2416 unit tests (2301 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 231 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2420 unit tests (2305 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 232 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2534,7 +2536,7 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 
 **`targets/i686-warpine-os2.json`** — Custom Rust target spec: `i686-unknown-none`, `relocation-model: static`, `panic-strategy: abort`, `linker: lx-link` (found on `PATH`; rustc passes `--gc-sections`).
 
-**`src/bin/gen_api.rs`** — Ordinal Table Canonical Build Tool. `targets/os2api.def` is the single authoritative source for the OS/2 API ordinal address space. Subcommands:
+**`src/bin/gen_api.rs`** — Ordinal Table Canonical Build Tool. `targets/os2api.def` is the single authoritative source for the OS/2 API ordinal address space. Its ordinals come from public sources (Open Watcom's import libraries, osFree's SOM list) wherever one exists; where none does (SO32DLL, TCP32DLL, SOM above 47) Warpine assigns its own, marked `# NOTE: Warpine's own ordinal (ADR-0123)` on the line — programs built with Warpine's tools link by name, so they are source-level compatible, and a public ordinal found later replaces Warpine's. Subcommands:
 - `show` — pretty-print all ordinals with flat addresses and module ranges
 - `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms; the def's PMWIN and PMGPI entries (the calls the PM sub-dispatchers serve, ADR-0097) are left out of the drift check, since their trace names come from the dispatchers
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)

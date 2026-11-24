@@ -676,6 +676,9 @@ SO32DLL.42    getservbyname
 SO32DLL.43    getservbyport
 SO32DLL.44    getprotobyname
 SO32DLL.45    getprotobynumber
+SO32DLL.50    ioctl   # NOTE: Warpine's own ordinal (ADR-0123)
+SO32DLL.51    readv   # NOTE: Warpine's own ordinal (ADR-0123)
+SO32DLL.52    writev   # NOTE: Warpine's own ordinal (ADR-0123)
 
 # ── TCP32DLL (re-export layer — same ordinals as SO32DLL) ────────────────────
 TCP32DLL.1    accept
@@ -702,6 +705,28 @@ TCP32DLL.42   getservbyname
 TCP32DLL.43   getservbyport
 TCP32DLL.44   getprotobyname
 TCP32DLL.45   getprotobynumber
+TCP32DLL.50   inet_addr   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.51   inet_network   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.52   inet_ntoa   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.53   inet_makeaddr   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.54   inet_lnaof   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.55   inet_netof   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.56   bswap   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.57   lswap   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.58   htonl   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.59   htons   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.60   ntohl   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.61   ntohs   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.62   dn_comp   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.63   dn_expand   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.64   dn_skipname   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.65   _getshort   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.66   _getlong   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.67   putshort   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.68   putlong   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.69   setprotoent   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.70   getprotoent   # NOTE: Warpine's own ordinal (ADR-0123)
+TCP32DLL.71   endprotoent   # NOTE: Warpine's own ordinal (ADR-0123)
 
 # ── MOUCALLS (ordinals from Open Watcom os2386.lib MOU16* imports) ──────────
 MOUCALLS.1    MouGetPtrShape

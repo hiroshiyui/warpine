@@ -79,7 +79,9 @@ pub const SOCE_HOSTDOWN:       i32 = 64;
 pub const SOCE_HOSTUNREACH:    i32 = 65;
 
 /// Maximum byte count accepted from guest for any single socket buffer operation.
-const MAX_SOCKET_BUF: usize = 64 * 1024;
+pub(crate) const MAX_SOCKET_BUF: usize = 64 * 1024;
+/// The longest DNS message the resolver helpers read (RFC 1035 TCP limit).
+pub(crate) const MAX_MESSAGE: u32 = 65535;
 
 // OS/2 socket success value
 const SOCK_SUCCESS: u32 = 0;
@@ -207,6 +209,12 @@ pub struct SocketManager {
     /// Scratch guest memory address for gethostbyname/getservbyname results.
     /// Allocated once from mem_mgr on first use; 256 bytes.
     pub scratch_addr: Option<u32>,
+    /// `inet_ntoa`'s guest buffer (`tcpip_util.rs`), allocated on first use.
+    pub ntoa_addr: Option<u32>,
+    /// The guest buffer of the `protoent` the protocol calls return.
+    pub protoent_addr: Option<u32>,
+    /// `getprotoent`'s place in the protocol database.
+    pub proto_cursor: usize,
 }
 
 impl Default for SocketManager {
@@ -220,6 +228,9 @@ impl SocketManager {
             next_handle: 0xA000,
             last_sock_errno: AtomicI32::new(0),
             scratch_addr: None,
+            ntoa_addr: None,
+            protoent_addr: None,
+            proto_cursor: 0,
         }
     }
 
@@ -613,6 +624,36 @@ impl super::Loader {
     fn so_fail(&self, e: i32) -> u32 {
         self.shared.socket_mgr.lock_or_recover().set_errno(e);
         SOCK_ERROR
+    }
+
+    /// The Linux fd of socket `s` for `tcpip_util.rs` (`SOCEBADF` when none).
+    pub(crate) fn socket_fd(&self, s: u32) -> Option<i32> { self.so_fd(s) }
+
+    /// Record socket error `e` and return -1 (`tcpip_util.rs`).
+    pub(crate) fn socket_failure(&self, e: i32) -> u32 { self.so_fail(e) }
+
+    /// A Linux call's 0 / -1 as a socket call's result (`tcpip_util.rs`).
+    pub(crate) fn socket_result(&self, rc: i32) -> u32 { self.translate_rc(rc, SOCK_SUCCESS) }
+
+    /// `send` of host bytes on socket `s`, blocking as `send` does
+    /// (`writev`).
+    pub(crate) fn socket_send_bytes(&self, s: u32, data: &[u8]) -> u32 {
+        let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
+        self.so_send_in_slices(fd, data, 0)
+    }
+
+    /// `recv` of up to `len` bytes on socket `s` into a host buffer,
+    /// blocking as `recv` does (`readv`); `Err` holds the call's result.
+    pub(crate) fn socket_recv_bytes(&self, s: u32, len: usize) -> Result<Vec<u8>, u32> {
+        let Some(fd) = self.so_fd(s) else { return Err(SOCK_ERROR); };
+        if let Err(e) = self.so_wait(fd, libc::POLLIN, 0) { return Err(self.so_fail(e)); }
+        let mut buf = vec![0u8; len.min(MAX_SOCKET_BUF)];
+        // SAFETY: `buf` is a host buffer whose own length is passed.
+        let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+        if n < 0 { return Err(self.so_fail(errno_to_soce(last_errno()))); }
+        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        buf.truncate(n as usize);
+        Ok(buf)
     }
 
     pub fn so_accept(&self, s: u32, addr_ptr: u32, addrlen_ptr: u32) -> u32 {
@@ -1228,22 +1269,20 @@ impl super::Loader {
     //
     //   struct protoent *getprotobyname(const char *name)
     //
-    //   Stub: returns 0 (not found). Used only by rare apps that need raw protocol info.
+    //   From Warpine's protocol database (`tcpip_util.rs`).
 
-    pub fn so_getprotobyname(&self, _name_ptr: u32) -> u32 {
-        debug!("[STUB] getprotobyname() → 0 (not implemented)");
-        0
+    pub fn so_getprotobyname(&self, name_ptr: u32) -> u32 {
+        self.net_getprotobyname(name_ptr)
     }
 
     // ── getprotobynumber (ordinal 45) ─────────────────────────────────────────
     //
     //   struct protoent *getprotobynumber(int proto)
     //
-    //   Stub: returns 0.
+    //   From Warpine's protocol database (`tcpip_util.rs`).
 
-    pub fn so_getprotobynumber(&self, _proto: u32) -> u32 {
-        debug!("[STUB] getprotobynumber() → 0 (not implemented)");
-        0
+    pub fn so_getprotobynumber(&self, proto: u32) -> u32 {
+        self.net_getprotobynumber(proto)
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

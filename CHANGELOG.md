@@ -7,9 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **The TCP/IP utility routines** (new `src/loader/tcpip_util.rs`): `inet_addr`, `inet_network`, `inet_ntoa`, `inet_makeaddr`, `inet_lnaof`, `inet_netof`, `htonl` / `htons` / `ntohl` / `ntohs`, `bswap` / `lswap`, `dn_comp`, `dn_expand`, `dn_skipname`, `_getshort` / `_getlong` / `putshort` / `putlong`, `setprotoent` / `getprotoent` / `endprotoent`, and SO32DLL's `ioctl` (`FIONBIO`, `FIONREAD`, `SIOCATMARK`), `readv` and `writev`. New sample `netutil_test` (28 checks, every call found by name). 974 entry points.
+- **ADR-0123: source-level compatibility where ordinals are unknown.** Where no public source gives a module's ordinals (SO32DLL, TCP32DLL, SOM above 47), Warpine numbers documented calls itself, marked in the def; programs built with Warpine's tools link them by name, and a public ordinal always wins.
 - **22 more VIO and KBD calls** (new `src/loader/vio_text.rs`): `VioWrtCharStr`, `VioWrtNChar` and `VioReadCharStr` (wrapping at a line's end, stopping at the screen's), `VioScrollLf` / `VioScrollRt`, `VioGetCp`, `VioPopUp` / `VioEndPopUp` (the screen saved and put back), `VioScrLock` / `VioScrUnLock`, `VioGetState` (palette, overscan, intensity); `KbdPeek`, `KbdFlushBuffer`, `KbdSetStatus` (with `KbdGetStatus` reporting what it set), `KbdGetCp` / `KbdSetCp`, `KbdGetHWID`, `KbdOpen` / `KbdClose`, `KbdGetFocus` / `KbdFreeFocus`, `KbdSynch`. The SDK's `os2/sub.h` declares them, with `KBDHWID`, `VIOPALSTATE`, `VIOOVERSCAN` and `VIOINTENSITY`. New sample `vio_kbd_test` (46 checks, keys piped in by its test). 949 entry points.
 
 ### Fixed
+- **`getprotobyname` / `getprotobynumber` always failed** while counted as implemented: they now answer from Warpine's protocol database (ip, icmp, tcp, udp).
 - **`VioScrollUp` / `VioScrollDn` scrolled whole lines and ignored limits beyond the screen**: they moved full rows whatever the left and right columns, did nothing when the bottom row was past the screen (so the usual `0, 0, -1, -1, -1` did not clear it), and cleared the area for 0 lines. After IBM's reference they now scroll only the rectangle, take a corner or count beyond the screen as its edge, and scroll nothing for 0 lines.
 
 ## [0.0.16] - 2026-11-24

@@ -131,7 +131,7 @@ modules = ["loader/vfs.rs", "loader/vfs_hostdir.rs", "loader/file_attrs.rs"]
 id = "net_mm"
 zone = "host"
 label = "Sockets and multimedia: SO32DLL / TCP32DLL, MMPM/2"
-modules = ["loader/tcpip.rs", "loader/mmpm.rs", "loader/mmpm_errtext.rs"]
+modules = ["loader/tcpip.rs", "loader/tcpip_util.rs", "loader/mmpm.rs", "loader/mmpm_errtext.rs"]
 
 [[layer]]
 id = "textmode"

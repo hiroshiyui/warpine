@@ -1174,6 +1174,19 @@ fn test_uconv_ordinals_and_round_trip() {
     assert!(out.contains("Failed: 0"), "uconv_test failed (exit {code}):\n{out}");
 }
 
+/// netutil_test: the TCP/IP utility routines (address conversion, byte
+/// order, the resolver's name packing, the protocol database) and SO32DLL's
+/// ioctl / readv / writev, every call found by name (Warpine's own
+/// ordinals, ADR-0123).
+#[test]
+fn test_tcpip_utility_routines_by_name() {
+    if !can_run("samples/netutil_test/netutil_test.exe") { return; }
+    let (out, code) = run_sample("samples/netutil_test/netutil_test.exe", 20);
+    let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+    assert!(failures.is_empty(), "failures {failures:?} (exit {code}):\n{out}");
+    assert!(out.contains("netutil_test: 28 passed, 0 failed"), "netutil_test did not run every check:\n{out}");
+}
+
 /// socket_test: SO32DLL loaded at run time, sockets over loopback, with
 /// `select` on the OS/2 TCP/IP `fd_set` (a count and socket numbers).
 #[test]

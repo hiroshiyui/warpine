@@ -23,3 +23,7 @@
 
 - Programs built with Open Watcom's headers can use `select` on sockets; `socket_test` passes completely.
 - A program built with emx/libc headers that passes a BSD bit mask to this entry point would be misread. It would call `bsdselect` (not provided) in any case.
+
+## Addendum (2026-11-24): own ordinals by policy
+
+ADR-0123 makes Warpine's own SO32DLL / TCP32DLL ordinals the policy where no public source gives them: documented calls are implemented at numbers of Warpine's (SO32DLL and TCP32DLL from 50, marked in the def), and programs built with Warpine's tools link them by name. The ordinals above stay unverified.

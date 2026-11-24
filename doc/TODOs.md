@@ -249,6 +249,11 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 - [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 is done (ADR-0077–0080, 0082). Still open:
   - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
+- [ ] **TCP/IP calls still missing** (the chart's TCP/IP row; Warpine's own ordinals per ADR-0123):
+  - socket headers for the SDK (`sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `netdb.h`, `sys/ioctl.h`, `sys/uio.h`), so C programs reach the socket calls by name;
+  - the host, network and service databases (`sethostent` / `gethostent` / `endhostent`, `getnetbyname` / `getnetbyaddr` / `getnetent` …, `getservent` …) and `%ETC%` files to read them from;
+  - the resolver (`res_init`, `res_mkquery`, `res_send`, `res_query`, `res_search`, `res_querydomain`), `dn_find`, compression in `dn_comp`;
+  - `sendmsg` / `recvmsg`, `so_cancel`, `addsockettolist` / `removesocketfromlist`, `rexec`, the SOCKS calls (`Raccept`, `Rbind`, `Rconnect`, `Rlisten`, `Rgetsockname`, `Rgethostbyname`), `tcp_h_errno`.
 - [ ] **VIO and KBD calls still missing** (the chart's VIO / KBD row):
   - `KbdSetStatus`'s modes acted on by the reads (echo, ASCII line editing, the turnaround character);
   - `KbdXlate`, `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`;
