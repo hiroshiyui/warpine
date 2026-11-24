@@ -101,9 +101,11 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - BEGINLIBPATH / ENDLIBPATH passed to child processes, `%BEGINLIBPATH%` / `%ENDLIBPATH%` expanded by `DosSetExtLIBPATH`;
   - `MAXWAIT`, `DPATH` use, ….
 - [ ] **Compatibility chart** (ADR-0033):
-  - date the 22 `unknown` exports;
-  - check the Warp 3 data;
-  - get export lists for UCONV, MMPM/2, TCP/IP, PMCTLS and MSG.
+  - date the `unknown` exports (22 of os2386.lib, 7 of the other modules);
+  - check the Warp 3 data, and the Warp 3 dates of SOM 2.0 (from an AIX edition) and of the VIO / MOU threshold and `VioGlobalReg` calls;
+  - a public export list of SO32DLL / TCP32DLL (the split by the reference's chapters is a guess, ADR-0033 addendum);
+  - the modules not charted: Open32 (PMWINX), OpenGL, DIVE, MMIO, MCIAPI, LIBUNI, TCPIP32.
+- [ ] **UCONV and MDM ordinals disagree with Open Watcom's import libraries** (found by the chart's research, ADR-0033 addendum): `libconv.lib` has `UniUconvToUcs` 2, `UniUconvFromUcs` 3, `UniFreeUconvObject` 4, `UniMapCpToUcsCp` 10 (Warpine: 3, 4, 2, 6); `mmpm2.lib` has `mciGetErrorString` at MDM 3 and no MDM 4, where Warpine serves `mciFreeBlock` / `mciGetLastError`, names no OS/2 source has. A program linked with the real libraries calls the wrong function; the SDK's `os2me.h` and `uconv_test` follow Warpine's numbers.
 - [ ] **SOM.DLL ordinals 48 and above**: see [SOM](#som--workplace-shell).
 
 ---
@@ -312,7 +314,7 @@ Where no such source turns up and the original cannot be rebuilt (SOM, the WPS, 
 
 **Missing export lists or ordinals**
 - **DIVE** and **OpenGL / PGL** ([Graphics](#graphics)): their export lists.
-- **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the export lists of UCONV, MMPM/2, TCP/IP, PMCTLS and MSG; dates for the 22 `unknown` exports.
+- **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the SO32DLL / TCP32DLL export split; dates for the `unknown` exports.
 - **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them. None of the IBM manuals now at hand does either (2026-11-23); the route left is asking the rights holders.
 - **SOM Stage B2/B3**, classes built from IBM's static class data ([SOM](#som--workplace-shell)): waits for those ordinals, or a source for the initializer / destructor control-block protocol. It holds back IBM-built SOM programs, and with them the Workplace Shell's compatibility.
 

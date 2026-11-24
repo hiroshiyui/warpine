@@ -2188,7 +2188,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2399: 2289 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2404: 2289 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2518,7 +2518,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2399 unit tests (2289 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 7 gen_compat), 229 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2404 unit tests (2289 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 229 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2546,7 +2546,7 @@ Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal c
 - `dot` — print the generated DOT
 - `render` — write `doc/architecture/warpine.dot` and run Graphviz `dot` for `warpine.svg` and `warpine.png` (96 dpi)
 
-**`src/bin/gen_compat.rs`** — API compatibility chart ([ADR-0033](adr/0033-generated-compatibility-chart.md)), shown at the head of the README. It reads `doc/compat/os2_api_versions.tsv` (every 32-bit export of `os2386.lib` with the OS/2 version it first appeared in and its public source, documented in `doc/compat/SOURCES.md`) and Warpine's source — registry entries by module and ordinal, PM dispatch arms (`N => {` + `// ApiName(`) by ordinal and name, stubs left out — and writes `doc/compat/api_coverage.svg` / `api_coverage_dark.svg` (`render`), compares them (`check`) or prints the numbers (`table`). A unit test fails when the committed charts are stale, so **a change that adds, removes or stubs an API must run `cargo run --bin gen_compat -- render`**. A call dated `later` or `unknown` counts in no version; correcting a date is an edit to the TSV with its source. A PM arm counts only when its comment is `// Name(` (see "A PM dispatcher arm" above).
+**`src/bin/gen_compat.rs`** — API compatibility chart ([ADR-0033](adr/0033-generated-compatibility-chart.md)), shown at the head of the README. It reads `doc/compat/os2_api_versions.tsv` (every 32-bit export of `os2386.lib` with the OS/2 version it first appeared in and its public source, documented in `doc/compat/SOURCES.md`), `doc/compat/other_api_versions.tsv` (the same for the full documented export lists of VIO / KBD / MOU, REXX, the SOM kernel, MSG, PMCTLS, UCONV, MMPM/2 and TCP/IP; the ordinal `-` where no public source gives one) and Warpine's source — for the first table registry entries by module and ordinal and PM dispatch arms (`N => {` + `// ApiName(`) by ordinal and name; for the second the `targets/os2api.def` line of the same module and name; stubs left out (`STUB_ORDINALS`, written `N` for DOSCALLS or `MODULE_BASE + N`, PM arms marked "(stub)", and one-line VIO / KBD / MOU arms marked "(stub)") — and writes `doc/compat/api_coverage.svg` / `api_coverage_dark.svg` (`render`), compares them (`check`) or prints the numbers (`table`). A unit test fails when the committed charts are stale, so **a change that adds, removes or stubs an API must run `cargo run --bin gen_compat -- render`**. A call dated `later` or `unknown` counts in no version; correcting a date is an edit to the TSV with its source. A PM arm counts only when its comment is `// Name(` (see "A PM dispatcher arm" above).
 
 The test `layer_map_matches_src_and_the_committed_diagram` runs the validation and the comparison, so adding, renaming or removing a module fails `cargo test` until `layers.toml` places it and `render` has been run. Flows describe the architecture and are not checked against the call graph.
 

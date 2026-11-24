@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="doc/compat/api_coverage_dark.svg">
-  <img alt="Bar chart: the share of the 32-bit API of OS/2 2.0, Warp 3 and Warp 4 that Warpine implements, overall and for the Control Program, window manager, graphics, shell / profiles / help, spooler, drag and drop and Workplace Shell (numbers in the image and from gen_compat table)" src="doc/compat/api_coverage.svg">
+  <img alt="Bar chart: the share of the API of OS/2 2.0, Warp 3 and Warp 4 that Warpine implements, overall, for the 32-bit os2386.lib calls, and for the Control Program, video / keyboard / mouse, window manager, graphics, standard dialogs, shell / profiles / help, spooler, drag and drop, Workplace Shell, SOM kernel, REXX, Unicode, multimedia and TCP/IP sockets (numbers in the image and from gen_compat table)" src="doc/compat/api_coverage.svg">
 </picture>
 
 *API coverage, generated from Warpine's source and a public dating of the OS/2 API by `gen_compat` (`cargo run --bin gen_compat -- table` prints it as text; data and sources in [doc/compat](doc/compat/SOURCES.md)).*
@@ -411,7 +411,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2399 unit tests (no KVM required)
+cargo test                        # 2404 unit tests (no KVM required)
 cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
@@ -463,6 +463,9 @@ Warpine follows a near-clean-room policy: API behaviour is derived from public d
 - [IBM OS/2 Warp 4 Toolkit Documents 1](https://archive.org/details/ToolkitDocs1) (Internet Archive, reprinted with IBM's permission for OS2World and EDM/2) — the *System Object Model Programming Guide* and *Reference* and the *Workplace Shell Programming Guide* and *Reference*: the OS/2 descriptions of SOM and the Workplace Shell classes.
 - [SOMobjects Developer's Toolkit Books, Version 3.0](https://archive.org/details/SOMobjectsDevelopersToolkitBooks/) (Internet Archive) — IBM's SOMobjects 3.0 *Programmer's Guide* and *Programmer's Reference* volumes (1996): SOM's concepts, initializers and the kernel at version 3.0.
 - [OS/390 V2R10 SOMobjects library](https://web.archive.org/web/20140106003410/http://www-03.ibm.com/systems/z/os/zos/library/bkserv/os390_r10pdf/#som) (Internet Archive's copy of IBM's page) — *SOMobjects Programmer's Reference, Volume 1* (SC28-1997) and *Messages, Codes and Diagnosis* (SC28-1996): the SOM kernel as IBM documented it for OS/390.
+- [OS/2 manuals on bitsavers](https://bitsavers.org/pdf/ibm/pc/os2/) — IBM's OS/2 2.0 Technical Library (1992: *Control Program*, *Presentation Manager* and *Procedures Language 2/REXX* references), the Warp 3 *PM Programming Reference*, the *OS/2 Debugging Handbook* Redbooks, and the 1.1 / 1.2 *MS OS/2 Programmer's Reference*: the dates of the API compatibility chart ([`doc/compat/SOURCES.md`](doc/compat/SOURCES.md), [ADR-0033](doc/adr/0033-generated-compatibility-chart.md)).
+- [IBM Toolkit 4.5 books on os2.kr](https://www.os2.kr/komh/os2books/os2tk45/) — the Toolkit 4.5 references as HTML (Control Program, PM, GPI, Workplace Shell, Unicode, Multimedia, TCP/IP, REXX, SOM): the Warp 4 dates of the chart.
+- [OS/2 2.0 *System Object Model Guide and Reference*](https://archive.org/details/os2-2.0-som-1991) (Internet Archive, 1991) and the [*SOMobjects Base Toolkit Quick Reference*](https://archive.org/details/manualzz-id-40748) (Bull's AIX edition of IBM's SOM 2.0 reference) — the chart's SOM 1.0 and 2.0 kernel lists.
 - [osFree](https://github.com/osfree-project/osfree) (BSD-3-Clause) — the `EXPORTS` of its `SOM/som/makefile` are the source of `SOM.DLL`'s ordinals 1–47, IBM's SOM 1.0 exports ([ADR-0070](doc/adr/0070-som-ordinals-from-osfree.md)). Only that list is used; osFree's SOM headers and kernel are not.
 
 ### Related projects

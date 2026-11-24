@@ -1,0 +1,326 @@
+module	ordinal	name	since	source_id	note
+VIOCALLS	1	VioEndPopUp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	2	VioGetPhysBuf	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	3	VioGetAnsi	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	5	VioSetAnsi	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	6	VioDeRegister	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	7	VioScrollUp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	8	VioPrtSc	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	9	VioGetCurPos	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	10	VioWrtCellStr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	11	VioPopUp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	12	VioScrollRt	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	13	VioWrtCharStr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	15	VioSetCurPos	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	18	VioScrUnLock	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	19	VioWrtTTY	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	21	VioGetMode	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	22	VioSetMode	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	23	VioScrLock	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	24	VioReadCellStr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	25	VioSavRedrawWait	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	26	VioWrtNAttr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	27	VioGetCurType	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	28	VioSavRedrawUndo	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	29	VioGetFont	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	30	VioReadCharStr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	31	VioGetBuf	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	32	VioSetCurType	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	33	VioSetFont	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	35	VioModeUndo	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	37	VioModeWait	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	40	VioGetCp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	42	VioSetCp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	43	VioShowBuf	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	44	VioScrollLf	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	45	VioRegister	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	46	VioGetConfig	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	47	VioScrollDn	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	48	VioWrtCharStrAtt	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	49	VioGetState	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	50	VioPrtScToggle	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	51	VioSetState	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	52	VioWrtNCell	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	53	VioWrtNChar	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+VIOCALLS	55	VioAssociate	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	56	VioCreatePS	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	57	VioDeleteSetId	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	58	VioGetDeviceCellSize	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	59	VioGetOrg	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	60	VioCreateLogFont	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	61	VioDestroyPS	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	62	VioQuerySetIds	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	63	VioSetOrg	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	64	VioQueryFonts	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	65	VioSetDeviceCellSize	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	66	VioShowPS	2.0	S20;S23	AVIO call documented in MS OS/2 1.1 Prog. Ref. Vol. 3; advanced VIO presentation spaces in 2.0 PM (S23: default AVIO window procedure, WM_SIZE)
+VIOCALLS	70	VioGlobalReg	3.0	S6	not in the 1.1/1.2 references; Warp 3 OS2CHAR trace point 0x0015 (Debugging Handbook Vol. 3); EDM/2 documents it, undated
+VIOCALLS	75	VioCheckCharType	unknown	S22;S25	DBCS call; EDM/2 page undated; not in 1.x, 2.0, Warp 3 trace or Toolkit 4 references; ordinal 75 after VioGlobalReg
+KBDCALLS	1	KbdSetCustXt	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	3	KbdGetCp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	4	KbdCharIn	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	5	KbdSetCp	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	7	KbdSynch	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	8	KbdRegister	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	9	KbdStringIn	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	10	KbdGetStatus	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	11	KbdSetStatus	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	12	KbdGetFocus	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	13	KbdFlushBuffer	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	14	KbdXlate	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	17	KbdClose	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	18	KbdFreeFocus	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	20	KbdDeRegister	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	21	KbdSetFgnd	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	22	KbdPeek	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	23	KbdOpen	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+KBDCALLS	24	KbdGetHWID	2.0	S21;S1	new in OS/2 1.2 (MS Prog. Ref. Vol. 4 marks it New); 16-bit KBD callable in 2.0 (S1)
+KBDCALLS	25	KbdSetHWID	unknown	S24;S22	toolkit name only (Open Watcom bsesub.h); EDM/2 legacy page, undated; no trace point in Warp 3, no IBM page; ordinal 25 above the 1.2 KbdGetHWID
+MOUCALLS	1	MouGetPtrShape	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	2	MouSetPtrShape	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	3	MouGetNumMickeys	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	4	MouGetHotKey	2.0	S20;S1	named as a Mou function (code 0x0009) in the 1.1 MouRegister function list, no own page; ordinal inside the 1.1 block
+MOUCALLS	6	MouGetScaleFact	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	7	MouFlushQue	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	8	MouGetNumButtons	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	9	MouClose	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	10	MouSetHotKey	2.0	S20;S1	named as a Mou function (code 0x000A) in the 1.1 MouRegister function list, no own page; ordinal inside the 1.1 block
+MOUCALLS	11	MouSetScaleFact	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	13	MouGetNumQueEl	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	14	MouDeRegister	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	15	MouGetEventMask	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	16	MouSetEventMask	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	17	MouOpen	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	18	MouRemovePtr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	19	MouGetPtrPos	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	20	MouReadEventQue	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	21	MouSetPtrPos	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	22	MouGetDevStatus	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	23	MouSynch	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	24	MouRegister	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	25	MouSetDevStatus	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	26	MouDrawPtr	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	27	MouInitReal	2.0	S20;S1	documented in MS OS/2 1.1 Prog. Ref. Vol. 3; 16-bit VIO/KBD/MOU callable from 32-bit code in 2.0 (S1)
+MOUCALLS	29	MouGetThreshold	3.0	S6	not in the 1.1/1.2 references; Warp 3 OS2CHAR trace point 0x020D; documented in Toolkit 4 CP reference (S7)
+MOUCALLS	30	MouSetThreshold	3.0	S6	not in the 1.1/1.2 references; Warp 3 OS2CHAR trace point 0x0218; documented in Toolkit 4 CP reference (S7)
+REXX	1	RexxStart	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXX	2	RexxVariablePool	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXX	3	RexxSetHalt	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXX	4	RexxSetTrace	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXX	5	RexxResetTrace	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	1	RexxCreateQueue	2.0	S31;H1	first documented in Toolkit 4.5 Object REXX PG (S31); ordinal 1-5 precede the 2.0-documented block 6-28; named queues already used by RXQUEUE() and RXQUEUE filter in 2.0 (S30)
+REXXAPI	2	RexxDeleteQueue	2.0	S31;H1	first documented in Toolkit 4.5 Object REXX PG (S31); ordinal 1-5 precede the 2.0-documented block 6-28; named queues already used by RXQUEUE() and RXQUEUE filter in 2.0 (S30)
+REXXAPI	3	RexxAddQueue	2.0	S31;H1	first documented in Toolkit 4.5 Object REXX PG (S31); ordinal 1-5 precede the 2.0-documented block 6-28; named queues already used by RXQUEUE() and RXQUEUE filter in 2.0 (S30)
+REXXAPI	4	RexxPullQueue	2.0	S31;H1	first documented in Toolkit 4.5 Object REXX PG (S31); ordinal 1-5 precede the 2.0-documented block 6-28; named queues already used by RXQUEUE() and RXQUEUE filter in 2.0 (S30)
+REXXAPI	5	RexxQueryQueue	2.0	S31;H1	first documented in Toolkit 4.5 Object REXX PG (S31); ordinal 1-5 precede the 2.0-documented block 6-28; named queues already used by RXQUEUE() and RXQUEUE filter in 2.0 (S30)
+REXXAPI	6	RexxRegisterSubcomDll	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	7	RexxRegisterSubcomExe	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	8	RexxQuerySubcom	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	9	RexxDeregisterSubcom	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	10	RexxLoadSubcom	2.0	H1	undocumented; ordinal inside the 2.0-documented block 6-28; 32-bit counterpart of the 1.x RXSUBCOMLOAD (S32)
+REXXAPI	11	RexxRegisterExitDll	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	12	RexxRegisterExitExe	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	13	RexxDeregisterExit	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	14	RexxQueryExit	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	15	RexxCallExit	2.0	H1	undocumented (interpreter-side helper); ordinal inside the 2.0-documented block 6-28
+REXXAPI	16	RexxCallSubcom	2.0	H1	undocumented (interpreter-side helper); ordinal inside the 2.0-documented block 6-28; 32-bit counterpart of the 1.x RXSUBCOMEXECUTE (S32)
+REXXAPI	17	RexxRegisterFunctionDll	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	18	RexxRegisterFunctionExe	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	19	RexxDeregisterFunction	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	20	RexxQueryFunction	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	21	RexxCallFunction	2.0	H1	undocumented (interpreter-side helper); ordinal inside the 2.0-documented block 6-28; 32-bit counterpart of the 1.x RXFUNCTIONCALL (S32)
+REXXAPI	22	RexxAddMacro	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	23	RexxDropMacro	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	24	RexxClearMacroSpace	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	25	RexxLoadMacroSpace	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	26	RexxQueryMacro	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	27	RexxReorderMacro	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	28	RexxSaveMacroSpace	2.0	S30	documented in OS/2 2.0 REXX Reference ch. 9 Macrospace Interface (S30) and Toolkit 4.5 Object REXX PG (S31)
+REXXAPI	29	RexxExecuteMacroFunction	unknown	S32	undocumented (interpreter-side helper); ordinal 29 follows the 2.0 block 6-28, not inside it, so H1 does not apply; probably 2.0
+MSG	4	DosInsertMessage	2.0	S1;S42	documented in OS/2 2.0 CP Reference; ordinal from os2386.lib
+MSG	5	DosPutMessage	2.0	S1;S42	documented in OS/2 2.0 CP Reference; ordinal from os2386.lib
+MSG	6	DosGetMessage	2.0	S1;S42	documented in OS/2 2.0 CP Reference; ordinal from os2386.lib
+MSG	8	DosQueryMessageCP	2.0	S1;S42	documented in OS/2 2.0 CP Reference; ordinal from os2386.lib
+PMCTLS	2	WinFontDlg	2.0	S2;S42	standard dialog documented in OS/2 2.0 PM Reference; ordinal from os2386.lib
+PMCTLS	3	WinDefFontDlgProc	2.0	S2;S42	standard dialog documented in OS/2 2.0 PM Reference; ordinal from os2386.lib
+PMCTLS	4	WinFileDlg	2.0	S2;S42	standard dialog documented in OS/2 2.0 PM Reference; ordinal from os2386.lib
+PMCTLS	5	WinDefFileDlgProc	2.0	S2;S42	standard dialog documented in OS/2 2.0 PM Reference; ordinal from os2386.lib
+PMCTLS	6	WinFreeFileDlgList	2.0	S2;S42	standard dialog documented in OS/2 2.0 PM Reference; ordinal from os2386.lib
+PMCTLS	24	WinRegisterCircularSlider	3.0	S5;S49;S42	WC_CIRCULARSLIDER first in Warp 3 PM Reference, which the class needs registered by this call (named in Toolkit 4.5 PM Guide); low-medium
+UCONV	1	UniCreateUconvObject	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	2	UniUconvToUcs	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	3	UniUconvFromUcs	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	4	UniFreeUconvObject	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	7	UniQueryUconvObject	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	8	UniSetUconvObject	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	10	UniMapCpToUcsCp	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	11	UniStrFromUcs	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+UCONV	12	UniStrToUcs	4.0	S11;S45;S41	ULS conversion call in uconv.h; ULS first in the Warp 4 Toolkit; ordinal from libconv.lib
+MDM	1	mciSendCommand	3.0	S17;S43;S40	MCI function in MM Programming Reference; MMPM/2 base from Warp 3 (add-on for 2.1, low); ordinal from mmpm2.lib
+MDM	2	mciSendString	3.0	S17;S43;S40	MCI function in MM Programming Reference; MMPM/2 base from Warp 3 (add-on for 2.1, low); ordinal from mmpm2.lib
+MDM	3	mciGetErrorString	3.0	S17;S43;S40	MCI function in MM Programming Reference; MMPM/2 base from Warp 3 (add-on for 2.1, low); ordinal from mmpm2.lib
+MDM	10	mciSetSysValue	3.0	S17;S43;S40	MCI function in MM Programming Reference; MMPM/2 base from Warp 3 (add-on for 2.1, low); ordinal from mmpm2.lib
+MDM	11	mciQuerySysValue	3.0	S17;S43;S40	MCI function in MM Programming Reference; MMPM/2 base from Warp 3 (add-on for 2.1, low); ordinal from mmpm2.lib
+MDM	16	mciGetDeviceID	3.0	S17;S43;S40	MCI function in MM Programming Reference; MMPM/2 base from Warp 3 (add-on for 2.1, low); ordinal from mmpm2.lib
+MDM	12	mciMakeGroup	3.0	S44;S40;H1	prototype in mcios2.h, no reference page (MCI_GROUP documented); ordinal between 3.0-dated 11 and 16 (H1, low)
+MDM	13	mciDeleteGroup	3.0	S44;S40;H1	prototype in mcios2.h, no reference page (MCI_GROUP documented); ordinal between 3.0-dated 11 and 16 (H1, low)
+SO32DLL	-	accept	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	addsockettolist	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46)
+SO32DLL	-	bind	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	connect	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	gethostid	4.0	S18;S46;S50;H1	utility chapter in S46, but TCPIP32 places it at 4 inside its socket-call block (S50); module assignment low
+SO32DLL	-	getpeername	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	getsockname	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	getsockopt	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	ioctl	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48); OS/2 form in 4.0 (4.21 split it into os2_ioctl + BSD ioctl)
+SO32DLL	-	listen	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	psock_errno	4.0	S18;S46	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18)
+SO32DLL	-	readv	4.0	S18;S46	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18)
+SO32DLL	-	recv	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	recvfrom	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	recvmsg	4.0	S18;S46	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18)
+SO32DLL	-	removesocketfromlist	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46)
+SO32DLL	-	select	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48); OS/2 form in 4.0 (4.21 split it into os2_select + BSD select)
+SO32DLL	-	send	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	sendmsg	4.0	S18;S46	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18)
+SO32DLL	-	sendto	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	setsockopt	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	shutdown	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	so_cancel	4.0	S18;S46	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18)
+SO32DLL	-	sock_errno	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	sock_init	4.0	S18;S46	removed from the 4.21 edition (S46 'Changes in 4.21'), so documented for 4.0; module by chapter
+SO32DLL	-	socket	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	soclose	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+SO32DLL	-	writev	4.0	S18;S46;S48	BSD 4.3 socket call (Sockets API chapter of S46); TCP/IP base from Warp 4 (S18); APR loads it from SO32DLL by name (S48)
+TCP32DLL	-	bswap	4.0	S18;S46	removed in the 4.21 edition (S46), so documented for 4.0; module by chapter (low)
+TCP32DLL	-	dn_comp	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	dn_expand	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	dn_find	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	dn_skipname	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	endhostent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	endnetent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	endprotoent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	endservent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	gethostbyaddr	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	gethostbyname	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	gethostent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	gethostname	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	_getlong	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	getnetbyaddr	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getnetbyname	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getnetent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getprotobyname	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getprotobynumber	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getprotoent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getservbyname	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getservbyport	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	getservent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	_getshort	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	inet_addr	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	inet_lnaof	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	inet_makeaddr	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	inet_netof	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	inet_network	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	inet_ntoa	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	lswap	4.0	S18;S46	removed in the 4.21 edition (S46), so documented for 4.0; module by chapter (low)
+TCP32DLL	-	putlong	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	putshort	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	Raccept	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	Rbind	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	Rconnect	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	res_init	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	res_mkquery	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	res_query	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	res_querydomain	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	res_search	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	res_send	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	rexec	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	Rgethostbyname	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	Rgetsockname	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	Rlisten	4.0	S18;S46	listed as new in TCP/IP Version 4 (Merlin) edition (S46); module by chapter (low)
+TCP32DLL	-	sethostent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	setnetent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	setprotoent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	setservent	4.0	S18;S46	network utility routine (S46 chapter); TCP/IP base from Warp 4 (S18); module by chapter (low)
+TCP32DLL	-	tcp_h_errno	4.0	S18;S46	removed in the 4.21 edition (S46), so documented for 4.0; module by chapter (low)
+TCP32DLL	-	htonl	unknown	S46	documented as calls in 4.21; in 4.0 possibly macros over bswap/lswap (removed in 4.21), so export in TCP32DLL unproven
+TCP32DLL	-	htons	unknown	S46	documented as calls in 4.21; in 4.0 possibly macros over bswap/lswap (removed in 4.21), so export in TCP32DLL unproven
+TCP32DLL	-	ntohl	unknown	S46	documented as calls in 4.21; in 4.0 possibly macros over bswap/lswap (removed in 4.21), so export in TCP32DLL unproven
+TCP32DLL	-	ntohs	unknown	S46	documented as calls in 4.21; in 4.0 possibly macros over bswap/lswap (removed in 4.21), so export in TCP32DLL unproven
+SOM	1	SOMCalloc	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	2	SOMClassCClassData	2.0	S61;H1	data: SOMClass auxiliary class data; only in osFree SOM 1.0 export list (alphabetical block 1-22)
+SOM	3	SOMClassClassData	2.0	S60;S61	data: kernel class SOMClass (Ch. 5) with the <className>ClassData export convention of OS/2 2.0 SOM Guide and Reference (Dec 1991)
+SOM	4	SOMClassInitFuncName	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	5	SOMClassMgrCClassData	2.0	S61;H1	data: SOMClassMgr auxiliary class data; only in osFree SOM 1.0 export list (alphabetical block 1-22)
+SOM	6	SOMClassMgrClassData	2.0	S60;S61	data: kernel class SOMClassMgr (Ch. 5) with the <className>ClassData export convention of OS/2 2.0 SOM Guide and Reference (Dec 1991)
+SOM	7	SOMClassMgrObject	2.0	S60;S61	data: the class manager object, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3
+SOM	8	SOMDeleteModule	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	9	SOMError	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	10	SOMFree	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	11	SOMLoadModule	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	12	SOMMalloc	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	13	SOMObjectCClassData	2.0	S61;H1	data: SOMObject auxiliary class data; only in osFree SOM 1.0 export list (alphabetical block 1-22)
+SOM	14	SOMObjectClassData	2.0	S60;S61	data: kernel class SOMObject (Ch. 5) with the <className>ClassData export convention of OS/2 2.0 SOM Guide and Reference (Dec 1991)
+SOM	15	SOMOutCharRoutine	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	16	SOMRealloc	2.0	S60;S61	replaceable entry-point variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 4
+SOM	17	SOM_AssertLevel	2.0	S60;S61	data: debug-level variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 Debugging Facilities
+SOM	18	SOM_TraceLevel	2.0	S60;S61	data: debug-level variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 Debugging Facilities
+SOM	19	SOM_WarnLevel	2.0	S60;S61	data: debug-level variable, OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 Debugging Facilities
+SOM	20	SOMClassMgrNewClass	2.0	S60;S61	kernel class SOMClassMgr (Ch. 5) with the <className>NewClass convention of OS/2 2.0 SOM Guide and Reference (Dec 1991)
+SOM	21	SOMClassNewClass	2.0	S60;S61	kernel class SOMClass (Ch. 5) with the <className>NewClass convention of OS/2 2.0 SOM Guide and Reference (Dec 1991)
+SOM	22	SOMObjectNewClass	2.0	S60;S61	kernel class SOMObject (Ch. 5) with the <className>NewClass convention of OS/2 2.0 SOM Guide and Reference (Dec 1991)
+SOM	23	somAssert	2.0	S61;H1	function behind the SOM_Assert macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	24	somBeginPersistentIds	2.0	S60;S61	ID function in OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 ID Manipulation
+SOM	25	somCheckArgs	2.0	S61;H1	undocumented SOM 1.0 export; in osFree alphabetical export block 23-46
+SOM	26	somCheckId	2.0	S61;H1	function behind the SOM_CheckId macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	27	somCompareIds	2.0	S61;H1	function behind the SOM_CompareIds macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	28	somConstructClass	2.0	S61;H1	undocumented SOM 1.0 export; in osFree alphabetical export block 23-46
+SOM	29	somEndPersistentIds	2.0	S60;S61	ID function in OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 ID Manipulation
+SOM	30	somEnvironmentNew	2.0	S60;S61	OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 SomEnvironmentNew
+SOM	31	somIdFromString	2.0	S61;H1	function behind the SOM_IdFromString macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	32	somLPrintf	2.0	S61;H1	in osFree SOM 1.0 alphabetical export block 23-46; first documented in the SOM 2.0 Quick Reference (S62)
+SOM	33	somParentResolve	2.0	S61;H1	function behind the SOM_ParentResolve macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	34	somPrefixLevel	2.0	S61;H1	in osFree SOM 1.0 alphabetical export block 23-46; first documented in the SOM 2.0 Quick Reference (S62)
+SOM	35	somPrintf	2.0	S60;S61	OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 Debugging Facilities
+SOM	36	somRegisterId	2.0	S60;S61	ID function in OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 ID Manipulation
+SOM	37	somResolve	2.0	S60;S61	OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3: run-time function behind the method macros
+SOM	38	somSaveMetrics	2.0	S61;H1	undocumented SOM 1.0 export; in osFree alphabetical export block 23-46
+SOM	39	somSetExpectedIds	2.0	S60;S61	ID function in OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 ID Manipulation
+SOM	40	somStringFromId	2.0	S61;H1	function behind the SOM_StringFromId macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	41	somTest	2.0	S61;H1	function behind the SOM_Test macro of OS/2 2.0 SOM Guide and Reference (Dec 1991); in osFree SOM 1.0 alphabetical export block 23-46
+SOM	42	somTestCls	2.0	S61;H1	undocumented SOM 1.0 export; in osFree alphabetical export block 23-46
+SOM	43	somTotalRegIds	2.0	S60;S61	ID function in OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 ID Manipulation
+SOM	44	somUniqueKey	2.0	S60;S61	ID function in OS/2 2.0 SOM Guide and Reference (Dec 1991), Ch. 3 ID Manipulation
+SOM	45	somVprintf	2.0	S61;H1	in osFree SOM 1.0 alphabetical export block 23-46; first documented in the SOM 2.0 Quick Reference (S62)
+SOM	46	somWriteMetrics	2.0	S61;H1	undocumented SOM 1.0 export; in osFree alphabetical export block 23-46
+SOM	47	somDataResolve	3.0	S62;S63	not in 1991 book; osFree ordinal 47 sits after the alphabetical 1.0 block; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somApply	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somBuildClass	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somClassResolve	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somEnvironmentEnd	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somExceptionFree	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somExceptionId	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somExceptionValue	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somGetGlobalEnvironment	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somIsObj	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somMainProgram	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somParentNumResolve	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somResolveByName	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somSetException	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	somSetOutChar	3.0	S62;S63	not in 1991 book or osFree 1.0 list; SOM 2.0 Base Toolkit Quick Reference (S62); Warp 3 WPS built on SOM 2 (S63)
+SOM	-	SOMCreateMutexSem	4.0	S65	data: mutex-service hook (somapi.h), SOM 2.1 Toolkit Guide "Customizing Mutual Exclusion Services"; not in S62
+SOM	-	somDataResolveChk	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62
+SOM	-	SOMDestroyMutexSem	4.0	S65	data: mutex-service hook (somapi.h), SOM 2.1 Toolkit Guide "Customizing Mutual Exclusion Services"; not in S62
+SOM	-	SOMEndThread	4.0	S65	data: thread-service hook (somthrd.h), SOM 2.1 Toolkit Guide "Customizing Multi-threading Services"; not in S62; exporting DLL not confirmed
+SOM	-	SOMGetThreadHandle	4.0	S65	data: thread-service hook (somthrd.h), SOM 2.1 Toolkit Guide "Customizing Multi-threading Services"; not in S62; exporting DLL not confirmed
+SOM	-	SOMGetThreadId	4.0	S65	data: mutex-service hook (somapi.h), SOM 2.1 Toolkit Guide "Customizing Mutual Exclusion Services"; not in S62
+SOM	-	SOMKillThread	4.0	S65	data: thread-service hook (somthrd.h), SOM 2.1 Toolkit Guide "Customizing Multi-threading Services"; not in S62; exporting DLL not confirmed
+SOM	-	SOMReleaseMutexSem	4.0	S65	data: mutex-service hook (somapi.h), SOM 2.1 Toolkit Guide "Customizing Mutual Exclusion Services"; not in S62
+SOM	-	SOMRequestMutexSem	4.0	S65	data: mutex-service hook (somapi.h), SOM 2.1 Toolkit Guide "Customizing Mutual Exclusion Services"; not in S62
+SOM	-	SOMStartThread	4.0	S65	data: thread-service hook (somthrd.h), SOM 2.1 Toolkit Guide "Customizing Multi-threading Services"; not in S62; exporting DLL not confirmed
+SOM	-	somVaBuf_add	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62; exporting DLL not confirmed (may not be SOM.DLL)
+SOM	-	somVaBuf_create	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62; exporting DLL not confirmed (may not be SOM.DLL)
+SOM	-	somVaBuf_destroy	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62; exporting DLL not confirmed (may not be SOM.DLL)
+SOM	-	somVaBuf_get_valist	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62; exporting DLL not confirmed (may not be SOM.DLL)
+SOM	-	somvalistGetTarget	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62; exporting DLL not confirmed (may not be SOM.DLL)
+SOM	-	somvalistSetTarget	4.0	S64	SOM 2.1 (Warp 4 Toolkit) Reference S64; absent from SOM 2.0 Quick Reference S62; exporting DLL not confirmed (may not be SOM.DLL)

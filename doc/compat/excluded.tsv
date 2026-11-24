@@ -183,3 +183,120 @@ PMWP	493	WPImageFileNewClass	SOM class-data / class-constructor export (WPS clas
 PMWP	494	M_WPImageFileCClassData	SOM class-data / class-constructor export (WPS class library, not an API function)
 PMWP	495	M_WPImageFileClassData	SOM class-data / class-constructor export (WPS class library, not an API function)
 PMWP	496	M_WPImageFileNewClass	SOM class-data / class-constructor export (WPS class library, not an API function)
+VIOCALLS	67	VioGetPSAddress	internal AVIO/PM helper: no 32-bit name in any toolkit header (only ORD_VIOGETPSADDRESS), EDM/2 lists it under Undocumented; exists in Warp 3 (S6 Vol. 3 OS2CHAR trace point 0x0013) - would be 3.0 if counted
+VIOCALLS	71	XVioSetCAState	DBCS internal (conversion-area call for the input-method front end); no 32-bit name in any toolkit header (only ORD_XVIOSETCASTATE in bseord.h), undocumented
+VIOCALLS	72	XVioCheckCharType	DBCS internal; no 32-bit name in any toolkit header (only ORD_ in bseord.h), undocumented
+VIOCALLS	73	XVioDestroyCA	DBCS internal (conversion area); no 32-bit name in any toolkit header (only ORD_ in bseord.h), undocumented
+VIOCALLS	74	XVioCreateCA	DBCS internal (conversion area); no 32-bit name in any toolkit header (only ORD_ in bseord.h), undocumented
+VIOCALLS	76	XVioGetCAState	DBCS internal (conversion area); no 32-bit name in any toolkit header (only ORD_ in bseord.h), undocumented
+REXX	6	REXXSAA	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxStart
+REXX	7	RXTRACESET	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxSetTrace
+REXX	8	RXVAR	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxVariablePool
+REXX	9	RXBREAKCLEANUP	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): none (no 32-bit counterpart; halt clean-up)
+REXX	10	RXHALTSET	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxSetHalt
+REXX	11	RXTRACERESET	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxResetTrace
+REXXAPI	30	RXSUBCOMLOAD	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxLoadSubcom
+REXXAPI	31	RXEXITREGISTER	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxRegisterExitDll/Exe
+REXXAPI	32	RXMACROREORDER	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxReorderMacro
+REXXAPI	33	RXMACRODROP	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxDropMacro
+REXXAPI	34	RXSUBCOMEXECUTE	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxCallSubcom
+REXXAPI	35	RXEXITDROP	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxDeregisterExit
+REXXAPI	36	RXSUBCOMQUERY	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxQuerySubcom
+REXXAPI	37	RXEXITQUERY	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxQueryExit
+REXXAPI	38	RXMACROERASE	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxClearMacroSpace
+REXXAPI	39	RXFUNCTIONDEREGISTER	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxDeregisterFunction
+REXXAPI	40	RXFUNCTIONCALL	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxCallFunction
+REXXAPI	41	RXSUBCOMREGISTER	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxRegisterSubcomDll/Exe
+REXXAPI	42	RXFUNCTIONREGISTER	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxRegisterFunctionDll/Exe
+REXXAPI	43	RXSUBCOMDROP	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxDeregisterSubcom
+REXXAPI	44	RXMACROLOAD	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxLoadMacroSpace
+REXXAPI	45	RXMACROQUERY	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxQueryMacro
+REXXAPI	46	RXMACROSAVE	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxSaveMacroSpace
+REXXAPI	47	RXFUNCTIONQUERY	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxQueryFunction
+REXXAPI	48	RXMACROCHANGE	16-bit OS/2 1.x-era REXX entry point: upper-case Pascal export name in the 32-bit import library (S32), named in no 2.0-or-later IBM document (S30, S31) nor on EDM/2 (S34) and declared by no 32-bit rexxsaa.h (S32); probable 32-bit counterpart (by name): RexxAddMacro
+SOM	-	SOM_Assert	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_CheckId	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_ClassLibrary	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_CompareIds	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_CreateLocalEnvironment	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_DestroyLocalEnvironment	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_Error	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_Expect	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_GetClass	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_IdFromString	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_InitEnvironment	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_MainProgram	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_NoTrace	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_ParentNumResolve	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_ParentResolve	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_Resolve	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_ResolveNoCheck	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_StringFromId	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_SubstituteClass	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_Test	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_TestC	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_UninitEnvironment	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOM_WarnMsg	macro (som.h / somcdev.h), not an export; expands to kernel functions listed in som.tsv
+SOM	-	SOMInitModule	provided and exported by a class-library DLL, called by SOM through SOMClassInitFuncName; SOM.DLL does not export it
+SOM	-	somSetGlobalEnvironment	named only in the "Related Information" list of somExceptionValue in the Warp 4 SOM Reference (S64); no entry, no syntax, not in S62 or the SOMobjects 3.0 Reference (S66)
+SOM	-	somGetClass, somNew, somGetName, somDispatch … (SOMObject / SOMClass / SOMClassMgr methods)	methods, reached through method tables, not exports
+SOMD	-	SOMD_Init, SOMD_Uninit, SOMD_NoORBfree, SOMD_RegisterCallback, somdExceptionFree, ORBfree …	DSOM (SOMD.DLL), outside the kernel
+SOM	-	TCCalloc, TCFree, TCMalloc, TCRealloc, get_double_alignment	listed only in a commented-out export block of osFree (another SOM DLL; typecode support), undocumented by IBM
+SOM	3080-3095,3198-3408	WrpSom*, WrpSOMObject_*, WrpSOMClass_*, WrpSOMClassMgr_*	Warpine's own entry points (ADR-0070, os2api.def 3072+), not IBM exports
+MSG	1	DOS16PUTMESSAGE	16-bit entry point
+MSG	2	DOSTRUEGETMESSAGE	16-bit entry point
+MSG	3	DOS16INSMESSAGE	16-bit entry point
+MSG	7	DOSIQUERYMESSAGECP	16-bit entry point
+MSG	9	DOSCLOSEMESSAGEFILE	not documented in S1/S7, no prototype in the toolkit headers
+UCONV	9	UniQueryUconvCp	in libconv.lib but not documented (S45) and not declared in uconv.h
+UCONV	13	_UniMalloc	internal allocator export; undocumented, no prototype
+UCONV	14	_UniFree	internal allocator export; undocumented, no prototype
+MDM	-	mciFreeBlock	Warpine maps MDM.3 to this name; no OS/2 source documents it, and mmpm2.lib puts mciGetErrorString at MDM.3
+MDM	-	mciGetLastError	Warpine maps MDM.4 to this name; no OS/2 source documents it (mmpm2.lib has no MDM.4)
+MDM	6	mciQueryDefaultConnections	in mmpm2.lib but no prototype and no reference page (connections are set with MCI_CONNECTION / MCI_DEFAULT_CONNECTION messages)
+MDM	7	mciDefaultConnection	in mmpm2.lib but no prototype and no reference page (connections are set with MCI_CONNECTION / MCI_DEFAULT_CONNECTION messages)
+MDM	8	mciQueryConnections	in mmpm2.lib but no prototype and no reference page (connections are set with MCI_CONNECTION / MCI_DEFAULT_CONNECTION messages)
+MDM	9	mciConnection	in mmpm2.lib but no prototype and no reference page (connections are set with MCI_CONNECTION / MCI_DEFAULT_CONNECTION messages)
+MDM	17	mdmDriverNotify	documented (S43, mmdrvos2.h) but for media control drivers, not applications
+MDM	18	MCI16GETERRORSTRING	16-bit entry point
+MDM	19	MCI16SENDSTRING	16-bit entry point
+MDM	20	MCI16GETDEVICEID	16-bit entry point
+MDM	21	MM_DosLoadModule	MMPM/2-internal helper, undocumented
+MDM	22	mdmAPMEntry	MMPM/2-internal power-management entry, undocumented
+MDM	-	mciPlayFile	documented MCI function (S43) but exported by MCIAPI.DLL, not MDM (mmpm2.lib, S40)
+MDM	-	mciPlayResource	documented MCI function (S43) but exported by MCIAPI.DLL, not MDM (mmpm2.lib, S40)
+MDM	-	mciRecordAudioFile	documented MCI function (S43) but exported by MCIAPI.DLL, not MDM (mmpm2.lib, S40)
+TCPIP32	-	accept_and_recv	new in TCP/IP 4.21 (S46); exported by TCPIP32.DLL (BSD 4.4, S47/S50), not by SO32DLL
+TCPIP32	-	send_file	new in TCP/IP 4.21 (S46); exported by TCPIP32.DLL (BSD 4.4, S47/S50), not by SO32DLL
+TCPIP32	-	sysctl	new in TCP/IP 4.21 (S46); exported by TCPIP32.DLL (BSD 4.4, S47/S50), not by SO32DLL
+TCPIP32	-	os2_ioctl	new in TCP/IP 4.21 (S46); exported by TCPIP32.DLL (BSD 4.4, S47/S50), not by SO32DLL
+TCPIP32	-	os2_select	new in TCP/IP 4.21 (S46); exported by TCPIP32.DLL (BSD 4.4, S47/S50), not by SO32DLL
+TCP32DLL	-	h_errno	exported data, not a function
+SO32DLL	-	os2_connect	removed before the TCP/IP 4.0 edition (S46 'Changes in Version 4'); pre-4.0 only
+SO32DLL	-	os2_gethostbyname	removed before the TCP/IP 4.0 edition (S46 'Changes in Version 4'); pre-4.0 only
+TCPIP32	-	(149 imports of tcpip32.lib)	TCPIP32.DLL (TCP/IP 4.1+/4.21, BSD 4.4) is not mapped by Warpine; out of scope (S50)
+TCP32DLL	-	accept	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	bind	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	connect	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	getpeername	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	getsockname	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	getsockopt	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	listen	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	recv	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	recvfrom	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	select	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	send	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	sendto	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	setsockopt	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	shutdown	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	sock_errno	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	socket	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	soclose	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+TCP32DLL	-	sock_init	Warpine maps it in TCP32DLL too, but S46 puts socket calls in the Sockets chapter (SO32DLL, S47/S48); counted under SO32DLL
+SO32DLL	-	gethostname	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL
+SO32DLL	-	gethostbyname	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL
+SO32DLL	-	gethostbyaddr	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL
+SO32DLL	-	getservbyname	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL
+SO32DLL	-	getservbyport	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL
+SO32DLL	-	getprotobyname	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL
+SO32DLL	-	getprotobynumber	Warpine maps it in SO32DLL too, but S46 puts it in the network utility routines (TCP32DLL); counted under TCP32DLL

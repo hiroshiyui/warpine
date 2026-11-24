@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-18
-- **Sources:** `src/bin/gen_compat.rs`; `doc/compat/os2_api_versions.tsv`, `doc/compat/SOURCES.md`, `doc/compat/excluded.tsv`, `doc/compat/extra_modules.tsv`; the maintainer's request for a bar chart of API compatibility with OS/2 2.0, 3.0 and 4.0 at the head of the README; ADR-0004, ADR-0006, ADR-0021
+- **Sources:** `src/bin/gen_compat.rs`; `doc/compat/os2_api_versions.tsv`, `doc/compat/SOURCES.md`, `doc/compat/excluded.tsv`, `doc/compat/other_api_versions.tsv` (until 2026-11-24 `extra_modules.tsv`); the maintainer's request for a bar chart of API compatibility with OS/2 2.0, 3.0 and 4.0 at the head of the README; ADR-0004, ADR-0006, ADR-0021
 
 ## Context
 
@@ -35,6 +35,30 @@ Warpine's only ordinal source, the Open Watcom import library snapshot (`doc/os2
 - Every API change touches two generated files. That is the price of a chart that cannot go stale.
 - The measure counts entry points, not behaviour: an implemented call may still be partial, and a whole subsystem counts the same per call however much it matters.
 - **What the chart does not cover:**
-  - VIO / KBD / MOU (16-bit entry points in the library) and DLLs outside `os2386.lib` (UCONV, MMPM/2, TCP/IP, PMCTLS, MSG); their partial lists are in `extra_modules.tsv`.
+  - VIO / KBD / MOU (16-bit entry points in the library) and DLLs outside `os2386.lib` (UCONV, MMPM/2, TCP/IP, PMCTLS, MSG); their partial lists are in `extra_modules.tsv`. (Covered since the 2026-11-24 addendum.)
   - The Warp 4 bar understates Warp 4's additions, which are mostly in such DLLs.
 - Better dating, especially of GPI after 2.0 and of Warp 3's DOSCALLS, changes only the TSV; the chart follows on the next render.
+
+## Addendum (2026-11-24): the modules outside os2386.lib
+
+The chart now also counts the modules the import library leaves out, each by its full documented export list rather than by the names Warpine maps (which would make every such row 100 %):
+
+- **`doc/compat/other_api_versions.tsv`**, dated by the same rules and documented in `SOURCES.md` (sources S20–S67):
+  - VIO / KBD / MOU: the 16-bit entry points of `os2_ordinals.md`, under the toolkit names 32-bit programs call through thunks;
+  - REXX / REXXAPI;
+  - the SOM kernel (SOM.DLL's functions and data, not methods or macros);
+  - MSG, PMCTLS, UCONV, MDM (MMPM/2), SO32DLL and TCP32DLL.
+
+  It replaces `extra_modules.tsv`. Where no public source gives an ordinal it is `-`.
+- **Matching by name.** An export of the new table counts when `targets/os2api.def` maps its module and name and that ordinal is no stub. Stubs are read per module: `STUB_ORDINALS` written `MODULE_BASE + N`, and the one-line VIO / KBD / MOU arms that say "(stub)". The os2386.lib table keeps its ordinal matching.
+- **The rows.** The headline row "All charted APIs" sums both tables, and "32-bit os2386.lib APIs" keeps the earlier total. MSG joins the Control Program row. New rows: video / keyboard / mouse, standard dialogs, SOM kernel, REXX, Unicode, multimedia and TCP/IP sockets. A version that lacked a module shows a dash, not 0 %. A test fails when a dated module has no row.
+
+**Choices in the data (unverified):**
+- The VIO / KBD / MOU 2.0 dates rest on the OS/2 1.1 / 1.2 references (Microsoft's editions, on bitsavers), because IBM's 2.0 library has no function pages for them.
+- The `Rx*` names of REXX are counted nowhere: they are 1.x entry points with no 32-bit declaration.
+- No public source lists the exports of SO32DLL and TCP32DLL. The calls are split by the TCP/IP reference's chapters (sockets → SO32DLL, network utilities → TCP32DLL), and the generator matches the two DLLs as one pool (`POOLS`), so a call Warpine maps in either counts, once.
+- MDM is dated 3.0 and the sockets 4.0, the releases that put them in the base product.
+
+The research also found two ordinal errors in Warpine's own tables, which the chart (matching by name) does not hide. They are recorded in the TODOs:
+- UCONV 2–4 and 6 disagree with Open Watcom's `libconv.lib`.
+- MDM 3 and 4 carry names no OS/2 source has: `mmpm2.lib` has `mciGetErrorString` at 3 and nothing at 4.
