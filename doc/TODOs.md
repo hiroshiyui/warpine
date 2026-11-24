@@ -86,6 +86,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
+- [ ] **An intermittent hang after `DosResumeThread`** (CI, 2026-11-25, the GCC job once): `thread_control_test` stopped after resuming a thread created with `CREATE_SUSPENDED`; the `DosWaitThread` for it never returned. Its re-run passed, and 104 local runs (64 under load) did not reproduce it. The suspend count is kept under the table's lock and the waits poll, so the start of a suspended thread, or `DosWaitThread`'s view of its end, is where to look.
 - [ ] **Threads per process**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
 - [ ] **Profiles**:
   - the program-list calls, the `PRF16*` / `WIN16*` exports;
@@ -242,13 +243,12 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **TCP/IP calls still missing** (the chart's TCP/IP row; Warpine's own ordinals per ADR-0123):
-  - the host and network databases (`sethostent` / `gethostent` / `endhostent`, `getnetbyname` / `getnetbyaddr` / `getnetent` …) and `%ETC%` files to read them from (the services database is the host's);
-  - the resolver (`res_init`, `res_mkquery`, `res_send`, `res_query`, `res_search`, `res_querydomain`), `dn_find`, compression in `dn_comp`;
+  - the resolver's `_res` state and options, TCP for answers over 512 bytes, `res_mkquery`'s other ops, `dn_find`, compression in `dn_comp`; `%ETC%` files as an alternative to the host's databases (the hosts, networks and services databases are the host's);
   - `sendmsg` / `recvmsg`, `so_cancel`, `addsockettolist` / `removesocketfromlist`, `rexec`, the SOCKS calls (`Raccept`, `Rbind`, `Rconnect`, `Rlisten`, `Rgetsockname`, `Rgethostbyname`).
 - [ ] **VIO and KBD calls still missing** (the chart's VIO / KBD row):
   - `KbdStringIn`'s line-editing keys beyond Backspace (the template recall of `cchIn`), and the TERM mode;
   - `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`, keyboard layouts other than the US one (`KbdXlate`);
-  - `VioGetFont` / `VioSetFont`, `VioGetBuf` / `VioShowBuf` (stubs), `VioSetState` / `VioSetCp` acted on by the renderer, `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
+  - `VioGetFont` / `VioSetFont` (a bitmap font of Warpine's own is needed: IBM's VGA font is not free), `VioGetBuf` / `VioShowBuf` (stubs), `VioSetState` / `VioSetCp` acted on by the renderer, `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
 - [ ] **VIO window**:
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).

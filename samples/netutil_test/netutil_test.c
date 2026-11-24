@@ -11,7 +11,11 @@
  * inet_netof, htonl / htons / ntohl / ntohs, bswap / lswap, dn_comp,
  * dn_expand, dn_skipname, _getshort / putshort, _getlong / putlong,
  * getprotobyname / getprotobynumber, setprotoent / getprotoent /
- * endprotoent.  SO32DLL: ioctl (FIONBIO, FIONREAD), writev and readv on a
+ * endprotoent, setservent / getservent / endservent, tcp_h_errno, the
+ * host and network databases (sethostent / gethostent / endhostent,
+ * setnetent / getnetent / endnetent, getnetbyname / getnetbyaddr) and the
+ * resolver's res_init, res_mkquery and res_send (no query leaves the
+ * machine).  SO32DLL: ioctl (FIONBIO, FIONREAD), writev and readv on a
  * loopback UDP socket connected to itself.
  *
  * Prints "PASS  <name>" / "FAIL  <name>", then "netutil_test: <p> passed,
@@ -204,6 +208,89 @@ static void service_checks(void)
     check("tcp_h_errno after a failed lookup", gethostbyaddr("\1\2\3\4", 4, 99) == NULL && tcp_h_errno() == 1);
 }
 
+/* struct hostent and struct netent, as <netdb.h> declares them. */
+struct hostent {
+    char  *h_name;
+    char **h_aliases;
+    int    h_addrtype;
+    int    h_length;
+    char **h_addr_list;
+};
+struct netent {
+    char  *n_name;
+    char **n_aliases;
+    int    n_addrtype;
+    u_long n_net;
+};
+typedef struct hostent *(_System *PFN_HENT)(void);
+typedef struct netent *(_System *PFN_NENT)(void);
+typedef struct netent *(_System *PFN_NNAME)(const char *);
+typedef struct netent *(_System *PFN_NADDR)(u_long, int);
+typedef int (_System *PFN_MKQ)(int, const char *, int, int, char *, int, void *, unsigned char *, int);
+typedef int (_System *PFN_RSEND)(unsigned char *, int, unsigned char *, int);
+
+static void database_checks(void)
+{
+    PFN_PSET sethostent = (PFN_PSET)find(tcp, "sethostent");
+    PFN_HENT gethostent = (PFN_HENT)find(tcp, "gethostent");
+    PFN_VOID endhostent = (PFN_VOID)find(tcp, "endhostent");
+    PFN_PSET setnetent = (PFN_PSET)find(tcp, "setnetent");
+    PFN_NENT getnetent = (PFN_NENT)find(tcp, "getnetent");
+    PFN_VOID endnetent = (PFN_VOID)find(tcp, "endnetent");
+    PFN_NNAME getnetbyname = (PFN_NNAME)find(tcp, "getnetbyname");
+    PFN_NADDR getnetbyaddr = (PFN_NADDR)find(tcp, "getnetbyaddr");
+    PFN_VOID res_init = (PFN_VOID)find(tcp, "res_init");
+    PFN_MKQ res_mkquery = (PFN_MKQ)find(tcp, "res_mkquery");
+    PFN_RSEND res_send = (PFN_RSEND)find(tcp, "res_send");
+    static const unsigned char want[] = { 1, 'a', 2, 'b', 'c', 0, 0, 1, 0, 1 };
+    unsigned char q[64], big[600];
+    struct hostent *h;
+    struct netent *n;
+    char first[64], net_name[64];
+    u_long net = 0;
+    int i, loopback = 0, agree = 1;
+    if (!sethostent || !gethostent || !endhostent || !setnetent || !getnetent || !endnetent
+        || !getnetbyname || !getnetbyaddr || !res_init || !res_mkquery || !res_send) return;
+
+    /* The host's /etc/hosts: 127.0.0.1 is in every one. */
+    sethostent(0);
+    first[0] = '\0';
+    for (i = 0; i < 4096 && (h = gethostent()) != NULL; i++) {
+        if (i == 0) strncpy(first, h->h_name, sizeof(first) - 1), first[sizeof(first) - 1] = '\0';
+        if (h->h_addrtype == AF_INET && h->h_length == 4 && memcmp(h->h_addr_list[0], "\177\0\0\1", 4) == 0) loopback = 1;
+    }
+    check("gethostent finds 127.0.0.1", loopback);
+    endhostent();
+    h = gethostent();
+    check("endhostent: gethostent starts over", h != NULL && strcmp(h->h_name, first) == 0);
+    endhostent();
+
+    /* The host's /etc/networks may be empty. */
+    setnetent(0);
+    n = getnetent();
+    if (n != NULL) {
+        strncpy(net_name, n->n_name, sizeof(net_name) - 1);
+        net_name[sizeof(net_name) - 1] = '\0';
+        net = n->n_net;
+        n = getnetbyname(net_name);
+        agree = n != NULL && n->n_net == net;
+        n = getnetbyaddr(net, AF_INET);
+        agree = agree && n != NULL && n->n_net == net;
+    }
+    endnetent();
+    check("getnetbyname / getnetbyaddr agree with getnetent", agree);
+    check("an unknown network", getnetbyname("no-such-network") == NULL);
+
+    check("res_init", res_init() == 0);
+    memset(q, 0xEE, sizeof(q));
+    check("res_mkquery: a standard query", res_mkquery(0, "a.bc", 1, 1, NULL, 0, NULL, q, sizeof(q)) == 22
+          && q[2] == 0x01 && q[5] == 1 && memcmp(q + 12, want, sizeof(want)) == 0);
+    check("res_mkquery: only QUERY", res_mkquery(5, "a.bc", 1, 1, NULL, 0, NULL, q, sizeof(q)) == -1);
+    check("res_mkquery: a buffer too small", res_mkquery(0, "a.bc", 1, 1, NULL, 0, NULL, q, 10) == -1);
+    memset(big, 0, sizeof(big));
+    check("res_send: a message over 512 bytes", res_send(big, sizeof(big), q, sizeof(q)) == -1);
+}
+
 static void socket_checks(void)
 {
     PFN_SOCKET socket = (PFN_SOCKET)find(so, "socket");
@@ -254,6 +341,7 @@ int main(void)
     resolver_checks();
     protocol_checks();
     service_checks();
+    database_checks();
     socket_checks();
     printf("netutil_test: %d passed, %d failed\n", passed, failed);
     return failed != 0;

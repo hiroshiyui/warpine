@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **The TCP/IP host and network databases and the resolver** (TCP32DLL 76–89, Warpine's own ordinals, new `src/loader/resolver.rs`): `sethostent` / `gethostent` / `endhostent`, `setnetent` / `getnetent` / `endnetent`, `getnetbyname` / `getnetbyaddr` (the host's `/etc/hosts` and `/etc/networks`), `res_init`, `res_mkquery`, `res_send` (UDP to the host's name servers), `res_query`, `res_search` and `res_querydomain`, with `h_errno`. The SDK gains `struct netent` and the resolver's declarations. `netutil_test` has 39 checks. 1017 entry points.
 - **SOM dynamic dispatch** (ADR-0126): `somDispatch`, `somClassDispatch`, `somDispatchV` / `L` / `A`, `somApply`, `somVaBuf_create` / `_add` / `_get_valist` / `_destroy` and `somvalistGetTarget` / `SetTarget`. `somidl` writes an apply stub for every method, so a class built from its bindings can be called by name from a `va_list` or a `somVaBuf`, any argument and result type included; root methods are applied directly. The SDK gains `TCKind`, `somVaBuf` and the `_somDispatch` / `_somClassDispatch` varargs forms. `som_idl_test` has 49 checks. 1003 entry points.
 - **CONFIG.SYS and profiles are fuzzed** (ADR-0112 addendum): their parsers move into `config_sys_parse.rs` and `profile_text.rs`, which build alone, and get the fuzz targets `config_sys` and `profile` (a profile must survive being written back).
 - **CONFIG.SYS's `THREADS=` checked against more sources**: they agree with Warpine's 64 to 4095 (64 by default) for Warp 3 / 4 and ArcaOS; IBM's Command Reference itself is still not available as text outside install media, so the item stays open. The sources are in the README.
@@ -14,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Extended LIBPATHs are inherited**: a child starts with its parent's BEGINLIBPATH and ENDLIBPATH, and `DosSetExtLIBPATH` expands `%BeginLIBPATH%` / `%EndLIBPATH%` and keeps to 1024 bytes. `libpath_test` has 17 checks and a child.
 
 ### Fixed
+- **A long host name overran the TCP/IP record buffer**: `gethostbyname` stored the name in a 256-byte buffer without a limit, and the servent shared that buffer, so a name over 24 bytes overwrote it and a longer one the memory after. Each record now has its own region and names are cut to fit.
 - **`DosRead` of a file returned `NO_ERROR` when it could not write the program's buffer**: it now returns `ERROR_INVALID_PARAMETER`, as for a pipe.
 
 ### Security

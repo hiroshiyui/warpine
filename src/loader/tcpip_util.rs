@@ -195,6 +195,11 @@ pub fn protocol_by_number(number: u32) -> Option<usize> {
 
 /// `h_errno` values (<netdb.h>).
 pub const HOST_NOT_FOUND: u32 = 1;
+/// `h_errno`: no answer, try again; an error it cannot recover from; the
+/// name is valid but has no data of the type asked (`<netdb.h>`).
+pub const TRY_AGAIN: u32 = 2;
+pub const NO_RECOVERY: u32 = 3;
+pub const NO_DATA: u32 = 4;
 /// The most services `getservent` lists.
 const MAX_SERVICES: usize = 4096;
 /// libc's services cursor is process-wide state: one reader at a time.
@@ -381,6 +386,178 @@ impl super::Loader {
         sockets.services = None;
         sockets.serv_cursor = 0;
         0
+    }
+
+    // ── The host and network databases, the resolver (resolver.rs) ─────
+
+    /// sethostent(stayopen): read the host's `/etc/hosts` and start at its
+    /// first entry.
+    pub fn net_sethostent(&self) -> u32 {
+        let hosts = super::resolver::parse_hosts(&super::resolver::read_bounded("/etc/hosts"));
+        let mut sockets = self.shared.socket_mgr.lock_or_recover();
+        sockets.hosts = Some(hosts);
+        sockets.host_cursor = 0;
+        0
+    }
+
+    /// gethostent: the next host, or 0 at the end.
+    pub fn net_gethostent(&self) -> u32 {
+        if self.shared.socket_mgr.lock_or_recover().hosts.is_none() { self.net_sethostent(); }
+        let next = {
+            let mut sockets = self.shared.socket_mgr.lock_or_recover();
+            let i = sockets.host_cursor;
+            let entry = sockets.hosts.as_ref().and_then(|v| v.get(i).cloned());
+            if entry.is_some() { sockets.host_cursor += 1; }
+            entry
+        };
+        next.map_or(0, |(name, ip)| self.write_hostent_to_scratch(&name, ip))
+    }
+
+    /// endhostent: forget the database and its place.
+    pub fn net_endhostent(&self) -> u32 {
+        let mut sockets = self.shared.socket_mgr.lock_or_recover();
+        sockets.hosts = None;
+        sockets.host_cursor = 0;
+        0
+    }
+
+    fn host_networks() -> Vec<(String, u32)> {
+        super::resolver::parse_networks(&super::resolver::read_bounded("/etc/networks"))
+    }
+
+    /// setnetent(stayopen): read the host's `/etc/networks`.
+    pub fn net_setnetent(&self) -> u32 {
+        let nets = Self::host_networks();
+        let mut sockets = self.shared.socket_mgr.lock_or_recover();
+        sockets.networks = Some(nets);
+        sockets.net_cursor = 0;
+        0
+    }
+
+    /// getnetent: the next network, or 0 at the end.
+    pub fn net_getnetent(&self) -> u32 {
+        if self.shared.socket_mgr.lock_or_recover().networks.is_none() { self.net_setnetent(); }
+        let next = {
+            let mut sockets = self.shared.socket_mgr.lock_or_recover();
+            let i = sockets.net_cursor;
+            let entry = sockets.networks.as_ref().and_then(|v| v.get(i).cloned());
+            if entry.is_some() { sockets.net_cursor += 1; }
+            entry
+        };
+        next.map_or(0, |(name, net)| self.write_netent_to_scratch(&name, net))
+    }
+
+    /// endnetent: forget the database and its place.
+    pub fn net_endnetent(&self) -> u32 {
+        let mut sockets = self.shared.socket_mgr.lock_or_recover();
+        sockets.networks = None;
+        sockets.net_cursor = 0;
+        0
+    }
+
+    /// getnetbyname(name): the network of that name, or 0.
+    pub fn net_getnetbyname(&self, p: u32) -> u32 {
+        let name = self.read_guest_string(p);
+        Self::host_networks().into_iter().find(|(n, _)| *n == name)
+            .map_or(0, |(n, net)| self.write_netent_to_scratch(&n, net))
+    }
+
+    /// getnetbyaddr(net, type): the network of that number (AF_INET), or 0.
+    pub fn net_getnetbyaddr(&self, net: u32, kind: u32) -> u32 {
+        if kind != libc::AF_INET as u32 { return 0; }
+        Self::host_networks().into_iter().find(|&(_, n)| n == net)
+            .map_or(0, |(n, net)| self.write_netent_to_scratch(&n, net))
+    }
+
+    /// res_init: nothing to read ahead (every resolver call reads
+    /// `/etc/resolv.conf`); 0.
+    pub fn net_res_init(&self) -> u32 { 0 }
+
+    /// res_mkquery(op, dname, class, type, data, datalen, newrr, buf,
+    /// buflen): a standard query for `dname` in `buf`; its length, or -1
+    /// (another op than QUERY, a bad name, a buffer too small).
+    pub fn net_res_mkquery(&self, a: &[u32; 10]) -> u32 {
+        const FAIL: u32 = u32::MAX;
+        let (op, dname, class, qtype, buf, buflen) = (a[0], a[1], a[2], a[3], a[7], a[8]);
+        if op != super::resolver::QUERY { return FAIL; }
+        let name = self.read_guest_string(dname);
+        let id = {
+            let mut sockets = self.shared.socket_mgr.lock_or_recover();
+            sockets.query_id = sockets.query_id.wrapping_add(1);
+            sockets.query_id
+        };
+        let Some(q) = super::resolver::make_query(id, name.as_bytes(), class as u16, qtype as u16) else { return FAIL };
+        if q.len() > buflen as usize || self.guest_write_bytes(buf, &q).is_none() { return FAIL; }
+        q.len() as u32
+    }
+
+    /// The message at `msg` (`len` bytes) sent to the host's name servers;
+    /// the answer, or None (with `SOCETIMEDOUT`).
+    fn res_exchange(&self, msg: &[u8]) -> Option<Vec<u8>> {
+        let (servers, _) = super::resolver::host_resolver();
+        let answer = super::resolver::exchange(msg, &servers, super::resolver::server_wait());
+        if answer.is_none() { self.shared.socket_mgr.lock_or_recover().set_errno(super::tcpip::SOCE_TIMEDOUT); }
+        answer
+    }
+
+    /// res_send(msg, msglen, answer, anslen): the message sent, the answer
+    /// (cut to `anslen`) at `answer`; its whole length, or -1.
+    pub fn net_res_send(&self, msg: u32, msglen: u32, answer: u32, anslen: u32) -> u32 {
+        if msglen as usize > super::resolver::MAX_UDP_MESSAGE { return u32::MAX; }
+        let Some(m) = self.guest_read_buffer(msg, msglen as usize) else { return u32::MAX };
+        let Some(a) = self.res_exchange(&m) else { return u32::MAX };
+        let n = a.len().min(anslen as usize);
+        if self.guest_write_bytes(answer, &a[..n]).is_none() { return u32::MAX; }
+        a.len() as u32
+    }
+
+    /// One query for `name`: the answer's length at `answer`, or -1 with
+    /// `h_errno` (`HOST_NOT_FOUND` for NXDOMAIN, `NO_DATA` for none of the
+    /// type, `TRY_AGAIN` without an answer, `NO_RECOVERY` for other errors).
+    fn res_query_name(&self, name: &str, class: u32, qtype: u32, answer: u32, anslen: u32) -> u32 {
+        let id = {
+            let mut sockets = self.shared.socket_mgr.lock_or_recover();
+            sockets.query_id = sockets.query_id.wrapping_add(1);
+            sockets.query_id
+        };
+        let set = |e: u32| { self.shared.socket_mgr.lock_or_recover().h_errno = e; u32::MAX };
+        let Some(q) = super::resolver::make_query(id, name.as_bytes(), class as u16, qtype as u16) else { return set(NO_RECOVERY) };
+        let Some(a) = self.res_exchange(&q) else { return set(TRY_AGAIN) };
+        let n = a.len().min(anslen as usize);
+        if self.guest_write_bytes(answer, &a[..n]).is_none() { return set(NO_RECOVERY); }
+        match super::resolver::answer_status(&a, id) {
+            None => set(TRY_AGAIN),
+            Some((super::resolver::RCODE_NXDOMAIN, _)) => set(HOST_NOT_FOUND),
+            Some((0, 0)) => set(NO_DATA),
+            Some((0, _)) => a.len() as u32,
+            Some(_) => set(TRY_AGAIN),
+        }
+    }
+
+    /// res_query(dname, class, type, answer, anslen).
+    pub fn net_res_query(&self, dname: u32, class: u32, qtype: u32, answer: u32, anslen: u32) -> u32 {
+        let name = self.read_guest_string(dname);
+        self.res_query_name(&name, class, qtype, answer, anslen)
+    }
+
+    /// res_search(dname, class, type, answer, anslen): res_query on each
+    /// name of the search list (`resolver::search_names`); the first answer.
+    pub fn net_res_search(&self, dname: u32, class: u32, qtype: u32, answer: u32, anslen: u32) -> u32 {
+        let name = self.read_guest_string(dname);
+        let (_, search) = super::resolver::host_resolver();
+        for candidate in super::resolver::search_names(&name, &search) {
+            let r = self.res_query_name(&candidate, class, qtype, answer, anslen);
+            if r != u32::MAX { return r; }
+        }
+        u32::MAX
+    }
+
+    /// res_querydomain(name, domain, class, type, answer, anslen): res_query
+    /// of `name.domain` (`name` when `domain` is NULL).
+    pub fn net_res_querydomain(&self, a: &[u32; 10]) -> u32 {
+        let name = self.read_guest_string(a[0]);
+        let full = if a[1] == 0 { name } else { format!("{}.{}", name.trim_end_matches('.'), self.read_guest_string(a[1])) };
+        self.res_query_name(&full, a[2], a[3], a[4], a[5])
     }
 
     /// dn_expand: unpack the name at `comp` of the message `[msg, eom)`

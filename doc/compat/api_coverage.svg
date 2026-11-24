@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="1026" viewBox="0 0 760 1026" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
 <title id="t">Warpine API coverage</title>
-<desc id="d">Share of the charted OS/2 API that Warpine implements: OS/2 2.0 71% (742 of 1049), OS/2 Warp 3 69% (777 of 1122), OS/2 Warp 4 69% (845 of 1230).</desc>
+<desc id="d">Share of the charted OS/2 API that Warpine implements: OS/2 2.0 71% (742 of 1049), OS/2 Warp 3 69% (777 of 1122), OS/2 Warp 4 70% (859 of 1230).</desc>
 <rect width="760" height="1026" rx="8" fill="#fcfcfb"/>
 <text x="24" y="34" font-size="17" font-weight="600" fill="#0b0b0b">Warpine API coverage of OS/2 2.0, Warp 3 and Warp 4</text>
 <text x="24" y="55" font-size="12.5" fill="#52514e">Share of each version's API that Warpine implements (stubs not counted)</text>
@@ -25,8 +25,8 @@
 <text x="503" y="114" font-size="11" fill="#52514e">71% · 742/1049</text>
 <path d="M214 118h273a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-273z" fill="#eb6834"><title>OS/2 Warp 3: 69% (777 of 1122)</title></path>
 <text x="497" y="128" font-size="11" fill="#52514e">69% · 777/1122</text>
-<path d="M214 132h271a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-271z" fill="#1baf7a"><title>OS/2 Warp 4: 69% (845 of 1230)</title></path>
-<text x="495" y="142" font-size="11" fill="#52514e">69% · 845/1230</text>
+<path d="M214 132h275a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-275z" fill="#1baf7a"><title>OS/2 Warp 4: 70% (859 of 1230)</title></path>
+<text x="499" y="142" font-size="11" fill="#52514e">70% · 859/1230</text>
 <text x="24" y="182" font-size="12.5" font-weight="400" fill="#0b0b0b">32-bit os2386.lib APIs</text>
 <path d="M214 158h273a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-273z" fill="#2a78d6"><title>OS/2 2.0: 69% (598 of 862)</title></path>
 <text x="497" y="168" font-size="11" fill="#52514e">69% · 598/862</text>
@@ -125,8 +125,8 @@
 <text x="24" y="938" font-size="12.5" font-weight="400" fill="#0b0b0b">TCP/IP sockets</text>
 <text x="220" y="924" font-size="11" fill="#52514e">—</text>
 <text x="220" y="938" font-size="11" fill="#52514e">—</text>
-<path d="M214 942h259a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-259z" fill="#1baf7a"><title>OS/2 Warp 4: 66% (52 of 79)</title></path>
-<text x="483" y="952" font-size="11" fill="#52514e">66% · 52/79</text>
+<path d="M214 942h330a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-330z" fill="#1baf7a"><title>OS/2 Warp 4: 84% (66 of 79)</title></path>
+<text x="554" y="952" font-size="11" fill="#52514e">84% · 66/79</text>
 <text x="24" y="998" font-size="10.5" fill="#898781">1230 dated exports: 912 of the Open Watcom os2386.lib, 318 of the other modules; 44 dated after 4.0 or undated are left out.</text>
 <text x="24" y="1013" font-size="10.5" fill="#898781">Dating sources: doc/compat/SOURCES.md. Generated from Warpine's source by gen_compat.</text>
 </svg>

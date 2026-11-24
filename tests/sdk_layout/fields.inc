@@ -1084,6 +1084,11 @@
     P("MCI_STATUS_PARMS.ulReturn", offsetof(MCI_STATUS_PARMS, ulReturn));
     P("MCI_STATUS_PARMS.ulItem", offsetof(MCI_STATUS_PARMS, ulItem));
     P("MCI_STATUS_PARMS.ulValue", offsetof(MCI_STATUS_PARMS, ulValue));
+    P("netent", sizeof(struct netent));
+    P("netent.n_name", offsetof(struct netent, n_name));
+    P("netent.n_aliases", offsetof(struct netent, n_aliases));
+    P("netent.n_addrtype", offsetof(struct netent, n_addrtype));
+    P("netent.n_net", offsetof(struct netent, n_net));
     P("hostent", sizeof(struct hostent));
     P("hostent.h_name", offsetof(struct hostent, h_name));
     P("hostent.h_aliases", offsetof(struct hostent, h_aliases));

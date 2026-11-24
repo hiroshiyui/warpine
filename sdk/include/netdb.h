@@ -33,6 +33,13 @@ struct protoent {
     int    p_proto;
 };
 
+struct netent {
+    char         *n_name;
+    char        **n_aliases;
+    int           n_addrtype;
+    unsigned long n_net;
+};
+
 struct hostent * APIENTRY gethostbyname(char *name);
 struct hostent * APIENTRY gethostbyaddr(char *addr, int len, int type);
 int APIENTRY gethostname(char *name, int namelen);
@@ -46,6 +53,14 @@ void APIENTRY endprotoent(void);
 void APIENTRY setservent(int stayopen);
 struct servent * APIENTRY getservent(void);
 void APIENTRY endservent(void);
+void APIENTRY sethostent(int stayopen);
+struct hostent * APIENTRY gethostent(void);
+void APIENTRY endhostent(void);
+void APIENTRY setnetent(int stayopen);
+struct netent * APIENTRY getnetent(void);
+void APIENTRY endnetent(void);
+struct netent * APIENTRY getnetbyname(char *name);
+struct netent * APIENTRY getnetbyaddr(unsigned long net, int type);
 
 /* The resolver's last error. */
 int APIENTRY tcp_h_errno(void);

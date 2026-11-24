@@ -202,6 +202,16 @@ fn select_ready(p: &libc::pollfd) -> bool {
 
 // ── SocketManager ─────────────────────────────────────────────────────────────
 
+/// The database records' scratch buffer: a region each for the hostent,
+/// servent and netent last returned (as OS/2's static records are), so one
+/// call does not overwrite another's record, and every name is cut to its
+/// region.
+const SCRATCH_REGION: u32 = 0x100;
+const SCRATCH_HOSTENT: u32 = 0;
+const SCRATCH_SERVENT: u32 = SCRATCH_REGION;
+const SCRATCH_NETENT: u32 = 2 * SCRATCH_REGION;
+const SCRATCH_SIZE: u32 = 3 * SCRATCH_REGION;
+
 /// Tracks live OS/2 socket handles → Linux fd mappings and per-process state.
 pub struct SocketManager {
     /// OS/2 socket handle → Linux file descriptor.
@@ -225,6 +235,14 @@ pub struct SocketManager {
     pub services: Option<Vec<(String, i32, String)>>,
     /// `getservent`'s place in it.
     pub serv_cursor: usize,
+    /// The host and network databases `sethostent` / `setnetent` read,
+    /// and the places of `gethostent` / `getnetent` in them.
+    pub hosts: Option<Vec<(String, [u8; 4])>>,
+    pub host_cursor: usize,
+    pub networks: Option<Vec<(String, u32)>>,
+    pub net_cursor: usize,
+    /// The id of the next `res_mkquery` message.
+    pub query_id: u16,
 }
 
 impl Default for SocketManager {
@@ -244,6 +262,11 @@ impl SocketManager {
             h_errno: 0,
             services: None,
             serv_cursor: 0,
+            hosts: None,
+            host_cursor: 0,
+            networks: None,
+            net_cursor: 0,
+            query_id: (std::process::id() as u16) ^ 0x5A5A,
         }
     }
 
@@ -1314,21 +1337,23 @@ impl super::Loader {
     ///   +0x1C  addr_list:  [ptr u32, null u32]  (8 bytes)
     ///   +0x24  ipv4 addr                         (4 bytes)
     ///   +0x28  name string (null-terminated)
-    fn write_hostent_to_scratch(&self, hostname: &str, ip: [u8; 4]) -> u32 {
+    pub(crate) fn write_hostent_to_scratch(&self, hostname: &str, ip: [u8; 4]) -> u32 {
         let scratch = self.ensure_hostent_scratch();
         if scratch == 0 {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOBUFS);
             return 0;
         }
 
-        let hostent_base  = scratch;
-        let alias_base    = scratch + 0x18;
-        let addrlist_base = scratch + 0x1C;
-        let ip_base       = scratch + 0x24;
-        let name_base     = scratch + 0x28;
+        let hostent_base  = scratch + SCRATCH_HOSTENT;
+        let alias_base    = hostent_base + 0x18;
+        let addrlist_base = hostent_base + 0x1C;
+        let ip_base       = hostent_base + 0x24;
+        let name_base     = hostent_base + 0x28;
 
-        // Write name string.
-        let name_bytes: Vec<u8> = hostname.bytes().chain(std::iter::once(0)).collect();
+        // Write name string, cut to its region: a guest's name may be any
+        // length, and the regions after this one hold the other records.
+        let room = (SCRATCH_REGION - 0x28 - 1) as usize;
+        let name_bytes: Vec<u8> = hostname.bytes().take(room).chain(std::iter::once(0)).collect();
         self.guest_write_bytes(name_base, &name_bytes);
 
         // Write IPv4 address bytes.
@@ -1355,7 +1380,7 @@ impl super::Loader {
 
     /// Write a resolved servent into the scratch buffer and return its guest address.
     ///
-    /// Layout at scratch + 0x40 (avoids collision with hostent at scratch + 0x00):
+    /// Layout at scratch + `SCRATCH_SERVENT` (its own region):
     ///   +0x00  s_name    u32  ptr to service name
     ///   +0x04  s_aliases u32  ptr to null alias list
     ///   +0x08  s_port    i32  port in network byte order
@@ -1367,8 +1392,8 @@ impl super::Loader {
             return 0;
         }
 
-        // Cap name length to fit within the 256-byte scratch layout (name at +0x58, proto after).
-        let max_name_len = 256usize.saturating_sub(0x58 + 2); // leave 2 bytes for proto + NUL
+        // Cap name length to fit within the region (name at +0x18, proto after).
+        let max_name_len = (SCRATCH_REGION as usize).saturating_sub(0x18 + 2); // leave 2 bytes for proto + NUL
         let host_name = if svc_name.len() > max_name_len {
             warn!("getservbyname: service name too long for scratch buffer; truncating");
             &svc_name[..max_name_len]
@@ -1376,13 +1401,13 @@ impl super::Loader {
             svc_name
         };
 
-        let servent_base  = scratch + 0x40;
-        let alias_base    = scratch + 0x54;
-        let sname_base    = scratch + 0x58;
+        let servent_base  = scratch + SCRATCH_SERVENT;
+        let alias_base    = servent_base + 0x14;
+        let sname_base    = servent_base + 0x18;
         let sproto_base   = sname_base + host_name.len() as u32 + 1;
 
-        // Check that proto fits within the 256-byte scratch area.
-        let scratch_end = scratch + 256;
+        // Check that proto fits within the region.
+        let scratch_end = servent_base + SCRATCH_REGION;
         let max_proto_len = scratch_end.saturating_sub(sproto_base + 1) as usize;
         let host_proto = if proto_name.len() > max_proto_len {
             warn!("getservbyname: protocol name too long for scratch buffer; truncating");
@@ -1439,12 +1464,36 @@ impl super::Loader {
         }
     }
 
-    /// Ensure the hostent/servent scratch buffer is allocated in guest memory.
-    /// Returns the guest address of the 256-byte scratch area, or 0 on OOM.
+    /// Write a netent (`getnetent`, `getnetbyname`, `getnetbyaddr`) into
+    /// its scratch region: n_name, n_aliases (an empty list), n_addrtype
+    /// (AF_INET), n_net (host order); its guest address, 0 on OOM.
+    pub(crate) fn write_netent_to_scratch(&self, name: &str, net: u32) -> u32 {
+        let scratch = self.ensure_hostent_scratch();
+        if scratch == 0 {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOBUFS);
+            return 0;
+        }
+        let base = scratch + SCRATCH_NETENT;
+        let (alias_base, name_base) = (base + 0x10, base + 0x14);
+        let room = (SCRATCH_REGION - 0x14 - 1) as usize;
+        let name_bytes: Vec<u8> = name.bytes().take(room).chain(std::iter::once(0)).collect();
+        self.guest_write_bytes(name_base, &name_bytes);
+        let _ = self.guest_write::<u32>(alias_base, 0);
+        let _ = self.guest_write::<u32>(base, name_base);
+        let _ = self.guest_write::<u32>(base + 0x04, alias_base);
+        let _ = self.guest_write::<i32>(base + 0x08, libc::AF_INET);
+        let _ = self.guest_write::<u32>(base + 0x0C, net);
+        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        base
+    }
+
+    /// Ensure the database records' scratch buffer is allocated in guest
+    /// memory: one region each for the hostent, servent and netent the
+    /// last call returned (`SCRATCH_*`). Its guest address, or 0 on OOM.
     fn ensure_hostent_scratch(&self) -> u32 {
         let existing = self.shared.socket_mgr.lock_or_recover().scratch_addr;
         if let Some(addr) = existing { return addr; }
-        match self.shared.mem_mgr.lock_or_recover().alloc(256) {
+        match self.shared.mem_mgr.lock_or_recover().alloc(SCRATCH_SIZE) {
             Some(addr) => {
                 self.shared.socket_mgr.lock_or_recover().scratch_addr = Some(addr);
                 addr
@@ -1462,6 +1511,24 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each database record has its own region of the scratch buffer, and a
+    /// name is cut to its region: a long host name (a guest's
+    /// gethostbyname argument) leaves the servent and netent alone.
+    #[test]
+    fn database_records_keep_to_their_regions() {
+        let l = Loader::new_mock();
+        let se = l.write_servent_to_scratch("ssh", 22, "tcp");
+        let ne = l.write_netent_to_scratch("loopback", 127);
+        let he = l.write_hostent_to_scratch(&"h".repeat(1000), [127, 0, 0, 1]);
+        assert_eq!((se - he, ne - he), (SCRATCH_SERVENT, SCRATCH_NETENT));
+        let name = l.guest_read::<u32>(he).unwrap();
+        let stored = l.read_guest_string(name);
+        assert_eq!(stored.len(), (SCRATCH_REGION - 0x28 - 1) as usize, "cut to the region");
+        assert_eq!(l.read_guest_string(l.guest_read::<u32>(se).unwrap()), "ssh", "the servent is intact");
+        assert_eq!(l.read_guest_string(l.guest_read::<u32>(ne).unwrap()), "loopback");
+        assert_eq!(l.guest_read::<u32>(ne + 0x0C), Some(127), "n_net");
+    }
     use super::super::Loader;
 
     // ── errno_to_soce ─────────────────────────────────────────────────────────
