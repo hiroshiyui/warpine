@@ -29,7 +29,7 @@ Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, A
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111; a seccomp deny list per role, ADR-0124):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested, and so is the seccomp deny list;
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps, pointers, WAV files and the dialog / menu / accelerator / string / `PRESPARAMS` resources, a minute per target on each push and ten minutes weekly): the font and help-file readers when Warpine reads guest-supplied ones.
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps, pointers, WAV files and the dialog / menu / accelerator / string / `PRESPARAMS` resources, CONFIG.SYS and profiles, a minute per target on each push and ten minutes weekly): the font and help-file readers once Warpine reads guest-supplied ones (it reads none today: built-in fonts, `GpiLoadFonts` a stub, help libraries named only).
 
 ---
 
@@ -91,7 +91,7 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - the program-list calls, the `PRF16*` / `WIN16*` exports;
   - binary OS/2 INI files (format unpublished).
 - [ ] **CONFIG.SYS** (ADR-0032, 0092):
-  - check the `THREADS=` range (32 or 64? 4095 or 4096?) and the parsing rules against IBM's Command Reference itself (`CMDREF.INF`): a web search found only secondary sources, which disagree (`config_sys.rs`);
+  - check the `THREADS=` range and the parsing rules against IBM's Command Reference itself (`CMDREF.INF`) once a text copy outside install media turns up: two searches (the second 2026-11-25) found only secondary sources, which agree on 64 to 4095 with 64 as the default for Warp 3 / 4 and ArcaOS (Warpine's values) but say nothing of clamping, keyword case, spaces or `REM` (`config_sys.rs`);
   - `MAXWAIT`, `DPATH` use, ….
 - [ ] **Compatibility chart** (ADR-0033):
   - date the `unknown` exports (22 of os2386.lib, 7 of the other modules);

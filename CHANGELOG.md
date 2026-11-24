@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **CONFIG.SYS and profiles are fuzzed** (ADR-0112 addendum): their parsers move into `config_sys_parse.rs` and `profile_text.rs`, which build alone, and get the fuzz targets `config_sys` and `profile` (a profile must survive being written back).
+- **CONFIG.SYS's `THREADS=` checked against more sources**: they agree with Warpine's 64 to 4095 (64 by default) for Warp 3 / 4 and ArcaOS; IBM's Command Reference itself is still not available as text outside install media, so the item stays open. The sources are in the README.
 - **`KbdStringIn` follows the keyboard's mode**: ASCII mode edits with Backspace, ends at the turnaround character `KbdSetStatus` set and echoes only with echo on; binary mode keeps every byte, never echoes, and ends when the buffer is full. The keyboard now starts as the KBD reference says, in ASCII mode (with echo on), and `KbdGetStatus` reports it so. `vio_kbd_test` has 59 checks.
 - **Extended LIBPATHs are inherited**: a child starts with its parent's BEGINLIBPATH and ENDLIBPATH, and `DosSetExtLIBPATH` expands `%BeginLIBPATH%` / `%EndLIBPATH%` and keeps to 1024 bytes. `libpath_test` has 17 checks and a child.
 
