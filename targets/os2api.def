@@ -574,32 +574,54 @@ PMGPI.649     GpiSetTextAlignment
 PMGPI.650     GpiPolygons
 
 # ── KBDCALLS ──────────────────────────────────────────────────────────────────
+KBDCALLS.3    KbdGetCp
 KBDCALLS.4    KbdCharIn
+KBDCALLS.5    KbdSetCp
+KBDCALLS.7    KbdSynch
 KBDCALLS.9    KbdStringIn
 KBDCALLS.10   KbdGetStatus
+KBDCALLS.11   KbdSetStatus
+KBDCALLS.12   KbdGetFocus
+KBDCALLS.13   KbdFlushBuffer
+KBDCALLS.17   KbdClose
+KBDCALLS.18   KbdFreeFocus
+KBDCALLS.22   KbdPeek
+KBDCALLS.23   KbdOpen
+KBDCALLS.24   KbdGetHWID
 
 # ── VIOCALLS ──────────────────────────────────────────────────────────────────
+VIOCALLS.1    VioEndPopUp
 VIOCALLS.3    VioGetAnsi
 VIOCALLS.5    VioSetAnsi
 VIOCALLS.7    VioScrollUp
 VIOCALLS.9    VioGetCurPos
 VIOCALLS.10   VioWrtCellStr
+VIOCALLS.11   VioPopUp
+VIOCALLS.12   VioScrollRt
+VIOCALLS.13   VioWrtCharStr
 VIOCALLS.15   VioSetCurPos
+VIOCALLS.18   VioScrUnLock
 VIOCALLS.19   VioWrtTTY
 VIOCALLS.21   VioGetMode
 VIOCALLS.22   VioSetMode
+VIOCALLS.23   VioScrLock
 VIOCALLS.24   VioReadCellStr
 VIOCALLS.26   VioWrtNAttr
 VIOCALLS.27   VioGetCurType
+VIOCALLS.30   VioReadCharStr
 VIOCALLS.31   VioGetBuf
 VIOCALLS.32   VioSetCurType
+VIOCALLS.40   VioGetCp
 VIOCALLS.42   VioSetCp
 VIOCALLS.43   VioShowBuf
+VIOCALLS.44   VioScrollLf
 VIOCALLS.46   VioGetConfig
 VIOCALLS.47   VioScrollDn
 VIOCALLS.48   VioWrtCharStrAtt
+VIOCALLS.49   VioGetState
 VIOCALLS.51   VioSetState
 VIOCALLS.52   VioWrtNCell
+VIOCALLS.53   VioWrtNChar
 VIOCALLS.75   VioCheckCharType
 
 # ── NLS (ordinal relative to module, linker uses NLS.N) ──────────────────────

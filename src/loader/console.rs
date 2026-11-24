@@ -98,6 +98,12 @@ pub struct VioManager {
     /// DosRead(fd=0).  Used to prevent backspace from erasing beyond the start
     /// of the current input line (e.g. into the shell prompt).
     pub stdin_cooked_chars: i32,
+    /// The screen under the pop-up `VioPopUp` opened, if one is up.
+    pub popup: Option<super::vio_text::SavedScreen>,
+    /// The thread holding `VioScrLock`, if any.
+    pub scr_lock: Option<u32>,
+    /// The logical keyboard's state (KBD calls).
+    pub kbd: super::vio_text::KbdState,
 }
 
 impl Default for VioManager {
@@ -129,6 +135,9 @@ impl VioManager {
             original_termios: None,
             stdin_pending_lf: false,
             stdin_cooked_chars: 0,
+            popup: None,
+            scr_lock: None,
+            kbd: super::vio_text::KbdState::default(),
         }
     }
 
@@ -189,6 +198,9 @@ impl VioManager {
 
     /// Enable terminal raw mode for keyboard input.
     /// No-op in SDL text mode (keyboard events come from SDL instead).
+    /// Whether the host terminal is in raw mode (`enable_raw_mode`).
+    pub fn is_raw_mode(&self) -> bool { self.raw_mode_active }
+
     pub fn enable_raw_mode(&mut self) {
         if self.raw_mode_active || self.sdl_mode { return; }
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
@@ -848,7 +860,7 @@ impl TtyOut {
 }
 
 /// Terminal SGR escape for a VIO attribute byte.
-fn ansi_attr_escape(attr: u8) -> String {
+pub(crate) fn ansi_attr_escape(attr: u8) -> String {
     let fg = CGA_TO_ANSI_FG[(attr & 0x07) as usize];
     let bg = CGA_TO_ANSI_BG[((attr >> 4) & 0x07) as usize];
     if attr & 0x08 != 0 {

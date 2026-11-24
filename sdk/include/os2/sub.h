@@ -150,6 +150,59 @@ OS2_PASCAL_API(APIRET16, VioSetState, (PVOID pState, HVIO hvio),
 OS2_PASCAL_API(APIRET16, VioCheckCharType, (PUSHORT pType, USHORT usRow, USHORT usColumn, HVIO hvio),
                (ULONG hvio, ULONG usColumn, ULONG usRow, PUSHORT pType), (hvio, usColumn, usRow, pType))
 
+/* VioGetState / VioSetState requests (cb, type, ...). */
+typedef struct _VIOPALSTATE {
+    USHORT cb;
+    USHORT type;
+    USHORT iFirst;
+    USHORT acolor[1];
+} VIOPALSTATE, *PVIOPALSTATE;
+
+typedef struct _VIOOVERSCAN {
+    USHORT cb;
+    USHORT type;
+    USHORT color;
+} VIOOVERSCAN, *PVIOOVERSCAN;
+
+typedef struct _VIOINTENSITY {
+    USHORT cb;
+    USHORT type;
+    USHORT fs;
+} VIOINTENSITY, *PVIOINTENSITY;
+
+OS2_PASCAL_API(APIRET16, VioWrtCharStr, (PCCH pch, USHORT cb, USHORT usRow, USHORT usColumn, HVIO hvio),
+               (ULONG hvio, ULONG usColumn, ULONG usRow, ULONG cb, PCCH pch), (hvio, usColumn, usRow, cb, pch))
+
+OS2_PASCAL_API(APIRET16, VioWrtNChar, (PCCH pch, USHORT cb, USHORT usRow, USHORT usColumn, HVIO hvio),
+               (ULONG hvio, ULONG usColumn, ULONG usRow, ULONG cb, PCCH pch), (hvio, usColumn, usRow, cb, pch))
+
+OS2_PASCAL_API(APIRET16, VioReadCharStr, (PCH pch, PUSHORT pcb, USHORT usRow, USHORT usColumn, HVIO hvio),
+               (ULONG hvio, ULONG usColumn, ULONG usRow, PUSHORT pcb, PCH pch), (hvio, usColumn, usRow, pcb, pch))
+
+OS2_PASCAL_API(APIRET16, VioScrollLf, (USHORT usTopRow, USHORT usLeftCol, USHORT usBotRow, USHORT usRightCol, USHORT cbCol, PBYTE pCell, HVIO hvio),
+               (ULONG hvio, PBYTE pCell, ULONG cbCol, ULONG usRightCol, ULONG usBotRow, ULONG usLeftCol, ULONG usTopRow), (hvio, pCell, cbCol, usRightCol, usBotRow, usLeftCol, usTopRow))
+
+OS2_PASCAL_API(APIRET16, VioScrollRt, (USHORT usTopRow, USHORT usLeftCol, USHORT usBotRow, USHORT usRightCol, USHORT cbCol, PBYTE pCell, HVIO hvio),
+               (ULONG hvio, PBYTE pCell, ULONG cbCol, ULONG usRightCol, ULONG usBotRow, ULONG usLeftCol, ULONG usTopRow), (hvio, pCell, cbCol, usRightCol, usBotRow, usLeftCol, usTopRow))
+
+OS2_PASCAL_API(APIRET16, VioGetCp, (USHORT usReserved, PUSHORT pIdCodePage, HVIO hvio),
+               (ULONG hvio, PUSHORT pIdCodePage, ULONG usReserved), (hvio, pIdCodePage, usReserved))
+
+OS2_PASCAL_API(APIRET16, VioPopUp, (PUSHORT pfWait, HVIO hvio),
+               (ULONG hvio, PUSHORT pfWait), (hvio, pfWait))
+
+OS2_PASCAL_API(APIRET16, VioEndPopUp, (HVIO hvio),
+               (ULONG hvio), (hvio))
+
+OS2_PASCAL_API(APIRET16, VioScrLock, (USHORT fWait, PUCHAR pfNotLocked, HVIO hvio),
+               (ULONG hvio, PUCHAR pfNotLocked, ULONG fWait), (hvio, pfNotLocked, fWait))
+
+OS2_PASCAL_API(APIRET16, VioScrUnLock, (HVIO hvio),
+               (ULONG hvio), (hvio))
+
+OS2_PASCAL_API(APIRET16, VioGetState, (PVOID pState, HVIO hvio),
+               (ULONG hvio, PVOID pState), (hvio, pState))
+
 
 /* ── KBD ────────────────────────────────────────────────────────────── */
 
@@ -160,6 +213,10 @@ OS2_PASCAL_API(APIRET16, VioCheckCharType, (PUSHORT pType, USHORT usRow, USHORT 
 #define KEYBOARD_ECHO_OFF     0x0002
 #define KEYBOARD_BINARY_MODE  0x0004
 #define KEYBOARD_ASCII_MODE   0x0008
+#define KEYBOARD_MODIFY_STATE      0x0010
+#define KEYBOARD_MODIFY_INTERIM    0x0020
+#define KEYBOARD_MODIFY_TURNAROUND 0x0040
+#define KEYBOARD_2B_TURNAROUND     0x0080
 
 typedef struct _KBDKEYINFO {
     UCHAR  chChar;
@@ -178,6 +235,13 @@ typedef struct _KBDINFO {
     USHORT fsState;
 } KBDINFO, *PKBDINFO;
 
+typedef struct _KBDHWID {
+    USHORT cb;
+    USHORT idKbd;
+    USHORT reserved1;
+    USHORT reserved2;
+} KBDHWID, *PKBDHWID;
+
 typedef struct _STRINGINBUF {
     USHORT cb;
     USHORT cchIn;
@@ -191,6 +255,39 @@ OS2_PASCAL_API(APIRET16, KbdStringIn, (PCH pch, PSTRINGINBUF pchIn, USHORT fsWai
 
 OS2_PASCAL_API(APIRET16, KbdGetStatus, (PKBDINFO pkbdinfo, HKBD hkbd),
                (ULONG hkbd, PKBDINFO pkbdinfo), (hkbd, pkbdinfo))
+
+OS2_PASCAL_API(APIRET16, KbdSetStatus, (PKBDINFO pkbdinfo, HKBD hkbd),
+               (ULONG hkbd, PKBDINFO pkbdinfo), (hkbd, pkbdinfo))
+
+OS2_PASCAL_API(APIRET16, KbdPeek, (PKBDKEYINFO pkbci, HKBD hkbd),
+               (ULONG hkbd, PKBDKEYINFO pkbci), (hkbd, pkbci))
+
+OS2_PASCAL_API(APIRET16, KbdFlushBuffer, (HKBD hkbd),
+               (ULONG hkbd), (hkbd))
+
+OS2_PASCAL_API(APIRET16, KbdGetCp, (ULONG ulReserved, PUSHORT pidCP, HKBD hkbd),
+               (ULONG hkbd, PUSHORT pidCP, ULONG ulReserved), (hkbd, pidCP, ulReserved))
+
+OS2_PASCAL_API(APIRET16, KbdSetCp, (USHORT usReserved, USHORT pidCP, HKBD hkbd),
+               (ULONG hkbd, ULONG pidCP, ULONG usReserved), (hkbd, pidCP, usReserved))
+
+OS2_PASCAL_API(APIRET16, KbdGetHWID, (PKBDHWID pkbdhwid, HKBD hkbd),
+               (ULONG hkbd, PKBDHWID pkbdhwid), (hkbd, pkbdhwid))
+
+OS2_PASCAL_API(APIRET16, KbdOpen, (PHKBD phkbd),
+               (PHKBD phkbd), (phkbd))
+
+OS2_PASCAL_API(APIRET16, KbdClose, (HKBD hkbd),
+               (ULONG hkbd), (hkbd))
+
+OS2_PASCAL_API(APIRET16, KbdGetFocus, (USHORT fWait, HKBD hkbd),
+               (ULONG hkbd, ULONG fWait), (hkbd, fWait))
+
+OS2_PASCAL_API(APIRET16, KbdFreeFocus, (HKBD hkbd),
+               (ULONG hkbd), (hkbd))
+
+OS2_PASCAL_API(APIRET16, KbdSynch, (USHORT fWait),
+               (ULONG fWait), (fWait))
 
 
 /* ── MOU ────────────────────────────────────────────────────────────── */

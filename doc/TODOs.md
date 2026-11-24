@@ -249,6 +249,10 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 - [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 is done (ADR-0077–0080, 0082). Still open:
   - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
+- [ ] **VIO and KBD calls still missing** (the chart's VIO / KBD row):
+  - `KbdSetStatus`'s modes acted on by the reads (echo, ASCII line editing, the turnaround character);
+  - `KbdXlate`, `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`;
+  - `VioGetFont` / `VioSetFont`, `VioSetState`, `VioSetCp`, `VioGetBuf` / `VioShowBuf` (stubs), `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
 - [ ] **VIO window**:
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).

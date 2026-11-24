@@ -747,12 +747,18 @@ UniCreateUconvObject (12289), UniUconvToUcs (12290), UniUconvFromUcs (12291), Un
 
 UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`.
 
-### VIOCALLS (22 APIs: 18 implemented, 4 stub)
+### VIOCALLS (33 APIs: 29 implemented, 4 stub)
 
 **Implemented:**
-VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioWrtCellStr (10), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioReadCellStr (24), VioWrtNAttr (26), VioGetCurType (27), VioSetCurType (32), VioGetConfig (46), VioScrollDn (47), VioWrtCharStrAtt (48), VioWrtNCell (52), VioCheckCharType (75)
+VioEndPopUp (1), VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioWrtCellStr (10), VioPopUp (11), VioScrollRt (12), VioWrtCharStr (13), VioSetCurPos (15), VioScrUnLock (18), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioScrLock (23), VioReadCellStr (24), VioWrtNAttr (26), VioGetCurType (27), VioReadCharStr (30), VioSetCurType (32), VioGetCp (40), VioScrollLf (44), VioGetConfig (46), VioScrollDn (47), VioWrtCharStrAtt (48), VioGetState (49), VioWrtNCell (52), VioWrtNChar (53), VioCheckCharType (75)
 
-The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which programs built with the standard headers call through a 16-bit thunk. `VioCheckCharType` is `VIO16CHECKCHARTYPE` (75); its type values (0 SBCS, 2 DBCS lead, 3 DBCS trail) are not in the public reference page. `VioWrtCellStr` writes 2-byte cells, continues on the next row and stops at the end of the screen. The VIO screen's codepage follows `DosSetProcessCp` (`VioSetCp` is still a stub).
+The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which programs built with the standard headers call through a 16-bit thunk. `VioCheckCharType` is `VIO16CHECKCHARTYPE` (75); its type values (0 SBCS, 2 DBCS lead, 3 DBCS trail) are not in the public reference page. `VioWrtCellStr` writes 2-byte cells, continues on the next row and stops at the end of the screen. The VIO screen's codepage follows `DosSetProcessCp` (`VioSetCp` is still a stub); `VioGetCp` reports it.
+
+- **Strings** (`VioWrtCharStr`, `VioWrtNChar`, `VioReadCharStr`): from (row, col) on, continuing at the start of the next line and stopping at the end of the screen; a write keeps the cells' attributes; `VioReadCharStr`'s length is the buffer size on entry and the count read on return. A start off the screen is `ERROR_VIO_ROW` / `ERROR_VIO_COL`.
+- **Scrolls** (`VioScrollUp`, `Dn`, `Lf`, `Rt`): the rectangle only; a corner or line count beyond the screen is its last row or column (so `0, 0, -1, -1, -1` fills the screen with the cell), 0 lines scroll nothing.
+- **Pop-up** (`VioPopUp` / `VioEndPopUp`): the screen itself, saved and put back; option bit 1 keeps it (transparent), otherwise it starts blank with the cursor at the top left; one at a time (`ERROR_VIO_EXISTING_POPUP`, waiting or not), `ERROR_VIO_NO_POPUP` without one.
+- **Screen lock** (`VioScrLock` / `VioScrUnLock`): nothing switches Warpine's screen away, so the lock only keeps other threads of the process out (status 1 for one that does not wait, `ERROR_VIO_LOCK` for one that would); `ERROR_VIO_UNLOCK` from a thread that does not hold it.
+- **`VioGetState`:** palette registers (type 0, the EGA / VGA text defaults), overscan (1, black) and intensity (2: 1, bright backgrounds, which the renderer draws instead of blinking); other types `ERROR_VIO_INVALID_PARMS`.
 
 
 **ANSI.** `VioWrtTTY` and `DosWrite` to the screen interpret ANSI escape sequences while ANSI is on (the default; `VioSetAnsi` / `VioGetAnsi`): cursor position and movement, save / restore (`ESC[s` / `ESC[u`), `ESC[2J`, `ESC[K`, colours and attributes (`ESC[…m`) wrap mode (`ESC[=7h` / `ESC[=7l`) and the text display modes `ESC[=0h` … `ESC[=3h` (40 or 80 columns by 25 rows, cleared; the graphics modes 4–6 are ignored). Text written to a host pipe or file goes out as UTF-8 of the process codepage. `ESC[6n` and key reassignment are not implemented; unknown sequences are swallowed.
@@ -760,9 +766,15 @@ The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which p
 **Stubs:**
 VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
 
-### KBDCALLS (3 APIs)
+### KBDCALLS (14 APIs)
 
-KbdCharIn (4), KbdStringIn (9), KbdGetStatus (10)
+KbdGetCp (3), KbdCharIn (4), KbdSetCp (5), KbdSynch (7), KbdStringIn (9), KbdGetStatus (10), KbdSetStatus (11), KbdGetFocus (12), KbdFlushBuffer (13), KbdClose (17), KbdFreeFocus (18), KbdPeek (22), KbdOpen (23), KbdGetHWID (24)
+
+- **`KbdPeek`** returns the next key without taking it (fbStatus 0x40), or a record of zeros; `KbdFlushBuffer` drops what is typed ahead.
+- **`KbdSetStatus`** checks `KBDINFO.cb` (10, `ERROR_KBD_INVALID_LENGTH`), echo on with off (`ERROR_KBD_INVALID_ECHO_MASK`) and binary with ASCII (`ERROR_KBD_INVALID_INPUT_MASK`), and keeps the modes, turnaround character, interim and shift states for `KbdGetStatus`; the reads do not act on them yet.
+- **`KbdSetCp` / `KbdGetCp`:** the keyboard codepage, 0 (the default table) or one Warpine knows (`ERROR_KBD_INVALID_CODEPAGE`); it does not change the process or display codepage.
+- **`KbdGetHWID`:** an enhanced keyboard, ID 0xAB41, in as much of `KBDHWID` as `cb` gives (at least 4).
+- **Handles:** `KbdOpen` gives logical keyboard handles from 1, `KbdClose` closes them (`ERROR_KBD_INVALID_HANDLE` for others); `KbdGetFocus` / `KbdFreeFocus` check the handle, as every handle reads the one keyboard; `KbdSynch` does nothing.
 
 On a host terminal or pipe (headless): a waiting `KbdCharIn` / `KbdStringIn` at the end of piped standard input ends the process with exit code 0 (Warpine's choice; the KBD reference lists no end-of-input error).
 
@@ -1175,7 +1187,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 512 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 415 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 512 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1187,8 +1199,8 @@ Counts are taken from the static registry (`api_registry.rs`, 512 entries) and t
 | UCONV | registry | 5 | 0 | 5 |
 | SO32DLL (sockets) | registry | 27 | 0 | 27 |
 | TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
-| VIOCALLS | sub-dispatcher | 18 | 4 | 22 |
-| KBDCALLS | sub-dispatcher | 3 | 0 | 3 |
+| VIOCALLS | sub-dispatcher | 29 | 4 | 33 |
+| KBDCALLS | sub-dispatcher | 14 | 0 | 14 |
 | MOUCALLS | sub-dispatcher | 27 | 0 | 27 |
 | PMSHAPI (profiles, applications, switch list) | registry | 18 | 0 | 18 |
 | HELPMGR (no viewer) | registry | 6 | 0 | 6 |
@@ -1202,7 +1214,7 @@ Counts are taken from the static registry (`api_registry.rs`, 512 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **906** | **21** | **927** |
+| **Total** | | **928** | **21** | **949** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

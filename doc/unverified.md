@@ -286,6 +286,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 ## Console
 
+- **VIO text calls** (`vio_text.rs`, 2026-11-24): the pop-up being the saved and restored screen, a second pop-up refused even when waiting, the screen lock only keeping other threads out (status 1 / `ERROR_VIO_LOCK`), `VioGetState`'s answers (the EGA / VGA default palette, a black overscan, intensity 1 for bright backgrounds) and refusals, `VioGetCp` reporting the process codepage.
+- **KBD calls** (2026-11-24): `KbdSetStatus` kept but not acted on, its default (echo off, binary), `KbdGetHWID`'s 0xAB41 and its 4-byte minimum, `KbdSetCp` accepting the codepages Warpine knows, logical handles from 1 all reading one keyboard, `KbdGetFocus` / `KbdFreeFocus` / `KbdSynch` doing nothing else, `KbdPeek` on a terminal keeping one key read ahead.
 - **VIO window**:
   - `SSF_TYPE_DEFAULT` and unknown application types running windowed;
   - the largest size, the maximized place, the minimum size;

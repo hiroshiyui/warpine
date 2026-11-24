@@ -1000,6 +1000,22 @@ pub const ERROR_NLS_TABLE_TRUNCATED:  u32 = 399;
 pub const ERROR_VIO_ROW: u32 = 358; // Row parameter out of range
 pub const ERROR_VIO_COL: u32 = 359; // Column parameter out of range
 pub const ERROR_VIO_INVALID_PARMS: u32 = 421; // <bseerr.h>
+// The VIO and KBD errors of the calls in `vio_text.rs` (<bseerr.h>).
+pub const ERROR_VIO_MODE: u32 = 355;
+pub const ERROR_VIO_WAIT_FLAG: u32 = 366;
+pub const ERROR_VIO_UNLOCK: u32 = 367;
+pub const ERROR_VIO_NO_POPUP: u32 = 405;
+pub const ERROR_VIO_EXISTING_POPUP: u32 = 406;
+pub const ERROR_VIO_LOCK: u32 = 434;
+pub const ERROR_VIO_INVALID_HANDLE: u32 = 436;
+pub const ERROR_VIO_INVALID_LENGTH: u32 = 438;
+pub const ERROR_VIO_TRANSPARENT_POPUP: u32 = 483;
+pub const ERROR_KBD_PARAMETER: u32 = 373;
+pub const ERROR_KBD_INVALID_LENGTH: u32 = 376;
+pub const ERROR_KBD_INVALID_ECHO_MASK: u32 = 377;
+pub const ERROR_KBD_INVALID_INPUT_MASK: u32 = 378;
+pub const ERROR_KBD_INVALID_HANDLE: u32 = 439;
+pub const ERROR_KBD_INVALID_CODEPAGE: u32 = 448;
 /// `VioSetAnsi` / `VioGetAnsi` states (`<bsesub.h>`).
 pub const ANSI_ON: u16 = 1;
 pub const ANSI_OFF: u16 = 0;

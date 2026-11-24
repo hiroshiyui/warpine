@@ -206,36 +206,58 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
 
         // ── KBDCALLS ──────────────────────────────────────────────
         o if (KBDCALLS_BASE..VIOCALLS_BASE).contains(&o) => match o - KBDCALLS_BASE {
+            3  => "KbdGetCp",
             4  => "KbdCharIn",
+            5  => "KbdSetCp",
+            7  => "KbdSynch",
             9  => "KbdStringIn",
             10 => "KbdGetStatus",
+            11 => "KbdSetStatus",
+            12 => "KbdGetFocus",
+            13 => "KbdFlushBuffer",
+            17 => "KbdClose",
+            18 => "KbdFreeFocus",
+            22 => "KbdPeek",
+            23 => "KbdOpen",
+            24 => "KbdGetHWID",
             _  => "?",
         },
 
         // ── VIOCALLS ──────────────────────────────────────────────
         o if (VIOCALLS_BASE..SESMGR_BASE).contains(&o) => match o - VIOCALLS_BASE {
+            1  => "VioEndPopUp",
             3  => "VioGetAnsi",
             5  => "VioSetAnsi",
             7  => "VioScrollUp",
             9  => "VioGetCurPos",
             10 => "VioWrtCellStr",
+            11 => "VioPopUp",
+            12 => "VioScrollRt",
+            13 => "VioWrtCharStr",
             15 => "VioSetCurPos",
+            18 => "VioScrUnLock",
             19 => "VioWrtTTY",
             21 => "VioGetMode",
             22 => "VioSetMode",
+            23 => "VioScrLock",
             24 => "VioReadCellStr",
             26 => "VioWrtNAttr",
             27 => "VioGetCurType",
+            30 => "VioReadCharStr",
             31 => "VioGetBuf",
             32 => "VioSetCurType",
-            47 => "VioScrollDn",
-            75 => "VioCheckCharType",
+            40 => "VioGetCp",
             42 => "VioSetCp",
             43 => "VioShowBuf",
+            44 => "VioScrollLf",
             46 => "VioGetConfig",
+            47 => "VioScrollDn",
             48 => "VioWrtCharStrAtt",
+            49 => "VioGetState",
             51 => "VioSetState",
             52 => "VioWrtNCell",
+            53 => "VioWrtNChar",
+            75 => "VioCheckCharType",
             _  => "?",
         },
 
@@ -1310,6 +1332,10 @@ mod tests {
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 15), "VioSetCurPos");
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 75), "VioCheckCharType");
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 99), "?");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 13), "VioWrtCharStr");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 1),  "VioEndPopUp");
+        assert_eq!(ordinal_to_name(KBDCALLS_BASE + 22), "KbdPeek");
+        assert_eq!(ordinal_to_name(KBDCALLS_BASE + 24), "KbdGetHWID");
     }
 
     #[test]

@@ -98,6 +98,7 @@ pub mod console;
 pub mod ansi;
 mod kbdcalls;
 mod viocalls;
+pub mod vio_text;
 mod process;
 pub mod locale;
 pub mod codepage;

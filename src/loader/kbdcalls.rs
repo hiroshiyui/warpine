@@ -11,6 +11,11 @@ use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::console::{map_key_to_os2, HostInput};
 
+/// `KBDINFO`'s size, its `cb`.
+const KBDINFO_SIZE: u16 = 10;
+/// The most typed-ahead bytes `KbdFlushBuffer` reads from the terminal.
+const MAX_FLUSHED_BYTES: usize = 4096;
+
 impl super::Loader {
     pub(crate) fn handle_kbdcalls(&self, vcpu: &mut dyn VcpuBackend, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
         let regs = vcpu.get_regs().unwrap();
@@ -25,6 +30,27 @@ impl super::Loader {
             10 => self.kbd_get_status(read_stack(8), read_stack(4)),
             // KbdStringIn(pBuf, pLen, wait, hkbd) → ESP+4=hkbd, +8=wait, +12=pLen, +16=pBuf
             9  => self.kbd_string_in(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // KbdPeek(pKeyInfo, hkbd) → ESP+4=hkbd, +8=pKeyInfo
+            22 => self.kbd_peek(read_stack(8), read_stack(4)),
+            // KbdFlushBuffer(hkbd) → ESP+4=hkbd
+            13 => self.kbd_flush_buffer(read_stack(4)),
+            // KbdSetStatus(pInfo, hkbd) → ESP+4=hkbd, +8=pInfo
+            11 => self.kbd_set_status(read_stack(8), read_stack(4)),
+            // KbdGetCp(ulReserved, pidCP, hkbd) → ESP+4=hkbd, +8=pidCP, +12=ulReserved
+            3  => self.kbd_get_cp(read_stack(12), read_stack(8), read_stack(4)),
+            // KbdSetCp(usReserved, idCP, hkbd) → ESP+4=hkbd, +8=idCP, +12=usReserved
+            5  => self.kbd_set_cp(read_stack(12), read_stack(8), read_stack(4)),
+            // KbdGetHWID(pHwid, hkbd) → ESP+4=hkbd, +8=pHwid
+            24 => self.kbd_get_hwid(read_stack(8), read_stack(4)),
+            // KbdOpen(phkbd) → ESP+4=phkbd
+            23 => self.kbd_open(read_stack(4)),
+            // KbdClose(hkbd) → ESP+4=hkbd
+            17 => self.kbd_close(read_stack(4)),
+            // KbdGetFocus(fWait, hkbd) → ESP+4=hkbd, +8=fWait; KbdFreeFocus(hkbd) → ESP+4=hkbd
+            12 => self.kbd_focus(read_stack(4)),
+            18 => self.kbd_focus(read_stack(4)),
+            // KbdSynch(fWait) → ESP+4=fWait
+            7  => { debug!("  KbdSynch"); NO_ERROR },
             _ => { warn!("Warning: Unknown KBDCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -34,6 +60,8 @@ impl super::Loader {
     pub(crate) fn kbdcalls_arg_bytes(&self, ordinal: u32) -> u64 {
         match ordinal {
             4 => 12, 10 => 8, 9 => 16,
+            22 => 8, 13 => 4, 11 => 8, 3 => 12, 5 => 12, 24 => 8,
+            23 => 4, 17 => 4, 12 => 8, 18 => 4, 7 => 4,
             _ => 0,
         }
     }
@@ -89,6 +117,12 @@ impl super::Loader {
         {
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.enable_raw_mode();
+            // A key KbdPeek read is the next one.
+            if let Some((ch, scan)) = console.kbd.peeked.take() {
+                drop(console);
+                self.write_key_info(p_key_info, ch, scan, 0x40, 0);
+                return NO_ERROR;
+            }
         }
         self.kbd_char_in_host(p_key_info, wait, || self.shared.console_mgr.lock_or_recover().read_input())
     }
@@ -158,18 +192,183 @@ impl super::Loader {
         }
     }
 
-    /// KbdGetStatus (ordinal 10): get keyboard status.
+    /// KbdGetStatus (ordinal 10): the logical keyboard's status
+    /// (`KBDINFO`), as `KbdSetStatus` left it.
     fn kbd_get_status(&self, p_status: u32, _hkbd: u32) -> u32 {
         debug!("  KbdGetStatus");
         if p_status != 0 {
-            // KBDINFO struct: cb(u16), fsMask(u16), chTurnAround(u16), fsInterim(u16), fsState(u16)
-            self.guest_write::<u16>(p_status, 10);     // cb
-            self.guest_write::<u16>(p_status + 2, 0x06); // fsMask: binary+raw mode
-            self.guest_write::<u16>(p_status + 4, 0x0D); // turn-around char: CR
-            self.guest_write::<u16>(p_status + 6, 0);    // fsInterim
-            self.guest_write::<u16>(p_status + 8, 0);    // fsState (shift state)
+            let k = self.shared.console_mgr.lock_or_recover().kbd.clone();
+            for (off, v) in [(0, KBDINFO_SIZE), (2, k.mask), (4, k.turnaround), (6, k.interim), (8, k.shift)] {
+                self.guest_write::<u16>(p_status + off, v);
+            }
         }
         NO_ERROR
+    }
+
+    /// Fill a `KBDKEYINFO` (chChar, chScan, fbStatus, bNlsShift, fsState,
+    /// time; 10 bytes).
+    fn write_key_info(&self, p: u32, ch: u8, scan: u8, status: u8, shift: u16) {
+        if p == 0 { return; }
+        self.guest_write::<u8>(p, ch);
+        self.guest_write::<u8>(p + 1, scan);
+        self.guest_write::<u8>(p + 2, status);
+        self.guest_write::<u8>(p + 3, 0);
+        self.guest_write::<u16>(p + 4, shift);
+        self.guest_write::<u32>(p + 6, 0);
+    }
+
+    /// KbdPeek (ordinal 22): the next key without taking it; a record of
+    /// zeros (fbStatus 0) when none is waiting.
+    fn kbd_peek(&self, p_key_info: u32, hkbd: u32) -> u32 {
+        debug!("  KbdPeek");
+        if !self.shared.console_mgr.lock_or_recover().kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        if self.shared.use_sdl_text.load(Ordering::Relaxed) {
+            let next = self.shared.kbd_queue.lock().unwrap().front().cloned();
+            match next {
+                Some(ki) => self.write_key_info(p_key_info, ki.ch, ki.scan, if ki.ch == 0 { 0x02 } else { 0x40 }, ki.state),
+                None => self.write_key_info(p_key_info, 0, 0, 0, 0),
+            }
+            return NO_ERROR;
+        }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        console.enable_raw_mode();
+        if console.kbd.peeked.is_none()
+            && let HostInput::Byte(b) = console.read_input()
+            && !self.keyboard_signal(b)
+        {
+            let key = map_key_to_os2(b, &console);
+            console.kbd.peeked = Some(key);
+        }
+        let peeked = console.kbd.peeked;
+        drop(console);
+        match peeked {
+            Some((ch, scan)) => self.write_key_info(p_key_info, ch, scan, 0x40, 0),
+            None => self.write_key_info(p_key_info, 0, 0, 0, 0),
+        }
+        NO_ERROR
+    }
+
+    /// KbdFlushBuffer (ordinal 13): drop every key typed ahead.
+    fn kbd_flush_buffer(&self, hkbd: u32) -> u32 {
+        debug!("  KbdFlushBuffer");
+        if !self.shared.console_mgr.lock_or_recover().kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        self.shared.kbd_queue.lock().unwrap().clear();
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        console.kbd.peeked = None;
+        if !self.shared.use_sdl_text.load(Ordering::Relaxed) && console.is_raw_mode() {
+            // What the terminal holds; bounded, in case input never pauses.
+            for _ in 0..MAX_FLUSHED_BYTES {
+                if !matches!(console.read_input(), HostInput::Byte(_)) { break; }
+            }
+        }
+        NO_ERROR
+    }
+
+    /// KbdSetStatus (ordinal 11): set the echo and input modes, the
+    /// turnaround character, the interim and shift states (`KBDINFO`, whose
+    /// `fsMask` says what to change). Warpine records them for
+    /// `KbdGetStatus`; its reads do not act on them yet.
+    fn kbd_set_status(&self, p_info: u32, hkbd: u32) -> u32 {
+        use super::vio_text::{KEYBOARD_ASCII_MODE, KEYBOARD_BINARY_MODE, KEYBOARD_ECHO_OFF, KEYBOARD_ECHO_ON};
+        const MODIFY_STATE: u16 = 0x0010;
+        const MODIFY_INTERIM: u16 = 0x0020;
+        const MODIFY_TURNAROUND: u16 = 0x0040;
+        const TWO_BYTE_TURNAROUND: u16 = 0x0080;
+        let field = |off: u32| self.guest_read::<u16>(p_info + off);
+        let (Some(cb), Some(mask), Some(turn), Some(interim), Some(shift)) =
+            (field(0), field(2), field(4), field(6), field(8)) else { return ERROR_KBD_PARAMETER };
+        debug!("  KbdSetStatus(mask=0x{mask:04X})");
+        if cb != KBDINFO_SIZE { return ERROR_KBD_INVALID_LENGTH; }
+        let echo = mask & (KEYBOARD_ECHO_ON | KEYBOARD_ECHO_OFF);
+        let mode = mask & (KEYBOARD_BINARY_MODE | KEYBOARD_ASCII_MODE);
+        if echo == KEYBOARD_ECHO_ON | KEYBOARD_ECHO_OFF { return ERROR_KBD_INVALID_ECHO_MASK; }
+        if mode == KEYBOARD_BINARY_MODE | KEYBOARD_ASCII_MODE { return ERROR_KBD_INVALID_INPUT_MASK; }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        if !console.kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        let k = &mut console.kbd;
+        if echo != 0 { k.mask = (k.mask & !(KEYBOARD_ECHO_ON | KEYBOARD_ECHO_OFF)) | echo; }
+        if mode != 0 { k.mask = (k.mask & !(KEYBOARD_BINARY_MODE | KEYBOARD_ASCII_MODE)) | mode; }
+        if mask & MODIFY_STATE != 0 { k.shift = shift; }
+        if mask & MODIFY_INTERIM != 0 { k.interim = interim; }
+        if mask & MODIFY_TURNAROUND != 0 {
+            k.turnaround = if mask & TWO_BYTE_TURNAROUND != 0 { turn } else { turn & 0x00FF };
+        }
+        NO_ERROR
+    }
+
+    /// KbdGetCp (ordinal 3): the keyboard codepage `KbdSetCp` set (0, the
+    /// default table, until then).
+    fn kbd_get_cp(&self, reserved: u32, p_cp: u32, hkbd: u32) -> u32 {
+        if reserved != 0 { return ERROR_KBD_PARAMETER; }
+        let console = self.shared.console_mgr.lock_or_recover();
+        if !console.kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        let cp = console.kbd.codepage;
+        drop(console);
+        debug!("  KbdGetCp -> {cp}");
+        match self.guest_write::<u16>(p_cp, cp) {
+            Some(()) => NO_ERROR,
+            None => ERROR_KBD_PARAMETER,
+        }
+    }
+
+    /// KbdSetCp (ordinal 5): the keyboard codepage, 0 or one Warpine knows
+    /// (`ERROR_KBD_INVALID_CODEPAGE`); "does not affect the display or
+    /// process code pages".
+    fn kbd_set_cp(&self, _reserved: u32, cp: u32, hkbd: u32) -> u32 {
+        let cp = cp & 0xFFFF;
+        debug!("  KbdSetCp({cp})");
+        if cp != 0 && !super::stubs::is_supported_codepage(cp) { return ERROR_KBD_INVALID_CODEPAGE; }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        if !console.kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        console.kbd.codepage = cp as u16;
+        NO_ERROR
+    }
+
+    /// KbdGetHWID (ordinal 24): the keyboard's hardware ID (`KBDHWID`: cb,
+    /// idKbd, two reserved words). `cb` on entry is the room given; Warpine
+    /// reports an enhanced (101/102-key) keyboard, ID 0xAB41.
+    fn kbd_get_hwid(&self, p_hwid: u32, hkbd: u32) -> u32 {
+        const KBDHWID_SIZE: u16 = 8;
+        /// The ID an enhanced keyboard answers (Warpine's choice: it has no
+        /// keyboard hardware to ask).
+        const ENHANCED_KEYBOARD_ID: u16 = 0xAB41;
+        if !self.shared.console_mgr.lock_or_recover().kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        let Some(cb) = self.guest_read::<u16>(p_hwid) else { return ERROR_KBD_PARAMETER };
+        debug!("  KbdGetHWID(cb={cb})");
+        // cb itself and idKbd at least.
+        if cb < 4 { return ERROR_KBD_PARAMETER; }
+        let cb = cb.min(KBDHWID_SIZE);
+        let fields = [cb, ENHANCED_KEYBOARD_ID, 0, 0];
+        for (off, v) in (0u32..).step_by(2).zip(fields).take(usize::from(cb / 2)) {
+            self.guest_write::<u16>(p_hwid + off, v);
+        }
+        NO_ERROR
+    }
+
+    /// KbdOpen (ordinal 23): a new logical keyboard handle. Every handle
+    /// reads the one keyboard.
+    fn kbd_open(&self, p_hkbd: u32) -> u32 {
+        let Some(h) = self.shared.console_mgr.lock_or_recover().kbd.open() else { return ERROR_KBD_PARAMETER };
+        debug!("  KbdOpen -> {h}");
+        if self.guest_write::<u16>(p_hkbd, h).is_none() {
+            self.shared.console_mgr.lock_or_recover().kbd.close(u32::from(h));
+            return ERROR_KBD_PARAMETER;
+        }
+        NO_ERROR
+    }
+
+    /// KbdClose (ordinal 17): close a handle `KbdOpen` gave out.
+    fn kbd_close(&self, hkbd: u32) -> u32 {
+        debug!("  KbdClose({hkbd})");
+        if self.shared.console_mgr.lock_or_recover().kbd.close(hkbd) { NO_ERROR } else { ERROR_KBD_INVALID_HANDLE }
+    }
+
+    /// KbdGetFocus (ordinal 12) / KbdFreeFocus (ordinal 18): bind the
+    /// physical keyboard to a logical one and free it. With one keyboard
+    /// for the process the binding is always there; the handle is checked.
+    fn kbd_focus(&self, hkbd: u32) -> u32 {
+        debug!("  Kbd focus({hkbd})");
+        if self.shared.console_mgr.lock_or_recover().kbd.valid(hkbd) { NO_ERROR } else { ERROR_KBD_INVALID_HANDLE }
     }
 
     /// KbdStringIn (ordinal 9): read a string from keyboard.
@@ -498,5 +697,68 @@ mod tests {
         assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || reads.next().unwrap()), 0);
         assert!(!interrupt::end_call(), "a partly typed line is returned");
         assert_eq!(loader.guest_read::<u16>(len + 2), Some(1));
+    }
+
+    /// KbdSetStatus checks KBDINFO's length and masks and keeps what it
+    /// sets; KbdGetHWID, KbdSetCp and the handles answer as documented.
+    #[test]
+    fn kbd_status_codepage_hwid_and_handles() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let p = 0x0020_0000;
+        let info = |cb: u16, mask: u16, turn: u16| {
+            for (off, v) in [(0u32, cb), (2, mask), (4, turn), (6, 0), (8, 0)] { loader.guest_write::<u16>(p + off, v).unwrap(); }
+        };
+        info(10, 0x0003, 0);
+        assert_eq!(loader.kbd_set_status(p, 0), ERROR_KBD_INVALID_ECHO_MASK);
+        info(10, 0x000C, 0);
+        assert_eq!(loader.kbd_set_status(p, 0), ERROR_KBD_INVALID_INPUT_MASK);
+        info(8, 0x0001, 0);
+        assert_eq!(loader.kbd_set_status(p, 0), ERROR_KBD_INVALID_LENGTH);
+        info(10, 0x0001 | 0x0040, 0x121B);
+        assert_eq!(loader.kbd_set_status(p, 7), ERROR_KBD_INVALID_HANDLE);
+        assert_eq!(loader.kbd_set_status(p, 0), NO_ERROR);
+        assert_eq!(loader.kbd_get_status(p, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(p + 2), Some(0x0001 | 0x0004), "echo on, still binary");
+        assert_eq!(loader.guest_read::<u16>(p + 4), Some(0x1B), "a one-byte turnaround");
+
+        assert_eq!(loader.kbd_set_cp(0, 12345, 0), ERROR_KBD_INVALID_CODEPAGE);
+        assert_eq!(loader.kbd_set_cp(0, 850, 0), NO_ERROR);
+        assert_eq!(loader.kbd_get_cp(0, p, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(p), Some(850));
+        assert_eq!(loader.kbd_get_cp(1, p, 0), ERROR_KBD_PARAMETER, "the reserved word");
+
+        loader.guest_write::<u16>(p, 2).unwrap();
+        assert_eq!(loader.kbd_get_hwid(p, 0), ERROR_KBD_PARAMETER, "no room for idKbd");
+        loader.guest_write::<u16>(p, 6).unwrap();
+        assert_eq!(loader.kbd_get_hwid(p, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(p), Some(6));
+        assert_eq!(loader.guest_read::<u16>(p + 2), Some(0xAB41));
+
+        assert_eq!(loader.kbd_open(p), NO_ERROR);
+        let h = u32::from(loader.guest_read::<u16>(p).unwrap());
+        assert_eq!(loader.kbd_focus(h), NO_ERROR);
+        assert_eq!(loader.kbd_close(h), NO_ERROR);
+        assert_eq!(loader.kbd_close(h), ERROR_KBD_INVALID_HANDLE);
+        assert_eq!(loader.kbd_focus(h), ERROR_KBD_INVALID_HANDLE);
+    }
+
+    /// KbdPeek leaves the key for KbdCharIn (the SDL key queue).
+    #[test]
+    fn kbd_peek_leaves_the_key() {
+        use super::super::constants::NO_ERROR;
+        use super::super::KbdKeyInfo;
+        let loader = Loader::new_mock();
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
+        let p = 0x0020_0000;
+        assert_eq!(loader.kbd_peek(p, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u8>(p + 2), Some(0), "no key: fbStatus 0");
+        loader.shared.kbd_queue.lock().unwrap().push_back(KbdKeyInfo { ch: b'q', scan: 0x10, state: 0 });
+        assert_eq!(loader.kbd_peek(p, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u8>(p), Some(b'q'));
+        assert_eq!(loader.guest_read::<u8>(p + 2), Some(0x40));
+        assert_eq!(loader.shared.kbd_queue.lock().unwrap().len(), 1, "still there");
+        assert_eq!(loader.kbd_flush_buffer(0), NO_ERROR);
+        assert!(loader.shared.kbd_queue.lock().unwrap().is_empty());
     }
 }

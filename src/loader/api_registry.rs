@@ -1251,10 +1251,10 @@ const STUB_ORDINALS: &[u32] = &[
     REXXAPI_BASE + 26, REXXAPI_BASE + 27, REXXAPI_BASE + 28,
 ];
 
-/// VIOCALLS ordinals of `viocalls.rs` (18 implemented, 4 stubs).
-const VIOCALLS_ORDINALS: u32 = 22;
+/// VIOCALLS ordinals of `viocalls.rs` (29 implemented, 4 stubs).
+const VIOCALLS_ORDINALS: u32 = 33;
 /// KBDCALLS ordinals of `kbdcalls.rs`.
-const KBDCALLS_ORDINALS: u32 = 3;
+const KBDCALLS_ORDINALS: u32 = 14;
 /// MOUCALLS ordinals of `moucalls.rs`.
 const MOUCALLS_ORDINALS: u32 = 27;
 /// PMWIN ordinals dispatched by `pm_win.rs` and `pm_winutil.rs` (checked
@@ -1312,12 +1312,14 @@ pub fn compat_report() -> String {
     // Sub-dispatcher summaries
     out.push_str("Sub-dispatchers (separate from registry)\n");
     out.push_str("----------------------------------------\n");
-    out.push_str("  VIOCALLS   18 implemented, 4 stub  (VioWrtTTY, VioGetMode, VioSetMode, VioSetCurPos, \
+    out.push_str("  VIOCALLS   29 implemented, 4 stub  (VioWrtTTY, VioGetMode, VioSetMode, VioSetCurPos, \
                   VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtCellStr, VioWrtNCell, \
                   VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, VioGetAnsi, VioSetAnsi, \
-                  VioCheckCharType, \
+                  VioCheckCharType, VioWrtCharStr, VioWrtNChar, VioReadCharStr, VioScrollLf, VioScrollRt, \
+                  VioGetCp, VioPopUp, VioEndPopUp, VioScrLock, VioScrUnLock, VioGetState, \
                   VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], VioSetCp[stub])\n");
-    out.push_str("  KBDCALLS    3 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus)\n");
+    out.push_str("  KBDCALLS   14 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus, KbdSetStatus, KbdPeek, \
+                  KbdFlushBuffer, KbdGetCp, KbdSetCp, KbdGetHWID, KbdOpen, KbdClose, KbdGetFocus, KbdFreeFocus, KbdSynch)\n");
     out.push_str("  MOUCALLS   20 implemented  (MouOpen, MouClose, MouReadEventQue, MouFlushQue, \
                   MouGetNumQueEl, MouGet/SetPtrPos, MouGetNumButtons, MouGetNumMickeys, \
                   MouGet/SetDevStatus, MouGet/SetEventMask, MouGet/SetScaleFact, \

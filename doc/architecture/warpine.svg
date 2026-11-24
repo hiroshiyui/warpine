@@ -225,8 +225,8 @@
 <title>textmode</title>
 <path fill="#bbdefb" stroke="black" d="M1329.17,-747.12C1329.17,-747.12 1000.83,-747.12 1000.83,-747.12 994.83,-747.12 988.83,-741.12 988.83,-735.12 988.83,-735.12 988.83,-720.6 988.83,-720.6 988.83,-714.6 994.83,-708.6 1000.83,-708.6 1000.83,-708.6 1329.17,-708.6 1329.17,-708.6 1335.17,-708.6 1341.17,-714.6 1341.17,-720.6 1341.17,-720.6 1341.17,-735.12 1341.17,-735.12 1341.17,-741.12 1335.17,-747.12 1329.17,-747.12"/>
 <text xml:space="preserve" text-anchor="start" x="999.62" y="-731.91" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Text mode: VIOCALLS, KBDCALLS, MOUCALLS, ANSI console</text>
-<text xml:space="preserve" text-anchor="start" x="1043.88" y="-723.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/console.rs, loader/ansi.rs, loader/viocalls.rs, loader/kbdcalls.rs</text>
-<text xml:space="preserve" text-anchor="start" x="1096" y="-715.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/moucalls.rs, loader/vio_frame.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1044.25" y="-723.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/console.rs, loader/ansi.rs, loader/viocalls.rs, loader/vio_text.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1063" y="-715.76" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/kbdcalls.rs, loader/moucalls.rs, loader/vio_frame.rs</text>
 </g>
 <!-- dispatch&#45;&gt;textmode -->
 <g id="edge11" class="edge">

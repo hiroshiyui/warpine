@@ -138,7 +138,7 @@ id = "textmode"
 zone = "host"
 label = "Text mode: VIOCALLS, KBDCALLS, MOUCALLS, ANSI console"
 modules = [
-  "loader/console.rs", "loader/ansi.rs", "loader/viocalls.rs", "loader/kbdcalls.rs",
+  "loader/console.rs", "loader/ansi.rs", "loader/viocalls.rs", "loader/vio_text.rs", "loader/kbdcalls.rs",
   "loader/moucalls.rs", "loader/vio_frame.rs",
 ]
 

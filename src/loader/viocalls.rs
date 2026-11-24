@@ -7,9 +7,10 @@ use log::{debug, warn};
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use super::vio_text::ScrollDir;
 
 impl super::Loader {
-    pub(crate) fn handle_viocalls(&self, vcpu: &mut dyn VcpuBackend, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
+    pub(crate) fn handle_viocalls(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> super::ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
@@ -60,6 +61,27 @@ impl super::Loader {
             75 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) → ESP+4=hvio, +8=col, +12=row, +16=cb, +20=pchCells
             10 => self.vio_wrt_cell_str(read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioScrollLf / VioScrollRt(ulr, ulc, lrr, lrc, n, pCell, hvio) — VioScrollUp's layout
+            44 => self.vio_scroll(ScrollDir::Left, [read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12)], read_stack(8)),
+            12 => self.vio_scroll(ScrollDir::Right, [read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12)], read_stack(8)),
+            // VioWrtCharStr(pch, cb, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=cb, +20=pch
+            13 => self.vio_wrt_char_str(read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
+            // VioWrtNChar(pch, n, row, col, hvio) — the same layout
+            53 => self.vio_wrt_n_char(read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
+            // VioReadCharStr(pch, pcb, row, col, hvio) — the same layout
+            30 => self.vio_read_char_str(read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
+            // VioGetCp(reserved, pIdCodePage, hvio) → ESP+4=hvio, +8=pIdCodePage, +12=reserved
+            40 => self.vio_get_cp(read_stack(12), read_stack(8)),
+            // VioPopUp(pfWait, hvio) → ESP+4=hvio, +8=pfWait
+            11 => self.vio_pop_up(read_stack(8), read_stack(4)),
+            // VioEndPopUp(hvio) → ESP+4=hvio
+            1  => self.vio_end_pop_up(read_stack(4)),
+            // VioScrLock(fWait, pfNotLocked, hvio) → ESP+4=hvio, +8=pfNotLocked, +12=fWait
+            23 => self.vio_scr_lock(read_stack(12), read_stack(8), read_stack(4), super::threads::tid_of_vcpu(vcpu_id)),
+            // VioScrUnLock(hvio) → ESP+4=hvio
+            18 => self.vio_scr_unlock(read_stack(4), super::threads::tid_of_vcpu(vcpu_id)),
+            // VioGetState(pState, hvio) → ESP+4=hvio, +8=pState
+            49 => self.vio_get_state(read_stack(8)),
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -85,6 +107,9 @@ impl super::Loader {
             22 => 8, 31 => 12, 43 => 12,
             10 => 20, // VioWrtCellStr — ordinal per Open Watcom VIOCALLS.LIB
             75 => 16, // VioCheckCharType(pType, usRow, usCol, hvio) — 4 args × 4 bytes
+            44 | 12 => 28, // VioScrollLf / VioScrollRt
+            13 | 53 | 30 => 20, // VioWrtCharStr, VioWrtNChar, VioReadCharStr
+            40 => 12, 11 => 8, 1 => 4, 23 => 12, 18 => 4, 49 => 8,
             _ => 0,
         }
     }
@@ -157,29 +182,24 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioScrollUp (ordinal 7): scroll a screen region up.
-    /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
+    /// VioScrollUp (ordinal 7): scroll an area up.
     #[allow(clippy::too_many_arguments)]
     fn vio_scroll_up(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
-        debug!("  VioScrollUp(top={}, left={}, bottom={}, right={}, lines={}, p_cell=0x{:08X})", top, left, bottom, right, lines, p_cell);
-        let (fill_cell, fill_raw) = if p_cell != 0 {
-            let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
-            let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
-            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-            ((super::console::VioManager::decode_vio_byte(ch_byte, cp), attr), ch_byte)
-        } else {
-            ((' ', 0x07), b' ')
-        };
-        let mut console = self.shared.console_mgr.lock_or_recover();
-        console.scroll_up(top as u16, bottom as u16, lines as u16, fill_cell, fill_raw);
-        NO_ERROR
+        self.vio_scroll(ScrollDir::Up, [top, left, bottom, right, lines], p_cell)
     }
 
-    /// VioScrollDn (ordinal 47): scroll a screen region down.
-    /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
+    /// VioScrollDn (ordinal 47): scroll an area down.
     #[allow(clippy::too_many_arguments)]
-    fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
-        debug!("  VioScrollDn(top={}, bottom={}, lines={}, p_cell=0x{:08X})", top, bottom, lines, p_cell);
+    fn vio_scroll_dn(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
+        self.vio_scroll(ScrollDir::Down, [top, left, bottom, right, lines], p_cell)
+    }
+
+    /// The four `VioScroll*` calls: scroll the area `[top, left, bottom,
+    /// right]` by `lines` (each a USHORT; beyond the screen is its edge, 0
+    /// lines scroll nothing), filling with the (char, attr) cell at
+    /// `p_cell` (NULL: a light grey blank).
+    fn vio_scroll(&self, dir: ScrollDir, [top, left, bottom, right, lines]: [u32; 5], p_cell: u32) -> u32 {
+        debug!("  VioScroll{dir:?}(top={top}, left={left}, bottom={bottom}, right={right}, lines={lines}, p_cell=0x{p_cell:08X})");
         let (fill_cell, fill_raw) = if p_cell != 0 {
             let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
             let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
@@ -188,8 +208,9 @@ impl super::Loader {
         } else {
             ((' ', 0x07), b' ')
         };
+        let word = |v: u32| v as u16;
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.scroll_down(top as u16, bottom as u16, lines as u16, fill_cell, fill_raw);
+        console.scroll_rect((word(top), word(left), word(bottom), word(right)), dir, word(lines), fill_cell, fill_raw);
         NO_ERROR
     }
 
@@ -361,6 +382,166 @@ impl super::Loader {
             let _ = self.guest_write::<u16>(p_type, type_val);
         }
         NO_ERROR
+    }
+
+    /// Check a (row, col) start against the screen (`ERROR_VIO_ROW` /
+    /// `ERROR_VIO_COL`), giving it as USHORTs.
+    fn vio_cell(&self, row: u32, col: u32) -> Result<(u16, u16), u32> {
+        let console = self.shared.console_mgr.lock_or_recover();
+        if row >= u32::from(console.rows) { return Err(ERROR_VIO_ROW); }
+        if col >= u32::from(console.cols) { return Err(ERROR_VIO_COL); }
+        Ok((row as u16, col as u16))
+    }
+
+    /// The `cb` guest bytes at `p` (as many as can be read).
+    fn vio_bytes(&self, p: u32, cb: u32) -> Vec<u8> {
+        (0..cb & 0xFFFF).map_while(|i| self.guest_read::<u8>(p.checked_add(i)?)).collect()
+    }
+
+    /// VioWrtCharStr (ordinal 13): write characters from (row, col) on,
+    /// keeping the attributes, wrapping and stopping at the end of the screen.
+    fn vio_wrt_char_str(&self, pch: u32, cb: u32, row: u32, col: u32) -> u32 {
+        debug!("  VioWrtCharStr(cb={cb}, row={row}, col={col})");
+        let (row, col) = match self.vio_cell(row, col) { Ok(rc) => rc, Err(e) => return e };
+        let data = self.vio_bytes(pch, cb);
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        self.shared.console_mgr.lock_or_recover().write_chars(row, col, &data, cp);
+        NO_ERROR
+    }
+
+    /// VioWrtNChar (ordinal 53): write the character at `pch` `n` times
+    /// from (row, col) on, keeping the attributes.
+    fn vio_wrt_n_char(&self, pch: u32, n: u32, row: u32, col: u32) -> u32 {
+        debug!("  VioWrtNChar(n={n}, row={row}, col={col})");
+        let (row, col) = match self.vio_cell(row, col) { Ok(rc) => rc, Err(e) => return e };
+        let Some(ch) = self.guest_read::<u8>(pch) else { return ERROR_VIO_INVALID_PARMS };
+        let data = vec![ch; (n & 0xFFFF) as usize];
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        self.shared.console_mgr.lock_or_recover().write_chars(row, col, &data, cp);
+        NO_ERROR
+    }
+
+    /// VioReadCharStr (ordinal 30): read up to `*pcb` characters from
+    /// (row, col) on; `*pcb` becomes the number read.
+    fn vio_read_char_str(&self, pch: u32, pcb: u32, row: u32, col: u32) -> u32 {
+        let (row, col) = match self.vio_cell(row, col) { Ok(rc) => rc, Err(e) => return e };
+        let Some(max) = self.guest_read::<u16>(pcb) else { return ERROR_VIO_INVALID_PARMS };
+        debug!("  VioReadCharStr(cb={max}, row={row}, col={col})");
+        let data = self.shared.console_mgr.lock_or_recover().read_chars(row, col, max as usize);
+        if self.guest_write_bytes(pch, &data).is_none() { return ERROR_VIO_INVALID_PARMS; }
+        self.guest_write::<u16>(pcb, data.len() as u16);
+        NO_ERROR
+    }
+
+    /// VioGetCp (ordinal 40): the VIO codepage (the process's, as
+    /// `DosSetProcessCp` left it; `VioSetCp` is a stub).
+    fn vio_get_cp(&self, reserved: u32, p_cp: u32) -> u32 {
+        if reserved & 0xFFFF != 0 { return ERROR_VIO_INVALID_PARMS; }
+        let cp = self.shared.console_mgr.lock_or_recover().codepage;
+        debug!("  VioGetCp -> {cp}");
+        match self.guest_write::<u16>(p_cp, cp) {
+            Some(()) => NO_ERROR,
+            None => ERROR_VIO_INVALID_PARMS,
+        }
+    }
+
+    /// VioPopUp (ordinal 11): open the pop-up screen. `*pf_wait` bit 0 is
+    /// "wait", bit 1 "transparent"; the other bits must be 0. Warpine's
+    /// pop-up is the screen itself, saved and put back by `VioEndPopUp`; a
+    /// second pop-up is refused with `ERROR_VIO_EXISTING_POPUP`, waiting or
+    /// not (nothing else could end the first).
+    fn vio_pop_up(&self, pf_wait: u32, hvio: u32) -> u32 {
+        const POPUP_WAIT: u16 = 0x0001;
+        const POPUP_TRANSPARENT: u16 = 0x0002;
+        let Some(options) = self.guest_read::<u16>(pf_wait) else { return ERROR_VIO_INVALID_PARMS };
+        debug!("  VioPopUp(options=0x{options:04X})");
+        if options & !(POPUP_WAIT | POPUP_TRANSPARENT) != 0 || hvio & 0xFFFF != 0 { return ERROR_VIO_INVALID_PARMS; }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        if console.popup.is_some() { return ERROR_VIO_EXISTING_POPUP; }
+        let saved = console.begin_popup(options & POPUP_TRANSPARENT != 0);
+        console.popup = Some(saved);
+        NO_ERROR
+    }
+
+    /// VioEndPopUp (ordinal 1): close the pop-up and put the screen back.
+    fn vio_end_pop_up(&self, hvio: u32) -> u32 {
+        debug!("  VioEndPopUp");
+        if hvio & 0xFFFF != 0 { return ERROR_VIO_INVALID_HANDLE; }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        let Some(saved) = console.popup.take() else { return ERROR_VIO_NO_POPUP };
+        console.end_popup(saved);
+        NO_ERROR
+    }
+
+    /// VioScrLock (ordinal 23): lock the screen for the calling thread.
+    /// With Warpine's single screen nothing switches it away, so the lock
+    /// only keeps other threads out: `*pf_not_locked` is 1 for a thread
+    /// that does not wait, `ERROR_VIO_LOCK` for one that would wait for
+    /// another thread of the session.
+    fn vio_scr_lock(&self, f_wait: u32, pf_not_locked: u32, hvio: u32, tid: u32) -> u32 {
+        debug!("  VioScrLock(wait={f_wait})");
+        let f_wait = f_wait & 0xFFFF;
+        if f_wait > 1 { return ERROR_VIO_WAIT_FLAG; }
+        if hvio & 0xFFFF != 0 { return ERROR_VIO_INVALID_HANDLE; }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        let status = match console.scr_lock {
+            Some(owner) if owner != tid && f_wait == 1 => return ERROR_VIO_LOCK,
+            Some(owner) if owner != tid => 1u8,
+            _ => { console.scr_lock = Some(tid); 0 }
+        };
+        match self.guest_write::<u8>(pf_not_locked, status) {
+            Some(()) => NO_ERROR,
+            None => ERROR_VIO_INVALID_PARMS,
+        }
+    }
+
+    /// VioScrUnLock (ordinal 18): release the lock this thread holds.
+    fn vio_scr_unlock(&self, hvio: u32, tid: u32) -> u32 {
+        debug!("  VioScrUnLock");
+        if hvio & 0xFFFF != 0 { return ERROR_VIO_INVALID_HANDLE; }
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        if console.scr_lock != Some(tid) { return ERROR_VIO_UNLOCK; }
+        console.scr_lock = None;
+        NO_ERROR
+    }
+
+    /// VioGetState (ordinal 49): the request at `p_state` (`cb`, `type`, …).
+    /// Warpine answers type 0 (palette registers: the EGA / VGA text-mode
+    /// defaults), 1 (overscan: black) and 2 (intensity: 1, bright
+    /// backgrounds, which its renderer draws instead of blinking); the
+    /// hardware requests (colour registers, underline, target) are refused
+    /// with `ERROR_VIO_INVALID_PARMS`.
+    fn vio_get_state(&self, p_state: u32) -> u32 {
+        const VS_PALETTE: u16 = 0;
+        const VS_OVERSCAN: u16 = 1;
+        const VS_INTENSITY: u16 = 2;
+        /// cb of `VIOOVERSCAN` / `VIOINTENSITY`, and of `VIOPALSTATE` with no colour.
+        const STATE_HEADER: u16 = 6;
+        const PALETTE: [u16; 16] = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07,
+                                    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F];
+        const BRIGHT_BACKGROUND: u16 = 1;
+        let (Some(cb), Some(kind)) = (self.guest_read::<u16>(p_state), self.guest_read::<u16>(p_state + 2)) else {
+            return ERROR_VIO_INVALID_PARMS;
+        };
+        debug!("  VioGetState(cb={cb}, type={kind})");
+        let w = |off: u32, v: u16| self.guest_write::<u16>(p_state + off, v);
+        let done = match kind {
+            VS_PALETTE => {
+                if cb < STATE_HEADER + 2 || cb % 2 != 0 { return ERROR_VIO_INVALID_LENGTH; }
+                let Some(first) = self.guest_read::<u16>(p_state + 4) else { return ERROR_VIO_INVALID_PARMS };
+                let count = usize::from((cb - STATE_HEADER) / 2);
+                let Some(colors) = PALETTE.get(usize::from(first)..usize::from(first) + count) else {
+                    return ERROR_VIO_INVALID_PARMS;
+                };
+                colors.iter().zip(0u32..).all(|(&c, i)| w(6 + 2 * i, c).is_some())
+            }
+            VS_OVERSCAN | VS_INTENSITY => {
+                if cb != STATE_HEADER { return ERROR_VIO_INVALID_LENGTH; }
+                w(4, if kind == VS_INTENSITY { BRIGHT_BACKGROUND } else { 0 }).is_some()
+            }
+            _ => return ERROR_VIO_INVALID_PARMS,
+        };
+        if done { NO_ERROR } else { ERROR_VIO_INVALID_PARMS }
     }
 
     /// VioGetConfig (ordinal 46): get video adapter configuration.
@@ -873,5 +1054,54 @@ mod tests {
         assert_eq!(loader.vio_wrt_cell_str(p, 4, rows - 1, cols - 1, 0), NO_ERROR);
         assert_eq!(loader.vio_wrt_cell_str(p, 4, rows, 0, 0), ERROR_VIO_ROW);
         assert_eq!(loader.vio_wrt_cell_str(p, 4, 0, cols, 0), ERROR_VIO_COL);
+    }
+
+    /// Every VIOCALLS and KBDCALLS ordinal of the def has its Pascal
+    /// argument size: the callee removes the arguments, and an ordinal
+    /// without a size would leave them on the caller's stack.
+    #[test]
+    fn every_vio_and_kbd_ordinal_has_its_argument_size() {
+        let loader = Loader::new_mock();
+        let def = include_str!("../../targets/os2api.def");
+        let mut missing = Vec::new();
+        for line in def.lines().filter(|l| !l.starts_with('#')) {
+            let Some((module, ordinal)) = line.split_whitespace().next().and_then(|e| e.split_once('.')) else { continue };
+            let Ok(ordinal) = ordinal.parse::<u32>() else { continue };
+            let bytes = match module {
+                "VIOCALLS" => loader.viocalls_arg_bytes(ordinal),
+                "KBDCALLS" => loader.kbdcalls_arg_bytes(ordinal),
+                _ => continue,
+            };
+            if bytes == 0 { missing.push(line.to_owned()); }
+        }
+        assert!(missing.is_empty(), "no argument size for {missing:?}");
+    }
+
+    /// VioReadCharStr writes what it read and its count; VioPopUp refuses
+    /// reserved option bits; VioGetState answers the palette.
+    #[test]
+    fn vio_read_char_str_popup_options_and_palette() {
+        use super::super::constants::{NO_ERROR, ERROR_VIO_NO_POPUP};
+        let loader = Loader::new_mock();
+        loader.shared.console_mgr.lock_or_recover().sdl_mode = true;
+        let buf = 0x0020_0000;
+        let pcb = buf + 0x100;
+        loader.shared.console_mgr.lock_or_recover().write_chars(0, 0, b"abc", 437);
+        loader.guest_write::<u16>(pcb, 3).unwrap();
+        assert_eq!(loader.vio_read_char_str(buf, pcb, 0, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(pcb), Some(3));
+        assert_eq!((0..3).map(|i| loader.guest_read::<u8>(buf + i).unwrap()).collect::<Vec<_>>(), b"abc");
+        loader.guest_write::<u16>(buf, 0x0004).unwrap();
+        assert_eq!(loader.vio_pop_up(buf, 0), ERROR_VIO_INVALID_PARMS, "a reserved bit");
+        assert_eq!(loader.vio_end_pop_up(0), ERROR_VIO_NO_POPUP);
+        // VIOPALSTATE for registers 6 and 7.
+        for (off, v) in [(0u32, 10u16), (2, 0), (4, 6)] { loader.guest_write::<u16>(buf + off, v).unwrap(); }
+        assert_eq!(loader.vio_get_state(buf), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(buf + 6), Some(0x14));
+        assert_eq!(loader.guest_read::<u16>(buf + 8), Some(0x07));
+        for (off, v) in [(0u32, 10u16), (2, 0), (4, 15)] { loader.guest_write::<u16>(buf + off, v).unwrap(); }
+        assert_eq!(loader.vio_get_state(buf), ERROR_VIO_INVALID_PARMS, "past register 15");
+        for (off, v) in [(0u32, 6u16), (2, 3)] { loader.guest_write::<u16>(buf + off, v).unwrap(); }
+        assert_eq!(loader.vio_get_state(buf), ERROR_VIO_INVALID_PARMS, "colour registers are refused");
     }
 }

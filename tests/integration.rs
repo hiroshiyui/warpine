@@ -80,6 +80,13 @@ fn run_sample_env(sample: &str, timeout_secs: u64, env: &[(&str, &str)]) -> (Str
 
 /// [`run_sample_env`] with command-line arguments for the program.
 fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str, &str)]) -> (String, i32) {
+    run_sample_with_input(sample, args, timeout_secs, env, b"")
+}
+
+/// [`run_sample_args`] with `input` piped to the program's standard input
+/// (then its end).
+fn run_sample_with_input(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str, &str)],
+                         input: &[u8]) -> (String, i32) {
     // A test skips a sample that is not built (`can_run`): say which.
     assert!(sample_exists(sample), "{} is not built: guard the test with can_run", sample_path(sample));
     // Drive C: is $XDG_DATA_HOME/warpine/drive_c: a fresh one per run, never
@@ -98,13 +105,18 @@ fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str,
         .envs(env.iter().copied())
         // Suppress tracing/log noise on stderr; we only care about stdout.
         .env("RUST_LOG", "error")
-        // End of input at once: a sample that waits for a key (audio_test's
-        // "Press ENTER") must not block on the test runner's own stdin.
-        .stdin(Stdio::null())
+        // `input`, then the end of input: a sample that waits for a key
+        // (audio_test's "Press ENTER") must not block on the test runner's
+        // own stdin.
+        .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap_or_else(|e| panic!("Failed to spawn warpine for {sample}: {e}"));
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(input).expect("write the sample's input");
+    } // closed: the end of input
 
     // Poll until the process exits or the deadline passes.
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
@@ -1133,6 +1145,19 @@ fn test_audio() {
     if !kvm_available() || !sample_exists("samples/audio_test/audio_test.exe") { return; }
     let (out, code) = run_sample("samples/audio_test/audio_test.exe", 15);
     assert!(out.contains("Failed: 0"), "audio_test failed (exit {code}):\n{out}");
+}
+
+/// vio_kbd_test: the VIO text calls (string writes and reads that wrap,
+/// scrolls inside a rectangle with limits beyond the screen, the pop-up
+/// screen, the screen lock, VioGetState) and the logical keyboard (status,
+/// codepage, hardware ID, handles, KbdPeek on the piped keys "ab").
+#[test]
+fn test_vio_text_and_keyboard_calls() {
+    if !can_run("samples/vio_kbd_test/vio_kbd_test.exe") { return; }
+    let (out, code) = run_sample_with_input("samples/vio_kbd_test/vio_kbd_test.exe", &[], 20, &[], b"ab");
+    let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAILED")).collect();
+    assert!(failures.is_empty(), "failures {failures:?} (exit {code}):\n{out}");
+    assert!(out.contains("Passed: 46"), "vio_kbd_test did not run every check (exit {code}):\n{out}");
 }
 
 /// uconv_test: UCONV loaded at run time, its calls resolved at the ordinals

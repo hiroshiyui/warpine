@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **22 more VIO and KBD calls** (new `src/loader/vio_text.rs`): `VioWrtCharStr`, `VioWrtNChar` and `VioReadCharStr` (wrapping at a line's end, stopping at the screen's), `VioScrollLf` / `VioScrollRt`, `VioGetCp`, `VioPopUp` / `VioEndPopUp` (the screen saved and put back), `VioScrLock` / `VioScrUnLock`, `VioGetState` (palette, overscan, intensity); `KbdPeek`, `KbdFlushBuffer`, `KbdSetStatus` (with `KbdGetStatus` reporting what it set), `KbdGetCp` / `KbdSetCp`, `KbdGetHWID`, `KbdOpen` / `KbdClose`, `KbdGetFocus` / `KbdFreeFocus`, `KbdSynch`. The SDK's `os2/sub.h` declares them, with `KBDHWID`, `VIOPALSTATE`, `VIOOVERSCAN` and `VIOINTENSITY`. New sample `vio_kbd_test` (46 checks, keys piped in by its test). 949 entry points.
+
+### Fixed
+- **`VioScrollUp` / `VioScrollDn` scrolled whole lines and ignored limits beyond the screen**: they moved full rows whatever the left and right columns, did nothing when the bottom row was past the screen (so the usual `0, 0, -1, -1, -1` did not clear it), and cleared the area for 0 lines. After IBM's reference they now scroll only the rectangle, take a corner or count beyond the screen as its edge, and scroll nothing for 0 lines.
+
 ## [0.0.16] - 2026-11-24
 
 ### Added
