@@ -66,8 +66,10 @@ impl Default for VioState {
 /// but left for the next `KbdCharIn`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KbdState {
-    /// `KBDINFO.fsMask`: echo and input modes (Warpine's default: echo
-    /// off, binary, as `KbdGetStatus` always reported).
+    /// `KBDINFO.fsMask`: echo and input modes. The default input mode is
+    /// ASCII (KBD reference, `KbdStringIn`); echo on is Warpine's choice
+    /// (the reference gives no default; unverified), what `KbdStringIn`
+    /// always did.
     pub mask: u16,
     /// `KBDINFO.chTurnAround`: the character that ends `KbdStringIn`.
     pub turnaround: u16,
@@ -116,7 +118,7 @@ const DEFAULT_TURNAROUND: u16 = 0x0D;
 impl Default for KbdState {
     fn default() -> Self {
         KbdState {
-            mask: KEYBOARD_ECHO_OFF | KEYBOARD_BINARY_MODE,
+            mask: KEYBOARD_ECHO_ON | KEYBOARD_ASCII_MODE,
             turnaround: DEFAULT_TURNAROUND,
             interim: 0,
             shift: 0,
@@ -373,7 +375,7 @@ mod tests {
     #[test]
     fn keyboard_state_defaults() {
         let k = KbdState::default();
-        assert_eq!(k.mask, KEYBOARD_ECHO_OFF | KEYBOARD_BINARY_MODE);
+        assert_eq!(k.mask, KEYBOARD_ECHO_ON | KEYBOARD_ASCII_MODE);
         assert_eq!(k.turnaround, 0x0D);
         assert_eq!(k.peeked, None);
     }

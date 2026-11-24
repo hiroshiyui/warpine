@@ -440,11 +440,26 @@ impl super::Loader {
                                 || self.shared.console_mgr.lock_or_recover().read_input())
     }
 
-    /// `KbdStringIn` from the host's standard input. At the end of piped
-    /// input a partly read line is returned as if Enter ended it; with
-    /// nothing read, a waiting call ends the process (`kbd_end_of_input`).
+    /// `KbdStringIn` from the host's standard input, as `KbdSetStatus` set
+    /// the keyboard (KBD reference):
+    /// - ASCII mode: characters go into the buffer, Backspace takes the last
+    ///   one back, and the turnaround character (not stored) or a full
+    ///   buffer ends the call; each character is echoed when echo is on;
+    /// - binary mode: every byte goes into the buffer, nothing is echoed,
+    ///   and only a full buffer ends the call.
+    ///
+    /// At most 255 bytes. At the end of piped input a partly read line is
+    /// returned as if it had ended; with nothing read, a waiting call ends
+    /// the process (`kbd_end_of_input`).
     fn kbd_string_in_host(&self, p_buf: u32, p_length: u32, max_len: u32, wait: u32,
                           mut read: impl FnMut() -> HostInput) -> u32 {
+        use super::vio_text::{KEYBOARD_BINARY_MODE, KEYBOARD_ECHO_ON};
+        const MAX_STRING_IN: u32 = 255;
+        let (binary, echo, turnaround) = {
+            let k = &self.shared.console_mgr.lock_or_recover().kbd;
+            (k.mask & KEYBOARD_BINARY_MODE != 0, k.mask & KEYBOARD_ECHO_ON != 0, (k.turnaround & 0x00FF) as u8)
+        };
+        let max_len = max_len.min(MAX_STRING_IN);
         let mut count = 0u32;
         loop {
             if self.shutting_down() || count >= max_len { break; }
@@ -464,24 +479,26 @@ impl super::Loader {
             };
 
             if let Some(b) = byte {
-                if b == 0x0D {
-                    // Enter: done
+                if binary {
+                    if self.guest_write::<u8>(p_buf + count, b).is_none() { return ERROR_KBD_PARAMETER; }
+                    count += 1;
+                } else if b == turnaround {
                     break;
                 } else if b == 0x08 || b == 0x7F {
-                    // Backspace
+                    // Backspace: the last character goes.
                     if count > 0 {
                         count -= 1;
-                        // Echo backspace
-                        let mut console = self.shared.console_mgr.lock_or_recover();
-                        console.write_tty(b"\x08 \x08", 437);
+                        if echo {
+                            self.shared.console_mgr.lock_or_recover().write_tty(b"\x08 \x08", 437);
+                        }
                     }
                 } else if b >= 0x20 {
-                    self.guest_write::<u8>(p_buf + count, b);
+                    if self.guest_write::<u8>(p_buf + count, b).is_none() { return ERROR_KBD_PARAMETER; }
                     count += 1;
-                    // Echo character
-                    let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-                    let mut console = self.shared.console_mgr.lock_or_recover();
-                    console.write_tty(&[b], cp);
+                    if echo {
+                        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                        self.shared.console_mgr.lock_or_recover().write_tty(&[b], cp);
+                    }
                 }
             } else if wait == IO_NOWAIT {
                 break;
@@ -537,7 +554,7 @@ mod tests {
         let result = loader.handle_kbdcalls(&mut vcpu, 0, 10);
         assert!(matches!(result, ApiResult::Normal(0)));
         assert_eq!(loader.guest_read::<u16>(p_status),     Some(10));   // cb = struct size
-        assert_eq!(loader.guest_read::<u16>(p_status + 2), Some(0x06)); // fsMask: binary+raw
+        assert_eq!(loader.guest_read::<u16>(p_status + 2), Some(0x09)); // fsMask: ASCII, echo on
         assert_eq!(loader.guest_read::<u16>(p_status + 4), Some(0x0D)); // turn-around: CR
         assert_eq!(loader.guest_read::<u16>(p_status + 6), Some(0));    // fsInterim
         assert_eq!(loader.guest_read::<u16>(p_status + 8), Some(0));    // fsState
@@ -725,6 +742,49 @@ mod tests {
         assert!(loader.shared.threads.signals.lock().unwrap().termination_pending());
     }
 
+    /// KbdStringIn follows the keyboard's mode: in ASCII mode Backspace
+    /// edits and the turnaround character ends the line (not stored), with
+    /// echo to the screen only when echo is on; in binary mode every byte is
+    /// stored, nothing echoed, and only a full buffer ends the call.
+    #[test]
+    fn kbd_string_in_follows_the_keyboard_mode() {
+        use super::super::console::HostInput;
+        use super::super::vio_text::*;
+        let loader = Loader::new_mock();
+        loader.shared.console_mgr.lock().unwrap().enable_sdl_mode();
+        let (buf, len) = (0x0020_0000u32, 0x0020_1000u32);
+        let feed = |bytes: &[u8]| {
+            let v: Vec<HostInput> = bytes.iter().map(|&b| HostInput::Byte(b)).collect();
+            v.into_iter().chain(std::iter::repeat(HostInput::Empty))
+        };
+        let screen_row0 = |l: &Loader| l.shared.console_mgr.lock().unwrap().buffer[..4].iter().map(|c| c.0).collect::<String>();
+        // ASCII, echo on (the default), turnaround CR.
+        let mut r = feed(b"xz\x08y\rrest");
+        assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || r.next().unwrap()), 0);
+        assert_eq!(loader.guest_read::<u16>(len + 2), Some(2));
+        assert_eq!(loader.guest_read_bytes(buf, 2).unwrap(), b"xy");
+        assert_eq!(screen_row0(&loader), "xy  ", "echoed, the Backspace too");
+        // ASCII, echo off, turnaround ';'.
+        {
+            let mut c = loader.shared.console_mgr.lock().unwrap();
+            c.kbd.mask = KEYBOARD_ECHO_OFF | KEYBOARD_ASCII_MODE;
+            c.kbd.turnaround = u16::from(b';');
+            c.write_tty(b"\x1b[2J", 437);
+        }
+        let mut r = feed(b"ab;c");
+        assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || r.next().unwrap()), 0);
+        assert_eq!(loader.guest_read::<u16>(len + 2), Some(2));
+        assert_eq!(screen_row0(&loader), "    ", "no echo");
+        // Binary: raw bytes until the buffer is full, no echo, the
+        // turnaround character stored like any byte.
+        loader.shared.console_mgr.lock().unwrap().kbd.mask = KEYBOARD_ECHO_ON | KEYBOARD_BINARY_MODE;
+        let mut r = feed(b"q\x08;\r\x00more");
+        assert_eq!(loader.kbd_string_in_host(buf, len, 5, IO_WAIT, || r.next().unwrap()), 0);
+        assert_eq!(loader.guest_read::<u16>(len + 2), Some(5));
+        assert_eq!(loader.guest_read_bytes(buf, 5).unwrap(), b"q\x08;\r\x00");
+        assert_eq!(screen_row0(&loader), "    ", "binary mode does not echo");
+    }
+
     /// A signal while KbdStringIn waits: with nothing typed the call is
     /// made again after it; a partly typed line is returned.
     #[test]
@@ -769,7 +829,7 @@ mod tests {
         assert_eq!(loader.kbd_set_status(p, 7), ERROR_KBD_INVALID_HANDLE);
         assert_eq!(loader.kbd_set_status(p, 0), NO_ERROR);
         assert_eq!(loader.kbd_get_status(p, 0), NO_ERROR);
-        assert_eq!(loader.guest_read::<u16>(p + 2), Some(0x0001 | 0x0004), "echo on, still binary");
+        assert_eq!(loader.guest_read::<u16>(p + 2), Some(0x0001 | 0x0008), "echo on, still ASCII");
         assert_eq!(loader.guest_read::<u16>(p + 4), Some(0x1B), "a one-byte turnaround");
 
         assert_eq!(loader.kbd_set_cp(0, 12345, 0), ERROR_KBD_INVALID_CODEPAGE);

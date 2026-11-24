@@ -11,7 +11,11 @@
  * KBD: KbdGetStatus / KbdSetStatus (masks, lengths, the turnaround
  * character), KbdGetCp / KbdSetCp, KbdGetHWID, KbdOpen / KbdClose,
  * KbdGetFocus / KbdFreeFocus, KbdSynch, and KbdPeek / KbdCharIn /
- * KbdFlushBuffer on the keys "ab" the test pipes in.
+ * KbdFlushBuffer on the keys "ab" the test pipes in, then KbdStringIn on
+ * the keys that follow ("xz", Backspace, "y", CR, then "q", Backspace,
+ * ";"): in ASCII mode (the default, with echo) Backspace edits and CR ends
+ * the line, echoed to the screen; in binary mode every byte is kept, none
+ * echoed, until the buffer is full.
  *
  * Each check prints "<name> OK" or "<name> FAILED", then
  * "Passed: n" / "Failed: n".
@@ -159,6 +163,8 @@ static void kbd_checks(void)
 
     info.cb = sizeof(info);
     check("KbdGetStatus", KbdGetStatus(&info, 0) == 0 && info.cb == 10);
+    check("the default: ASCII mode, echo on",
+          info.fsMask == (KEYBOARD_ECHO_ON | KEYBOARD_ASCII_MODE) && info.chTurnAround == 0x0D);
     info.cb = sizeof(info);
     info.fsMask = KEYBOARD_ECHO_ON | KEYBOARD_ECHO_OFF;
     check("echo on and off together", KbdSetStatus(&info, 0) == 377);
@@ -201,6 +207,45 @@ static void kbd_checks(void)
     check("KbdPeek leaves it", KbdPeek(&key, 0) == 0 && key.chChar == 'a');
     check("KbdCharIn takes it", KbdCharIn(&key, IO_WAIT, 0) == 0 && key.chChar == 'a');
     check("then the next key", KbdCharIn(&key, IO_WAIT, 0) == 0 && key.chChar == 'b');
+    {
+        static const char blank[4] = { ' ', ' ', ' ', ' ' };
+        char line[8], scr[4];
+        STRINGINBUF sib;
+        BYTE space = ' ';
+        USHORT rc;
+        int shown;
+        /* ASCII mode with echo, CR as the turnaround character again. */
+        info.cb = sizeof(info);
+        info.fsMask = KEYBOARD_ECHO_ON | KEYBOARD_ASCII_MODE | KEYBOARD_MODIFY_TURNAROUND;
+        info.chTurnAround = 0x0D;
+        KbdSetStatus(&info, 0);
+        VioWrtNChar(&space, 80, 20, 0, 0);
+        VioSetCurPos(20, 0, 0);
+        sib.cb = sizeof(line);
+        sib.cchIn = 0;
+        /* The screen is read before any result is printed (printing
+           writes at the cursor). */
+        rc = KbdStringIn(line, &sib, IO_WAIT, 0);
+        shown = read_at(20, 0, scr, 4) && same(scr, "xy  ", 4);
+        check("KbdStringIn (ASCII)", rc == 0);
+        check("-> Backspace edits, CR ends the line", sib.cchIn == 2 && same(line, "xy", 2));
+        check("-> echoed", shown);
+        /* Binary mode: no editing, no echo, until the buffer is full. */
+        info.fsMask = KEYBOARD_BINARY_MODE;
+        KbdSetStatus(&info, 0);
+        VioWrtNChar(&space, 80, 21, 0, 0);
+        VioSetCurPos(21, 0, 0);
+        sib.cb = 3;
+        sib.cchIn = 0;
+        rc = KbdStringIn(line, &sib, IO_WAIT, 0);
+        shown = !(read_at(21, 0, scr, 4) && same(scr, blank, 4));
+        check("KbdStringIn (binary)", rc == 0);
+        check("-> every byte, until the buffer is full",
+              sib.cchIn == 3 && line[0] == 'q' && line[1] == 0x08 && line[2] == ';');
+        check("-> not echoed", !shown);
+        info.fsMask = KEYBOARD_ASCII_MODE;
+        KbdSetStatus(&info, 0);
+    }
     check("KbdFlushBuffer", KbdFlushBuffer(0) == 0);
 }
 
