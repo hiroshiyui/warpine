@@ -21,6 +21,15 @@ extern "C" {
 #define MCIERR_FILE_NOT_FOUND        (MCIERR_BASE + 19)
 #define MCIERR_OUTOFRANGE            (MCIERR_BASE + 26)
 #define MCIERR_INVALID_BUFFER        (MCIERR_BASE + 50)
+#define MCIERR_INVALID_FLAG          (MCIERR_BASE + 54)
+
+#define MSV_CLOSEDCAPTION    0
+#define MSV_MASTERVOLUME     1
+#define MSV_HEADPHONES       2
+#define MSV_SPEAKERS         3
+#define MSV_WORKPATH         4
+#define MSV_SYSQOSVALUE      5
+#define MSV_SYSQOSERRORFLAG  6
 
 #define MCI_OPEN    1
 #define MCI_CLOSE   2
@@ -85,6 +94,9 @@ ULONG APIENTRY mciSendCommand(USHORT usDeviceID, USHORT usMessage, ULONG ulParam
 ULONG APIENTRY mciSendString(PSZ pszCommandBuf, PSZ pszReturnString, USHORT usReturnLength, HWND hwndCallBack,
                              USHORT usUserParm);
 ULONG APIENTRY mciGetErrorString(ULONG ulError, PSZ pszBuffer, USHORT usLength);
+ULONG APIENTRY mciGetDeviceID(PSZ pszName);
+BOOL APIENTRY mciQuerySysValue(USHORT iSysValue, PVOID pValue);
+BOOL APIENTRY mciSetSysValue(USHORT iSysValue, PVOID pValue);
 
 #ifdef __cplusplus
 }

@@ -30,7 +30,7 @@
 #include <os2me.h>
 #include <string.h>
 
-#define N_CHECKS_MAX 24
+#define N_CHECKS_MAX 32
 #define LINE_H       18
 #define WAV_RATE     8000
 #define WAV_MS       400
@@ -72,6 +72,14 @@ static void write_stdout( const char *s )
 {
     ULONG written;
     DosWrite( 1, (PVOID)s, strlen( s ), &written );
+}
+
+/* The decimal number at the start of s (mciSendString's device ID). */
+static long atoi_simple( const char *s )
+{
+    long n = 0;
+    while( *s >= '0' && *s <= '9' ) n = n * 10 + ( *s++ - '0' );
+    return n;
 }
 
 static void check( const char *name, LONG got, LONG want )
@@ -173,6 +181,8 @@ static void run_checks( HWND hwnd )
     check( "DosBeep blocks for its duration", took( now_ms() - t, BEEP_MS ), TRUE );
 
     check( "open with alias", mci( "open tone.wav type waveaudio alias tone wait", ret, 0 ), MCIERR_SUCCESS );
+    check( "mciGetDeviceID finds the alias", mciGetDeviceID( "TONE" ) != 0 && mciGetDeviceID( "TONE" ) == (ULONG)atoi_simple( ret ), TRUE );
+    check( "mciGetDeviceID of an unknown alias", mciGetDeviceID( "nosuch" ), 0 );
     check( "open returns the device ID", ret[0] != '\0' && ret[0] != '0', TRUE );
     mci( "status tone mode", ret, 0 );
     check( "mode before playing is stopped", strcmp( ret, "stopped" ), 0 );
@@ -213,6 +223,20 @@ static void run_command_checks( void )
 }
 
 /* mciGetErrorString: a text, cut to a short buffer, and the refusals. */
+/* mciSetSysValue / mciQuerySysValue (MDM 10 / 11 of mmpm2.lib). */
+static void run_sys_value_checks( void )
+{
+    ULONG volume = 0, set = 40;
+    char  path[CCHMAXPATH];
+
+    check( "mciQuerySysValue master volume", mciQuerySysValue( MSV_MASTERVOLUME, &volume ) == MCIERR_SUCCESS && volume <= 100, TRUE );
+    check( "mciSetSysValue master volume", mciSetSysValue( MSV_MASTERVOLUME, &set ), TRUE );
+    volume = 0;
+    mciQuerySysValue( MSV_MASTERVOLUME, &volume );
+    check( "the master volume is kept", volume, 40 );
+    check( "mciQuerySysValue work path", mciQuerySysValue( MSV_WORKPATH, path ) == MCIERR_SUCCESS && path[0] != '\0', TRUE );
+}
+
 static void run_error_string_checks( void )
 {
     char buf[128];
@@ -239,6 +263,7 @@ static void finish( HWND hwnd )
     check( "close", mci( "close tone", NULL, 0 ), MCIERR_SUCCESS );
     run_command_checks();
     run_error_string_checks();
+    run_sys_value_checks();
     DosDelete( "tone.wav" );
     strcpy( text, "pm_audio_test: done " );
     append_long( text + strlen( text ), n_passed );

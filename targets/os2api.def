@@ -635,7 +635,11 @@ UCONV.1       UniCreateUconvObject
 UCONV.2       UniUconvToUcs
 UCONV.3       UniUconvFromUcs
 UCONV.4       UniFreeUconvObject
+UCONV.7       UniQueryUconvObject
+UCONV.8       UniSetUconvObject
 UCONV.10      UniMapCpToUcsCp
+UCONV.11      UniStrFromUcs
+UCONV.12      UniStrToUcs
 
 # ── MSG (32-bit ordinals from Open Watcom os2386.lib; MSG.1-3 and MSG.7 are 16-bit) ──
 MSG.4         DosInsertMessage
@@ -647,6 +651,9 @@ MSG.8         DosQueryMessageCP   # NOTE: OW lib names this DOS32IQUERYMESSAGECP
 MDM.1         mciSendCommand
 MDM.2         mciSendString
 MDM.3         mciGetErrorString
+MDM.10        mciSetSysValue
+MDM.11        mciQuerySysValue
+MDM.16        mciGetDeviceID
 
 # ── SO32DLL (TCP/IP socket API — ordinal relative to module) ─────────────────
 SO32DLL.1     accept

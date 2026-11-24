@@ -11,12 +11,13 @@
 // `UniUconvToUcs`/`UniUconvFromUcs` look up the codepage by handle and delegate
 // to `codepage::cp_decode`/`cp_encode`.
 //
-// # Return codes (from OS/2 <unidef.h>)
-//   ULS_SUCCESS     = 0
-//   ULS_INVALID     = 1  — null or invalid argument
-//   ULS_BADOBJECT   = 2  — invalid UCONV_OBJECT handle
-//   ULS_BUFFERFULL  = 8  — output buffer too small
-//   ULS_INVALID_CPID = 10 — unrecognised codepage identifier
+// # Return codes (<ulserrno.h>: ULS_API_ERROR_BASE 0x20400 plus an index)
+//   ULS_SUCCESS          0
+//   ULS_ILLEGALSEQUENCE  0x20402 — a sequence the codepage cannot hold
+//   ULS_INVALID          0x2040E — null or invalid argument, unknown codepage name
+//   ULS_BADOBJECT        0x2040F — invalid UconvObject
+//   ULS_BUFFERFULL       0x20412 — output buffer too small
+//   ULS_BADATTR          0x20415 — UniSetUconvObject's attributes refused
 
 use std::collections::HashMap;
 use tracing::debug;
@@ -26,19 +27,56 @@ use super::MutexExt;
 // ── Return codes ──────────────────────────────────────────────────────────────
 
 pub const ULS_SUCCESS:      u32 = 0;
-pub const ULS_INVALID:      u32 = 1;
-pub const ULS_BADOBJECT:    u32 = 2;
-pub const ULS_BUFFERFULL:   u32 = 8;
-pub const ULS_INVALID_CPID: u32 = 10;
+const ULS_API_ERROR_BASE:   u32 = 0x0002_0400;
+pub const ULS_ILLEGALSEQUENCE: u32 = ULS_API_ERROR_BASE | 2;
+pub const ULS_INVALID:      u32 = ULS_API_ERROR_BASE | 14;
+pub const ULS_BADOBJECT:    u32 = ULS_API_ERROR_BASE | 15;
+pub const ULS_BUFFERFULL:   u32 = ULS_API_ERROR_BASE | 18;
+pub const ULS_BADATTR:      u32 = ULS_API_ERROR_BASE | 21;
 
 /// Internal sentinel: conversion object created for UTF-8 (no OS/2 codepage number).
 const CP_UTF8: u32 = 0xFFFF_FFFE;
 
 // ── UconvManager ─────────────────────────────────────────────────────────────
 
+/// The attributes `UniSetUconvObject` may change (`uconv_attribute_t`);
+/// Warpine records them for `UniQueryUconvObject`, its conversions do not
+/// act on them yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UconvAttrs {
+    pub options: u8,
+    pub state: u8,
+    /// `conv_endian_t`: source, target.
+    pub endian: (u16, u16),
+    pub displaymask: u32,
+    pub converttype: u32,
+    pub subchar: Vec<u8>,
+    pub subuni: Vec<u16>,
+}
+
+/// `UCONV_OPTION_SUBSTITUTE_FROM_UNICODE`: the default substitution.
+const UCONV_OPTION_SUBSTITUTE_FROM_UNICODE: u8 = 1;
+/// `DSPMASK_DATA`: every control character is data.
+const DSPMASK_DATA: u32 = 0xFFFF_FFFF;
+/// The byte `cp_encode` puts for a character the codepage lacks, and the
+/// Unicode replacement character.
+const DEFAULT_SUBCHAR: u8 = b'?';
+const DEFAULT_SUBUNI: u16 = 0xFFFD;
+
+impl Default for UconvAttrs {
+    fn default() -> Self {
+        UconvAttrs {
+            options: UCONV_OPTION_SUBSTITUTE_FROM_UNICODE, state: 0, endian: (0, 0),
+            displaymask: DSPMASK_DATA, converttype: 0,
+            subchar: vec![DEFAULT_SUBCHAR], subuni: vec![DEFAULT_SUBUNI],
+        }
+    }
+}
+
 /// Tracks live UCONV_OBJECT handles → codepage mappings.
 pub struct UconvManager {
     objects: HashMap<u32, u32>, // UCONV_OBJECT handle → codepage (CP_UTF8 for UTF-8)
+    attrs: HashMap<u32, UconvAttrs>,
     next_handle: u32,
 }
 
@@ -48,7 +86,7 @@ impl Default for UconvManager {
 
 impl UconvManager {
     pub fn new() -> Self {
-        Self { objects: HashMap::new(), next_handle: 0x8001 }
+        Self { objects: HashMap::new(), attrs: HashMap::new(), next_handle: 0x8001 }
     }
 
     /// Allocate a new handle for `cp` and return it.
@@ -56,6 +94,7 @@ impl UconvManager {
         let h = self.next_handle;
         self.next_handle = (self.next_handle + 1) | 0x8000;
         self.objects.insert(h, cp);
+        self.attrs.insert(h, UconvAttrs::default());
         h
     }
 
@@ -66,7 +105,18 @@ impl UconvManager {
 
     /// Free a handle.  Returns `true` if found and removed.
     pub fn free(&mut self, h: u32) -> bool {
+        self.attrs.remove(&h);
         self.objects.remove(&h).is_some()
+    }
+
+    /// The attributes of a handle.
+    pub fn attrs(&self, h: u32) -> Option<&UconvAttrs> {
+        self.attrs.get(&h)
+    }
+
+    /// Replace the attributes of a handle; false for an unknown one.
+    pub fn set_attrs(&mut self, h: u32, a: UconvAttrs) -> bool {
+        self.attrs.get_mut(&h).map(|slot| *slot = a).is_some()
     }
 }
 
@@ -91,7 +141,7 @@ impl super::Loader {
             Some(cp) => cp,
             None => {
                 debug!("  unrecognised name {:?}", name);
-                return ULS_INVALID_CPID;
+                return ULS_INVALID;
             }
         };
 
@@ -284,6 +334,112 @@ impl super::Loader {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    // ── UniStrToUcs (ordinal 12) ──────────────────────────────────────────────
+    //
+    //   int UniStrToUcs(UconvObject uobj, UniChar *ucsbuf, char *str, int size)
+    //
+    // The NUL-terminated `str`, its NUL included, as UniChars in `ucsbuf`
+    // (room for `size` UniChars); a short buffer gets what fits, cut before
+    // the character that would not, and `ULS_BUFFERFULL`.
+
+    pub fn uni_str_to_ucs(&self, uobj: u32, ucsbuf: u32, str_ptr: u32, size: u32) -> u32 {
+        let Some(cp) = self.shared.uconv_mgr.lock_or_recover().lookup(uobj) else { return ULS_BADOBJECT };
+        if ucsbuf == 0 || str_ptr == 0 { return ULS_INVALID; }
+        let Some(bytes) = self.uconv_nul_string(str_ptr) else { return ULS_INVALID };
+        let text = if cp == CP_UTF8 { String::from_utf8_lossy(&bytes).into_owned() } else { cp_decode(&bytes, cp) };
+        let mut units: Vec<u16> = text.encode_utf16().collect();
+        units.push(0);
+        let room = size as usize;
+        let fits = units.len() <= room;
+        for (i, u) in units.iter().take(room).enumerate() {
+            if self.guest_write::<u16>(ucsbuf + 2 * i as u32, *u).is_none() { return ULS_INVALID; }
+        }
+        debug!("UniStrToUcs uobj=0x{uobj:X} cp={cp} -> {} UniChars", units.len());
+        if fits { ULS_SUCCESS } else { ULS_BUFFERFULL }
+    }
+
+    // ── UniStrFromUcs (ordinal 11) ────────────────────────────────────────────
+    //
+    //   int UniStrFromUcs(UconvObject uobj, char *outbuf, UniChar *ucsstr, int size)
+    //
+    // The NUL-terminated `ucsstr`, its NUL included, in the object's codepage
+    // (`size` bytes of room), always substituting what the codepage lacks; a
+    // short buffer gets the characters that fit whole and `ULS_BUFFERFULL`.
+
+    pub fn uni_str_from_ucs(&self, uobj: u32, outbuf: u32, ucsstr: u32, size: u32) -> u32 {
+        let Some(cp) = self.shared.uconv_mgr.lock_or_recover().lookup(uobj) else { return ULS_BADOBJECT };
+        if outbuf == 0 || ucsstr == 0 { return ULS_INVALID; }
+        let Some(units) = self.uconv_nul_ucs2(ucsstr) else { return ULS_INVALID };
+        let mut out = Vec::new();
+        let mut full = false;
+        for ch in char::decode_utf16(units.iter().copied().chain(std::iter::once(0))) {
+            let ch = ch.unwrap_or(char::REPLACEMENT_CHARACTER);
+            let mut tmp = [0u8; 4];
+            let piece: Vec<u8> = if cp == CP_UTF8 { ch.encode_utf8(&mut tmp).as_bytes().to_vec() } else { cp_encode(ch.encode_utf8(&mut tmp), cp) };
+            if out.len() + piece.len() > size as usize { full = true; break; }
+            out.extend_from_slice(&piece);
+        }
+        if self.guest_write_bytes(outbuf, &out).is_none() { return ULS_INVALID; }
+        if full { ULS_BUFFERFULL } else { ULS_SUCCESS }
+    }
+
+    // ── UniQueryUconvObject (ordinal 7) / UniSetUconvObject (ordinal 8) ───────
+    //
+    //   int UniQueryUconvObject(UconvObject uobj, uconv_attribute_t *attr,
+    //       size_t size, char first[256], char other[256], udcrange_t udcrange[32])
+    //   int UniSetUconvObject(UconvObject uobj, uconv_attribute_t *attr)
+    //
+    // A NULL `attr`, `first`, `other` or `udcrange` is not filled; `size`
+    // must hold the version-0 structure.
+
+    pub fn uni_query_uconv_object(&self, uobj: u32, attr: u32, size: u32, first: u32, other: u32, udcrange: u32) -> u32 {
+        let (cp, attrs) = {
+            let mgr = self.shared.uconv_mgr.lock_or_recover();
+            match (mgr.lookup(uobj), mgr.attrs(uobj)) {
+                (Some(cp), Some(a)) => (cp, a.clone()),
+                _ => return ULS_BADOBJECT,
+            }
+        };
+        if attr != 0 {
+            if (size as usize) < UCONV_ATTR_SIZE { return ULS_INVALID; }
+            if self.guest_write_bytes(attr, &attribute_bytes(cp, &attrs)).is_none() { return ULS_INVALID; }
+        }
+        let (lead, trail) = byte_tables(cp);
+        for (ptr, table) in [(first, &lead[..]), (other, &trail[..])] {
+            if ptr != 0 && self.guest_write_bytes(ptr, table).is_none() { return ULS_INVALID; }
+        }
+        // No user-defined character ranges: all 32 empty.
+        if udcrange != 0 && self.guest_write_bytes(udcrange, &[0u8; UDCRANGE_BYTES]).is_none() { return ULS_INVALID; }
+        ULS_SUCCESS
+    }
+
+    pub fn uni_set_uconv_object(&self, uobj: u32, attr: u32) -> u32 {
+        if self.shared.uconv_mgr.lock_or_recover().lookup(uobj).is_none() { return ULS_BADOBJECT; }
+        let Some(bytes) = self.guest_read_bytes(attr, UCONV_ATTR_SIZE) else { return ULS_INVALID };
+        let Some(attrs) = parse_attribute(&bytes) else { return ULS_BADATTR };
+        self.shared.uconv_mgr.lock_or_recover().set_attrs(uobj, attrs);
+        ULS_SUCCESS
+    }
+
+    /// The bytes of the NUL-terminated string at `p` (without its NUL), at
+    /// most `MAX_UNI_STRING` of them.
+    fn uconv_nul_string(&self, p: u32) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        for i in 0..MAX_UNI_STRING {
+            match self.guest_read::<u8>(p.checked_add(i)?)? { 0 => return Some(out), b => out.push(b) }
+        }
+        None
+    }
+
+    /// The UniChars of the NUL-terminated UCS-2 string at `p` (without its NUL).
+    fn uconv_nul_ucs2(&self, p: u32) -> Option<Vec<u16>> {
+        let mut out = Vec::new();
+        for i in 0..MAX_UNI_STRING {
+            match self.guest_read::<u16>(p.checked_add(2 * i)?)? { 0 => return Some(out), u => out.push(u) }
+        }
+        None
+    }
+
     /// Read a null-terminated UCS-2 string from guest memory.
     fn read_guest_ucs2(&self, ptr: u32) -> String {
         let mut wchars = Vec::new();
@@ -348,6 +504,100 @@ fn cp_to_ibm_name(cp: u32) -> String {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+// ── uconv_attribute_t ────────────────────────────────────────────────────────
+
+/// The longest string the string calls read, in units.
+const MAX_UNI_STRING: u32 = 64 * 1024;
+/// `uconv_attribute_t` version 0 (<uconv.h>): version, the four lengths,
+/// esid, options, state, endian (source, target), displaymask, converttype,
+/// subchar_len, subuni_len, subchar[16], subuni[8].
+pub const UCONV_ATTR_SIZE: usize = 60;
+const MAX_SUBCHAR: usize = 16;
+const MAX_SUBUNI: usize = 8;
+/// `udcrange_t udcrange[32]`, two USHORTs each.
+const UDCRANGE_BYTES: usize = 32 * 4;
+/// The `conv_endian_t` values (`ENDIAN_SYSTEM`, `ENDIAN_BIG`, `ENDIAN_LITTLE`).
+const ENDIANS: [u16; 3] = [0x0000, 0xFEFF, 0xFFFE];
+/// The `options` values (`UCONV_OPTION_SUBSTITUTE_*`, 0 for none).
+const MAX_OPTION: u8 = 3;
+/// Encoding scheme ids (`enum uconv_esid`).
+const ESID_SBCS_PC: u16 = 0x3100;
+const ESID_MBCS_PC: u16 = 0x3300;
+const ESID_UTF_8: u16 = 0x7807;
+
+/// The DBCS lead-byte ranges of `cp` (empty for an SBCS codepage).
+fn dbcs_leads(cp: u32) -> &'static [(u8, u8)] {
+    if cp == CP_UTF8 { &[] } else { super::locale::dbcs_lead_ranges(cp) }
+}
+
+/// `UniQueryUconvObject`'s `first` and `other` tables: each byte's
+/// character length as a first byte, and whether it can follow one.
+pub fn byte_tables(cp: u32) -> ([u8; 256], [u8; 256]) {
+    let mut first = [1u8; 256];
+    let mut other = [0u8; 256];
+    if cp == CP_UTF8 {
+        for b in 0..256usize {
+            first[b] = match b { 0x00..=0x7F => 1, 0xC2..=0xDF => 2, 0xE0..=0xEF => 3, 0xF0..=0xF4 => 4, _ => 0 };
+            other[b] = u8::from((0x80..=0xBF).contains(&b));
+        }
+    } else {
+        for &(lo, hi) in dbcs_leads(cp) {
+            for b in lo..=hi { first[b as usize] = 2; }
+        }
+        if !dbcs_leads(cp).is_empty() {
+            other[0x40..=0xFE].fill(1);
+        }
+    }
+    (first, other)
+}
+
+/// A `uconv_attribute_t` for an object of codepage `cp` with `a`.
+pub fn attribute_bytes(cp: u32, a: &UconvAttrs) -> [u8; UCONV_ATTR_SIZE] {
+    let dbcs = !dbcs_leads(cp).is_empty();
+    let (mb_max, esid) = if cp == CP_UTF8 { (3, ESID_UTF_8) } else if dbcs { (2, ESID_MBCS_PC) } else { (1, ESID_SBCS_PC) };
+    let mut b = [0u8; UCONV_ATTR_SIZE];
+    b[4] = 1; // mb_min_len
+    b[5] = mb_max;
+    b[6] = 1; // usc_min_len
+    b[7] = 1; // usc_max_len
+    b[8..10].copy_from_slice(&esid.to_le_bytes());
+    b[10] = a.options;
+    b[11] = a.state;
+    b[12..14].copy_from_slice(&a.endian.0.to_le_bytes());
+    b[14..16].copy_from_slice(&a.endian.1.to_le_bytes());
+    b[16..20].copy_from_slice(&a.displaymask.to_le_bytes());
+    b[20..24].copy_from_slice(&a.converttype.to_le_bytes());
+    b[24..26].copy_from_slice(&(a.subchar.len() as u16).to_le_bytes());
+    b[26..28].copy_from_slice(&(a.subuni.len() as u16).to_le_bytes());
+    b[28..28 + a.subchar.len()].copy_from_slice(&a.subchar);
+    for (i, u) in a.subuni.iter().enumerate() { b[44 + 2 * i..46 + 2 * i].copy_from_slice(&u.to_le_bytes()); }
+    b
+}
+
+/// The settable attributes of a `uconv_attribute_t`, or `None` when they
+/// are refused (`ULS_BADATTR`): a version other than 0, an unknown option
+/// or endian, substitution strings longer than their arrays.
+pub fn parse_attribute(b: &[u8]) -> Option<UconvAttrs> {
+    let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+    let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    if b.len() < UCONV_ATTR_SIZE || u32_at(0) != 0 { return None; }
+    let (subchar_len, subuni_len) = (u16_at(24) as usize, u16_at(26) as usize);
+    let endian = (u16_at(12), u16_at(14));
+    if b[10] > MAX_OPTION || subchar_len > MAX_SUBCHAR || subuni_len > MAX_SUBUNI
+        || !ENDIANS.contains(&endian.0) || !ENDIANS.contains(&endian.1) {
+        return None;
+    }
+    Some(UconvAttrs {
+        options: b[10],
+        state: b[11],
+        endian,
+        displaymask: u32_at(16),
+        converttype: u32_at(20),
+        subchar: b[28..28 + subchar_len].to_vec(),
+        subuni: (0..subuni_len).map(|i| u16_at(44 + 2 * i)).collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,7 +656,7 @@ mod tests {
         write_ucs2(&loader, name_buf, "BOGUS-CPNAME");
         let h_buf = alloc(&loader, 4);
 
-        assert_eq!(loader.uni_create_uconv_object(name_buf, h_buf), ULS_INVALID_CPID);
+        assert_eq!(loader.uni_create_uconv_object(name_buf, h_buf), ULS_INVALID);
     }
 
     #[test]
@@ -606,5 +856,66 @@ mod tests {
         assert_eq!(parse_uconv_name("IBM-999"),   None); // unsupported codepage
         assert_eq!(parse_uconv_name(""),           None);
         assert_eq!(parse_uconv_name("IBM-"),       None);
+    }
+
+    fn object(loader: &Loader, name: &str) -> u32 {
+        let name_buf = alloc(loader, 64);
+        write_ucs2(loader, name_buf, name);
+        let h_buf = alloc(loader, 4);
+        assert_eq!(loader.uni_create_uconv_object(name_buf, h_buf), ULS_SUCCESS);
+        loader.guest_read::<u32>(h_buf).unwrap()
+    }
+
+    /// The return codes are <ulserrno.h>'s.
+    #[test]
+    fn uls_codes_are_the_toolkits() {
+        assert_eq!((ULS_INVALID, ULS_BADOBJECT, ULS_BUFFERFULL, ULS_BADATTR), (0x2040E, 0x2040F, 0x20412, 0x20415));
+    }
+
+    #[test]
+    fn strings_convert_with_their_nul_and_stop_at_a_short_buffer() {
+        let loader = Loader::new_mock();
+        let h = object(&loader, "IBM-850");
+        let src = alloc(&loader, 16);
+        loader.guest_write_bytes(src, b"A\x82z\0").unwrap(); // 0x82 is é in CP850
+        let ucs = alloc(&loader, 32);
+        assert_eq!(loader.uni_str_to_ucs(h, ucs, src, 8), ULS_SUCCESS);
+        let units: Vec<u16> = (0..4).map(|i| loader.guest_read::<u16>(ucs + 2 * i).unwrap()).collect();
+        assert_eq!(units, [0x41, 0xE9, 0x7A, 0]);
+        assert_eq!(loader.uni_str_to_ucs(h, ucs, src, 3), ULS_BUFFERFULL, "no room for the NUL");
+        let out = alloc(&loader, 16);
+        assert_eq!(loader.uni_str_from_ucs(h, out, ucs, 16), ULS_SUCCESS);
+        assert_eq!(loader.guest_read_bytes(out, 4).unwrap(), b"A\x82z\0");
+        assert_eq!(loader.uni_str_from_ucs(h, out, ucs, 2), ULS_BUFFERFULL);
+        assert_eq!(loader.uni_str_from_ucs(0x1234, out, ucs, 16), ULS_BADOBJECT);
+    }
+
+    #[test]
+    fn attributes_are_queried_and_set() {
+        let loader = Loader::new_mock();
+        let h = object(&loader, "IBM-932");
+        let attr = alloc(&loader, UCONV_ATTR_SIZE as u32);
+        let first = alloc(&loader, 256);
+        assert_eq!(loader.uni_query_uconv_object(h, attr, UCONV_ATTR_SIZE as u32, first, 0, 0), ULS_SUCCESS);
+        let b = loader.guest_read_bytes(attr, UCONV_ATTR_SIZE).unwrap();
+        assert_eq!((b[4], b[5]), (1, 2), "mixed SBCS / DBCS");
+        assert_eq!(loader.guest_read::<u8>(first + 0x81), Some(2), "a Shift-JIS lead byte");
+        assert_eq!(loader.guest_read::<u8>(first + 0x41), Some(1));
+        assert_eq!(loader.uni_query_uconv_object(h, attr, 8, 0, 0, 0), ULS_INVALID, "too small for version 0");
+        // Set a substitution character and big-endian output, then read them back.
+        let mut set = b.clone();
+        set[14..16].copy_from_slice(&0xFEFFu16.to_le_bytes());
+        set[24..26].copy_from_slice(&1u16.to_le_bytes());
+        set[28] = b'#';
+        loader.guest_write_bytes(attr, &set).unwrap();
+        assert_eq!(loader.uni_set_uconv_object(h, attr), ULS_SUCCESS);
+        assert_eq!(loader.uni_query_uconv_object(h, attr, UCONV_ATTR_SIZE as u32, 0, 0, 0), ULS_SUCCESS);
+        let back = loader.guest_read_bytes(attr, UCONV_ATTR_SIZE).unwrap();
+        assert_eq!((u16::from_le_bytes([back[14], back[15]]), back[28]), (0xFEFF, b'#'));
+        set[12..14].copy_from_slice(&0x1234u16.to_le_bytes());
+        loader.guest_write_bytes(attr, &set).unwrap();
+        assert_eq!(loader.uni_set_uconv_object(h, attr), ULS_BADATTR, "an unknown endian");
+        assert_eq!(byte_tables(CP_UTF8).0[0xE3], 3);
+        assert_eq!(byte_tables(850).1[0x80], 0, "no trail bytes in an SBCS codepage");
     }
 }

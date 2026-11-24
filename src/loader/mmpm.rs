@@ -119,6 +119,7 @@ pub const MCIERR_UNSUPPORTED_FUNCTION: u32 = MCIERR_BASE + 18;
 pub const MCIERR_FILE_NOT_FOUND:       u32 = MCIERR_BASE + 19;
 pub const MCIERR_OUTOFRANGE:           u32 = MCIERR_BASE + 26;
 pub const MCIERR_INVALID_BUFFER:       u32 = MCIERR_BASE + 50;
+pub const MCIERR_INVALID_FLAG:         u32 = MCIERR_BASE + 54;
 
 /// The longest text `mciGetErrorString` returns, its NUL included (IBM's
 /// Multimedia Programming Reference: "The maximum string length returned
@@ -214,7 +215,48 @@ fn device_mode(dev: &MciDevice, audio: &AudioService) -> MciMode {
 pub struct MmpmManager {
     pub devices: HashMap<u16, MciDevice>,
     pub next_device_id: u16,
+    /// The system values of `mciSetSysValue` / `mciQuerySysValue`.
+    pub sys: MciSysValues,
 }
+
+/// The MCI system values (`MSV_*`, <mcios2.h>), per process: Warpine keeps
+/// what a program sets and reports it; playback does not act on them yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MciSysValues {
+    pub closed_caption: bool,
+    /// 0 to 100.
+    pub master_volume: u32,
+    pub headphones: bool,
+    pub speakers: bool,
+    /// Where temporary multimedia files go.
+    pub work_path: Vec<u8>,
+    pub qos_value: u32,
+    pub qos_error_flag: u32,
+}
+
+impl Default for MciSysValues {
+    fn default() -> Self {
+        MciSysValues {
+            closed_caption: false, master_volume: MAX_MASTER_VOLUME, headphones: false, speakers: true,
+            work_path: DEFAULT_WORK_PATH.to_vec(), qos_value: 0, qos_error_flag: 0,
+        }
+    }
+}
+
+/// `MSV_*` system values (<mcios2.h>).
+pub const MSV_CLOSEDCAPTION: u32 = 0;
+pub const MSV_MASTERVOLUME: u32 = 1;
+pub const MSV_HEADPHONES: u32 = 2;
+pub const MSV_SPEAKERS: u32 = 3;
+pub const MSV_WORKPATH: u32 = 4;
+pub const MSV_SYSQOSVALUE: u32 = 5;
+pub const MSV_SYSQOSERRORFLAG: u32 = 6;
+const MAX_MASTER_VOLUME: u32 = 100;
+/// `CCHMAXPATH`: the room `MSV_WORKPATH`'s buffer has, its NUL included.
+const CCHMAXPATH: usize = 260;
+/// The work path before a program sets one (Warpine's choice: drive C:'s
+/// root, which every session has).
+const DEFAULT_WORK_PATH: &[u8] = b"C:\\";
 
 impl Default for MmpmManager {
     fn default() -> Self { Self::new() }
@@ -225,6 +267,7 @@ impl MmpmManager {
         Self {
             devices: HashMap::new(),
             next_device_id: 1,
+            sys: MciSysValues::default(),
         }
     }
 }
@@ -603,6 +646,86 @@ impl super::Loader {
             Some(()) => MCIERR_SUCCESS,
             None => MCIERR_INVALID_BUFFER,
         }
+    }
+
+    /// MDM ordinal 16: `mciGetDeviceID(pszName)`: the device opened under
+    /// the alias `pszName` (case does not matter), 0 when there is none.
+    pub fn mci_get_device_id(&self, psz_name: u32) -> u32 {
+        let Some(name) = self.mci_guest_string(psz_name) else { return 0 };
+        let mgr = self.shared.mmpm_mgr.lock().unwrap();
+        mgr.devices.iter().find(|(_, d)| !d.alias.is_empty() && d.alias.eq_ignore_ascii_case(&name))
+            .map_or(0, |(&id, _)| u32::from(id))
+    }
+
+    /// MDM ordinal 11: `mciQuerySysValue(iSysValue, pValue)`: the value to
+    /// `*pValue` (a ULONG, or for `MSV_WORKPATH` a `CCHMAXPATH` buffer);
+    /// `MCIERR_SUCCESS`, or `MCIERR_INVALID_FLAG` for an unknown value or
+    /// a bad pointer.
+    pub fn mci_query_sys_value(&self, which: u32, p_value: u32) -> u32 {
+        let sys = self.shared.mmpm_mgr.lock().unwrap().sys.clone();
+        let written = match which & 0xFFFF {
+            MSV_WORKPATH => {
+                let mut path = sys.work_path.clone();
+                path.truncate(CCHMAXPATH - 1);
+                path.push(0);
+                self.guest_write_bytes(p_value, &path)
+            }
+            v => {
+                let value = match v {
+                    MSV_CLOSEDCAPTION => u32::from(sys.closed_caption),
+                    MSV_MASTERVOLUME => sys.master_volume,
+                    MSV_HEADPHONES => u32::from(sys.headphones),
+                    MSV_SPEAKERS => u32::from(sys.speakers),
+                    MSV_SYSQOSVALUE => sys.qos_value,
+                    MSV_SYSQOSERRORFLAG => sys.qos_error_flag,
+                    _ => return MCIERR_INVALID_FLAG,
+                };
+                self.guest_write::<u32>(p_value, value)
+            }
+        };
+        if written.is_some() { MCIERR_SUCCESS } else { MCIERR_INVALID_FLAG }
+    }
+
+    /// MDM ordinal 10: `mciSetSysValue(iSysValue, pValue)`: set a value from
+    /// `*pValue` (a ULONG, or for `MSV_WORKPATH` a string); TRUE, or FALSE
+    /// for an unknown value, a bad pointer, a volume above 100 or a path that
+    /// is empty or does not fit `CCHMAXPATH`.
+    pub fn mci_set_sys_value(&self, which: u32, p_value: u32) -> u32 {
+        const TRUE: u32 = 1;
+        const FALSE: u32 = 0;
+        if which & 0xFFFF == MSV_WORKPATH {
+            let Some(path) = self.mci_guest_bytes(p_value, CCHMAXPATH) else { return FALSE };
+            if path.is_empty() { return FALSE; }
+            self.shared.mmpm_mgr.lock().unwrap().sys.work_path = path;
+            return TRUE;
+        }
+        let Some(value) = self.guest_read::<u32>(p_value) else { return FALSE };
+        let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
+        let sys = &mut mgr.sys;
+        match which & 0xFFFF {
+            MSV_CLOSEDCAPTION => sys.closed_caption = value != 0,
+            MSV_MASTERVOLUME if value <= MAX_MASTER_VOLUME => sys.master_volume = value,
+            MSV_HEADPHONES => sys.headphones = value != 0,
+            MSV_SPEAKERS => sys.speakers = value != 0,
+            MSV_SYSQOSVALUE => sys.qos_value = value,
+            MSV_SYSQOSERRORFLAG => sys.qos_error_flag = value,
+            _ => return FALSE,
+        }
+        TRUE
+    }
+
+    /// The bytes of the NUL-terminated guest string at `p`, if it ends
+    /// within `limit` bytes.
+    fn mci_guest_bytes(&self, p: u32, limit: usize) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        for i in 0..limit as u32 {
+            match self.guest_read::<u8>(p.checked_add(i)?)? { 0 => return Some(out), b => out.push(b) }
+        }
+        None
+    }
+
+    fn mci_guest_string(&self, p: u32) -> Option<String> {
+        self.mci_guest_bytes(p, CCHMAXPATH).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
 
     // ── Internal MCI helpers ──────────────────────────────────────────────────
@@ -1396,5 +1519,34 @@ mod tests {
             current_position: 0, volume: 100, notify_hwnd: 0, notify_cancel: None,
         });
         assert_eq!(loader.mci_get_error_string((9 << 16) | MCIERR_FILE_NOT_FOUND, buf, 128), MCIERR_SUCCESS);
+    }
+
+    /// mciGetDeviceID finds an alias; the system values are kept and checked.
+    #[test]
+    fn test_mci_device_ids_and_system_values() {
+        let loader = super::super::Loader::new_mock();
+        let p = 0x0020_0000;
+        loader.shared.mmpm_mgr.lock().unwrap().devices.insert(5, MciDevice {
+            device_type: "waveaudio".into(), element_name: "x.wav".into(), alias: "Tune".into(),
+            mode: MciMode::Stopped, voice: None, pcm: Vec::new(),
+            spec: PcmSpec { freq: 1000, channels: 1, format: SampleFormat::U8 },
+            current_position: 0, volume: 100, notify_hwnd: 0, notify_cancel: None,
+        });
+        loader.guest_write_bytes(p, b"TUNE\0").unwrap();
+        assert_eq!(loader.mci_get_device_id(p), 5);
+        loader.guest_write_bytes(p, b"x.wav\0").unwrap();
+        assert_eq!(loader.mci_get_device_id(p), 0, "an element name is no alias");
+        loader.guest_write::<u32>(p, 101).unwrap();
+        assert_eq!(loader.mci_set_sys_value(MSV_MASTERVOLUME, p), 0, "above 100");
+        loader.guest_write::<u32>(p, 30).unwrap();
+        assert_eq!(loader.mci_set_sys_value(MSV_MASTERVOLUME, p), 1);
+        assert_eq!(loader.mci_query_sys_value(MSV_MASTERVOLUME, p), MCIERR_SUCCESS);
+        assert_eq!(loader.guest_read::<u32>(p), Some(30));
+        loader.guest_write_bytes(p, b"D:\\TMP\0").unwrap();
+        assert_eq!(loader.mci_set_sys_value(MSV_WORKPATH, p), 1);
+        assert_eq!(loader.mci_query_sys_value(MSV_WORKPATH, p + 0x100), MCIERR_SUCCESS);
+        assert_eq!(loader.guest_read_bytes(p + 0x100, 7).unwrap(), b"D:\\TMP\0");
+        assert_eq!(loader.mci_query_sys_value(99, p), MCIERR_INVALID_FLAG);
+        assert_eq!(loader.mci_set_sys_value(99, p), 0);
     }
 }

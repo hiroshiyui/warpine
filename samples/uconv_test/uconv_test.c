@@ -36,6 +36,23 @@ typedef ULONG (APIENTRY *PFN_UniFromUcs)(UCONV_OBJECT uobj,
                                           void **outbuf,    ULONG *outbytesleft,
                                           ULONG *nonident);
 typedef ULONG (APIENTRY *PFN_UniMapCp)(ULONG codepage, UniChar *ucsName, ULONG n);
+typedef ULONG (APIENTRY *PFN_UniStrToUcs)(UCONV_OBJECT uobj, UniChar *ucsbuf, char *str, int size);
+typedef ULONG (APIENTRY *PFN_UniStrFromUcs)(UCONV_OBJECT uobj, char *outbuf, UniChar *ucsstr, int size);
+typedef ULONG (APIENTRY *PFN_UniQueryObj)(UCONV_OBJECT uobj, void *attr, ULONG size, char *first, char *other, void *udc);
+typedef ULONG (APIENTRY *PFN_UniSetObj)(UCONV_OBJECT uobj, void *attr);
+
+/* uconv_attribute_t (<uconv.h>), version 0: 60 bytes. */
+typedef struct {
+    ULONG          version;
+    char           mb_min_len, mb_max_len, usc_min_len, usc_max_len;
+    unsigned short esid;
+    char           options, state;
+    unsigned short endian_source, endian_target;
+    ULONG          displaymask, converttype;
+    unsigned short subchar_len, subuni_len;
+    char           subchar[16];
+    UniChar        subuni[8];
+} UCONV_ATTR;
 
 static ULONG dummy;
 
@@ -214,6 +231,39 @@ int main(void) {
                 ascii[i] = (nameBuf[i] < 0x80) ? (char)nameBuf[i] : '?';
             ascii[i] = 0;
             print("  CP437 UCS-2 name (ASCII): "); print(ascii); print("\r\n");
+        }
+    }
+
+    /* ── Test 7b: the string and attribute calls (libconv.lib 7, 8, 11, 12) ── */
+    print("\r\nTest 7b: UniStrToUcs / UniStrFromUcs / UniQueryUconvObject / UniSetUconvObject\r\n");
+    if (obj850) {
+        PFN_UniStrToUcs pToUcs = NULL;
+        PFN_UniStrFromUcs pFromUcs = NULL;
+        PFN_UniQueryObj pQuery = NULL;
+        PFN_UniSetObj pSet = NULL;
+        UniChar ucs[8];
+        char back[8], first[256];
+        UCONV_ATTR attr;
+        DosQueryProcAddr(hmodUconv, 12, NULL, &pfn); pToUcs = (PFN_UniStrToUcs)pfn;
+        DosQueryProcAddr(hmodUconv, 11, NULL, &pfn); pFromUcs = (PFN_UniStrFromUcs)pfn;
+        DosQueryProcAddr(hmodUconv, 7, NULL, &pfn); pQuery = (PFN_UniQueryObj)pfn;
+        DosQueryProcAddr(hmodUconv, 8, NULL, &pfn); pSet = (PFN_UniSetObj)pfn;
+        check("Ordinals 7, 8, 11, 12 resolved", pToUcs && pFromUcs && pQuery && pSet, &passed, &failed);
+        if (pToUcs && pFromUcs && pQuery && pSet) {
+            check("UniStrToUcs(\"A\\x82\") returns 0", pToUcs(obj850, ucs, "A\x82", 8) == 0, &passed, &failed);
+            check("UniStrToUcs gives A, e-acute, NUL", ucs[0] == 0x41 && ucs[1] == 0xE9 && ucs[2] == 0, &passed, &failed);
+            check("UniStrFromUcs returns 0", pFromUcs(obj850, back, ucs, sizeof(back)) == 0, &passed, &failed);
+            check("UniStrFromUcs gives the bytes back", back[0] == 'A' && (unsigned char)back[1] == 0x82 && back[2] == 0, &passed, &failed);
+            check("UniStrFromUcs with no room: not 0", pFromUcs(obj850, back, ucs, 1) != 0, &passed, &failed);
+            memset(&attr, 0, sizeof(attr));
+            check("UniQueryUconvObject returns 0", pQuery(obj850, &attr, sizeof(attr), first, NULL, NULL) == 0, &passed, &failed);
+            check("IBM-850 is single-byte", attr.mb_min_len == 1 && attr.mb_max_len == 1 && first['A'] == 1, &passed, &failed);
+            attr.subchar_len = 1;
+            attr.subchar[0] = '#';
+            check("UniSetUconvObject returns 0", pSet(obj850, &attr) == 0, &passed, &failed);
+            memset(&attr, 0, sizeof(attr));
+            pQuery(obj850, &attr, sizeof(attr), NULL, NULL, NULL);
+            check("the substitution character is kept", attr.subchar_len == 1 && attr.subchar[0] == '#', &passed, &failed);
         }
     }
 

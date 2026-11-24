@@ -284,6 +284,9 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             1 => "mciSendCommand",
             2 => "mciSendString",
             3 => "mciGetErrorString",
+            10 => "mciSetSysValue",
+            11 => "mciQuerySysValue",
+            16 => "mciGetDeviceID",
             _ => "?",
         },
 
@@ -293,7 +296,11 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             2 => "UniUconvToUcs",
             3 => "UniUconvFromUcs",
             4 => "UniFreeUconvObject",
+            7 => "UniQueryUconvObject",
+            8 => "UniSetUconvObject",
             10 => "UniMapCpToUcsCp",
+            11 => "UniStrFromUcs",
+            12 => "UniStrToUcs",
             _ => "?",
         },
 
@@ -954,6 +961,8 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             1 => &["usDeviceID", "usMessage", "ulParam1", "pParam2"],
             2 => &["pszCommandBuf", "pszReturnString", "usReturnLength", "hwndCallback"],
             3 => &["ulError", "pszBuffer", "usLength"],
+            10 | 11 => &["iSysValue", "pValue"],
+            16 => &["pszName"],
             _ => &[],
         },
 
@@ -963,7 +972,11 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             2 => &["uobj", "ppInBuf", "pInBytesLeft", "ppOutBuf", "pOutCharsLeft", "pNumSubs"],
             3 => &["uobj", "ppInBuf", "pInCharsLeft", "ppOutBuf", "pOutBytesLeft", "pNumSubs"],
             4 => &["uobj"],
+            7 => &["uobj", "attr", "size", "first", "other", "udcrange"],
+            8 => &["uobj", "attr"],
             10 => &["ulCodePage", "ucsCodePage", "n"],
+            11 => &["uobj", "outbuf", "ucsstr", "size"],
+            12 => &["uobj", "ucsbuf", "str", "size"],
             _ => &[],
         },
 

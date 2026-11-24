@@ -1157,7 +1157,7 @@ fn test_vio_text_and_keyboard_calls() {
     let (out, code) = run_sample_with_input("samples/vio_kbd_test/vio_kbd_test.exe", &[], 20, &[], b"ab");
     let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAILED")).collect();
     assert!(failures.is_empty(), "failures {failures:?} (exit {code}):\n{out}");
-    assert!(out.contains("Passed: 46"), "vio_kbd_test did not run every check (exit {code}):\n{out}");
+    assert!(out.contains("Passed: 50"), "vio_kbd_test did not run every check (exit {code}):\n{out}");
 }
 
 /// uconv_test: UCONV loaded at run time, its calls resolved at the ordinals
@@ -1168,6 +1168,7 @@ fn test_uconv_ordinals_and_round_trip() {
     if !kvm_available() || !sample_exists("samples/uconv_test/uconv_test.exe") { return; }
     let (out, code) = run_sample("samples/uconv_test/uconv_test.exe", 15);
     for line in ["Ordinal 2 (UniUconvToUcs) resolved OK", "Ordinal 10 (UniMapCpToUcsCp) resolved OK",
+                 "Ordinals 7, 8, 11, 12 resolved OK", "the substitution character is kept OK",
                  "UniFreeUconvObject(obj437) returns 0 OK"] {
         assert!(out.contains(line), "missing '{line}' (exit {code}):\n{out}");
     }
@@ -4932,7 +4933,7 @@ fn gui_pm_codepage_test_follows_the_queue_codepage() {
 /// mciGetErrorString answers at mmpm2.lib's ordinal (MDM 3).
 #[test]
 fn gui_pm_audio_test_plays_through_the_audio_service() {
-    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 24);
+    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 30);
 }
 
 // Colours the compositor draws with (`src/gui/sdl_renderer.rs`).

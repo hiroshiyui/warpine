@@ -541,6 +541,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.mci_send_string(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: MDM_BASE + 3, module: "MDM", name: "mciGetErrorString", argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.mci_get_error_string(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: MDM_BASE + 10, module: "MDM", name: "mciSetSysValue",   argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_set_sys_value(a[0],a[1])) },
+    ApiEntry { ordinal: MDM_BASE + 11, module: "MDM", name: "mciQuerySysValue", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_query_sys_value(a[0],a[1])) },
+    ApiEntry { ordinal: MDM_BASE + 16, module: "MDM", name: "mciGetDeviceID",   argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.mci_get_device_id(a[0])) },
 
     // ── UCONV — Unicode conversion (base UCONV_BASE = 12288) ─────────────
     ApiEntry { ordinal: UCONV_BASE + 1, module: "UCONV", name: "UniCreateUconvObject", argc: 2,
@@ -551,8 +557,16 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.uni_uconv_from_ucs(a[0],a[1],a[2],a[3],a[4],a[5])) },
     ApiEntry { ordinal: UCONV_BASE + 4, module: "UCONV", name: "UniFreeUconvObject",   argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.uni_free_uconv_object(a[0])) },
+    ApiEntry { ordinal: UCONV_BASE + 7, module: "UCONV", name: "UniQueryUconvObject", argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.uni_query_uconv_object(a[0],a[1],a[2],a[3],a[4],a[5])) },
+    ApiEntry { ordinal: UCONV_BASE + 8, module: "UCONV", name: "UniSetUconvObject",   argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.uni_set_uconv_object(a[0],a[1])) },
     ApiEntry { ordinal: UCONV_BASE + 10, module: "UCONV", name: "UniMapCpToUcsCp",    argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.uni_map_cp_to_ucs_cp(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: UCONV_BASE + 11, module: "UCONV", name: "UniStrFromUcs",      argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.uni_str_from_ucs(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: UCONV_BASE + 12, module: "UCONV", name: "UniStrToUcs",        argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.uni_str_to_ucs(a[0],a[1],a[2],a[3])) },
 
     // ── SO32DLL — OS/2 TCP/IP socket API (base SO32DLL_BASE = 13312) ─────────
     ApiEntry { ordinal: SO32DLL_BASE + 1,  module: "SO32DLL",  name: "accept",           argc: 3,
@@ -1309,7 +1323,7 @@ const STUB_ORDINALS: &[u32] = &[
     REXXAPI_BASE + 26, REXXAPI_BASE + 27, REXXAPI_BASE + 28,
 ];
 
-/// VIOCALLS ordinals of `viocalls.rs` (29 implemented, 4 stubs).
+/// VIOCALLS ordinals of `viocalls.rs` (31 implemented, 2 stubs).
 const VIOCALLS_ORDINALS: u32 = 33;
 /// KBDCALLS ordinals of `kbdcalls.rs`.
 const KBDCALLS_ORDINALS: u32 = 14;
@@ -1370,12 +1384,12 @@ pub fn compat_report() -> String {
     // Sub-dispatcher summaries
     out.push_str("Sub-dispatchers (separate from registry)\n");
     out.push_str("----------------------------------------\n");
-    out.push_str("  VIOCALLS   29 implemented, 4 stub  (VioWrtTTY, VioGetMode, VioSetMode, VioSetCurPos, \
+    out.push_str("  VIOCALLS   31 implemented, 2 stub  (VioWrtTTY, VioGetMode, VioSetMode, VioSetCurPos, \
                   VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtCellStr, VioWrtNCell, \
                   VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, VioGetAnsi, VioSetAnsi, \
                   VioCheckCharType, VioWrtCharStr, VioWrtNChar, VioReadCharStr, VioScrollLf, VioScrollRt, \
                   VioGetCp, VioPopUp, VioEndPopUp, VioScrLock, VioScrUnLock, VioGetState, \
-                  VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], VioSetCp[stub])\n");
+                  VioSetState, VioSetCp, VioGetBuf[stub], VioShowBuf[stub])\n");
     out.push_str("  KBDCALLS   14 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus, KbdSetStatus, KbdPeek, \
                   KbdFlushBuffer, KbdGetCp, KbdSetCp, KbdGetHWID, KbdOpen, KbdClose, KbdGetFocus, KbdFreeFocus, KbdSynch)\n");
     out.push_str("  MOUCALLS   20 implemented  (MouOpen, MouClose, MouReadEventQue, MouFlushQue, \
