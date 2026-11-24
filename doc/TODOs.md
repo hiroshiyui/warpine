@@ -74,7 +74,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 
 - [ ] **Shared memory** (ADR-0049):
   - `DosAllocShrSeg` / `DosGetShrSeg`;
-  - API calls refusing an address in a block the caller does not hold, and the arena's holds for 16-bit programs (guest code is held to them since the ADR-0049 addendum);
   - the blocks of a killed process whose parent never waits for it, swept at the next table use (a reaped child's go at once).
 - [ ] **Semaphores** (ADR-0050):
   - named and shared muxwait semaphores across processes;

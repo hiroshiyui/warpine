@@ -45,6 +45,7 @@ use log::{debug, warn};
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use super::guest_mem::{ArenaGuard, HeldBlock};
 use super::paging::{process_pte, process_pte_at, PageAccess};
 use super::session_threads::SHARED_MEM_TABLE;
 
@@ -450,6 +451,10 @@ impl Arena {
 
 // ── The session's table ──────────────────────────────────────────────────
 
+/// What one use of the table gives: `f`'s result, the blocks this process
+/// let go (offset, size) and the blocks it holds afterwards.
+type TableRun<R> = (R, Vec<(u32, u32)>, Vec<HeldBlock>);
+
 /// Why the table cannot be used.
 #[derive(Debug)]
 pub struct TableUnavailable;
@@ -466,7 +471,7 @@ impl super::SharedState {
         let arena = self.arena.get().ok_or(TableUnavailable)?;
         let slots = self.thread_slots.lock_or_recover();
         let session = slots.session().ok_or(TableUnavailable)?;
-        let run = || -> std::io::Result<(R, Vec<(u32, u32)>)> {
+        let run = || -> std::io::Result<TableRun<R>> {
             let t = session.tables()?;
             let bytes = t.read(SHARED_MEM_TABLE, MAX_TABLE_BYTES)?.unwrap_or_default();
             let mut table = ArenaTable::parse(&bytes);
@@ -494,10 +499,12 @@ impl super::SharedState {
             for (offset, size) in freed {
                 arena.zero(offset, size);
             }
-            Ok((r, lost_blocks(&before, &table, self.process_id())))
+            let me = self.process_id();
+            Ok((r, lost_blocks(&before, &table, me), held_blocks(&table, me)))
         };
         match run() {
-            Ok((r, lost)) => {
+            Ok((r, lost, held)) => {
+                self.guest_mem.set_arena_holds(held);
                 self.unmap_arena_blocks(&lost);
                 Ok(r)
             }
@@ -548,7 +555,18 @@ impl super::SharedState {
             warn!("shared arena: cannot map it: {e}");
             return;
         }
+        let id = arena.id();
         let _ = self.arena.set(arena);
+        // From now on API calls reach only the blocks this process holds
+        // (ADR-0049 addendum); a miss reads the table again, unlocked.
+        let table = self.thread_slots.lock_or_recover().session().map(|s| s.dir_path().join(SHARED_MEM_TABLE));
+        if let Some(table) = table {
+            let me = self.process_id();
+            self.guest_mem.guard_arena(ArenaGuard {
+                holds: Vec::new(),
+                refresh: Box::new(move || held_in_table_file(&table, id, me)),
+            });
+        }
         // Make sure the table is this arena's (or say why not).
         if self.with_arena_table(|_, _, _| ()).is_err() {
             warn!("shared arena: shared memory with the other processes of the session is not available");
@@ -571,6 +589,31 @@ fn lost_blocks(before: &ArenaTable, after: &ArenaTable, pid: u32) -> Vec<(u32, u
         .filter(|b| !after.at(b.offset).is_some_and(|a| a.size == b.size && a.held_by(pid)))
         .map(|b| (b.offset, b.size))
         .collect()
+}
+
+/// The blocks `pid` holds in `table`, as guest addresses with their write
+/// access (`GuestMemory::arena_allows`).
+fn held_blocks(table: &ArenaTable, pid: u32) -> Vec<HeldBlock> {
+    table.blocks.iter()
+        .filter(|b| b.held_by(pid))
+        .map(|b| (b.addr(), b.addr() + b.size, b.access_of(pid) == PageAccess::ReadWrite))
+        .collect()
+}
+
+/// [`held_blocks`] of the table file at `path`, read without the
+/// session's lock (the file is replaced by rename, so the read sees one
+/// version), for arena `id`: none when the table is another arena's.
+/// `None` when the file cannot be read.
+fn held_in_table_file(path: &std::path::Path, id: ArenaId, pid: u32) -> Option<Vec<HeldBlock>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?;
+    if !f.metadata().ok()?.is_file() { return None; }
+    let mut bytes = Vec::new();
+    f.take(MAX_TABLE_BYTES as u64).read_to_end(&mut bytes).ok()?;
+    let table = ArenaTable::parse(&bytes);
+    Some(if table.arena == Some(id) { held_blocks(&table, pid) } else { Vec::new() })
 }
 
 /// Whether guest address `addr` lies in the arena.
@@ -920,6 +963,42 @@ mod tests {
         l.shared.release_shared_arena();
         let t = ArenaTable::parse(&std::fs::read(d.path().join("s").join(SHARED_MEM_TABLE)).unwrap());
         assert!(t.blocks().is_empty());
+        l.shared.leave_thread_session();
+    }
+
+    /// API calls reach only held blocks (ADR-0049 addendum): the guard
+    /// knows this process's blocks after each change, refuses another
+    /// process's block, a write to a read-only one and a block let go, and
+    /// finds a block given meanwhile by reading the table again.
+    #[test]
+    fn host_accesses_reach_only_held_blocks() {
+        let d = tempfile::tempdir().unwrap();
+        let l = loader_in_session(d.path());
+        let me = l.shared.process_id();
+        let id = l.shared.arena.get().unwrap().id();
+        let path = d.path().join("s").join(SHARED_MEM_TABLE);
+        let p = path.clone();
+        l.shared.guest_mem.guard_arena(ArenaGuard { holds: Vec::new(), refresh: Box::new(move || held_in_table_file(&p, id, me)) });
+        let gm = &l.shared.guest_mem;
+        assert!(!gm.arena_allows(SHARED_ARENA_BASE, 4, false), "nothing held yet");
+        assert!(gm.arena_allows(SHARED_ARENA_BASE - 4, 4, true), "below the arena");
+        assert_eq!(l.arena_alloc(DYNAMIC_ALLOC_BASE, None, 0x2000, PAG_READ | PAG_WRITE), Some(NO_ERROR));
+        let a = l.guest_read::<u32>(DYNAMIC_ALLOC_BASE).unwrap();
+        assert!(gm.arena_allows(a, 0x2000, true), "its own block, whole");
+        assert!(!gm.arena_allows(a + 0x1FFE, 4, false), "not past its end");
+        // Another process's block, then given read-only (written by hand,
+        // as that process would): found on the next look.
+        let mut t = ArenaTable::parse(&std::fs::read(&path).unwrap());
+        let other = t.alloc(1, PAG_READ | PAG_WRITE, None, 0x7777).unwrap();
+        std::fs::write(&path, t.encode()).unwrap();
+        let b = SHARED_ARENA_BASE + other;
+        assert!(!gm.arena_allows(b, 4, false), "another process's block");
+        t.hold_as(other, me, false).unwrap();
+        std::fs::write(&path, t.encode()).unwrap();
+        assert!(gm.arena_allows(b, 4, false), "given: read");
+        assert!(!gm.arena_allows(b, 4, true), "but not written");
+        assert_eq!(l.arena_free(a), Some(NO_ERROR));
+        assert!(!gm.arena_allows(a, 4, false), "let go");
         l.shared.leave_thread_session();
     }
 

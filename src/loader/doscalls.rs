@@ -192,7 +192,11 @@ impl super::Loader {
             let mut data = vec![0u8; len as usize];
             match dm.read_file(hf, &mut data) {
                 Ok(n) => {
-                    self.guest_write_bytes(buf_ptr, &data[..n]);
+                    // A buffer the program may not write (read-only, not
+                    // its own) fails the call, as for a pipe.
+                    if self.guest_write_bytes(buf_ptr, &data[..n]).is_none() {
+                        return ERROR_INVALID_PARAMETER;
+                    }
                     if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
                     0
                 }
@@ -222,6 +226,8 @@ impl super::Loader {
                 || std::io::IsTerminal::is_terminal(&std::io::stdin());
             if console_input && !console.ansi_reply.is_empty() {
                 let n = (len as usize).min(console.ansi_reply.len());
+                // Taken only when the buffer can hold it.
+                if self.guest_slice_mut(buf_ptr, n).is_none() { return ERROR_INVALID_PARAMETER; }
                 let bytes: Vec<u8> = console.ansi_reply.drain(..n).collect();
                 drop(console);
                 self.guest_write_bytes(buf_ptr, &bytes);
@@ -380,8 +386,7 @@ impl super::Loader {
     }
 
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
-        let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) else { return ERROR_INVALID_PARAMETER };
-        let data = data.to_vec();
+        let Some(data) = self.guest_read_buffer(buf_ptr, len as usize) else { return ERROR_INVALID_PARAMETER };
         match self.write_handle(fd, &data) {
             Ok(n) => {
                 if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n); }
@@ -1767,10 +1772,7 @@ impl super::Loader {
             let mut q = q_arc.lock_or_recover();
             // Cap len to prevent OOM from untrusted guest-supplied sizes.
             let len = len.min(64 * 1024 * 1024);
-            let mut data = vec![0u8; len as usize];
-            if let Some(src) = self.guest_slice_mut(buf_ptr, len as usize) {
-                data.copy_from_slice(src);
-            }
+            let data = self.guest_read_buffer(buf_ptr, len as usize).unwrap_or_else(|| vec![0u8; len as usize]);
             let id = q.next_id;
             q.next_id = q.next_id.wrapping_add(1).max(1);
             q.items.push_back(QueueEntry { data, event, priority, id });

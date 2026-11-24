@@ -396,7 +396,7 @@ impl super::Loader {
                     let hf = read_arg16(10);
                     debug!("  16-bit DosWrite(hf={}, buf=0x{:08X}, cb={}, pcb=0x{:08X})",
                         hf, p_buf, cb_buf, pcb_written);
-                    let Some(data) = self.guest_slice_mut(p_buf, cb_buf as usize).map(|d| d.to_vec()) else {
+                    let Some(data) = self.guest_read_buffer(p_buf, cb_buf as usize) else {
                         return ERROR_INVALID_PARAMETER;
                     };
                     match self.write_handle(hf as u32, &data) {
@@ -454,8 +454,7 @@ impl super::Loader {
                     let cb_str   = read_arg16(2);
                     let p_str    = read_far_ptr(4); // offset at +4, seg at +6
                     debug!("  16-bit VioWrtTTY(pszStr=0x{:08X}, cb={}, hvio={})", p_str, cb_str, hvio);
-                    if let Some(data) = self.guest_slice_mut(p_str, cb_str as usize) {
-                        let bytes = data.to_vec();
+                    if let Some(bytes) = self.guest_read_buffer(p_str, cb_str as usize) {
                         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                         let mut console = self.shared.console_mgr.lock_or_recover();
                         console.write_tty(&bytes, cp); // ANSI attribute, light grey on black by default

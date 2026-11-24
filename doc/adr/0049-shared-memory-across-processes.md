@@ -68,10 +68,18 @@ Guests now run paged (ADR-0088, ADR-0113, ADR-0114), so the limits above that ca
 - **Reaping a child sweeps.** Every path that reaps a child (`SharedState::child_exit_code`) sweeps the table at once, so a child killed before it could let its blocks go leaves nothing behind once its parent has seen it end. A process whose parent never waits for it is still swept at the next use of the table.
 
 Remaining limits:
-- The host side does not check holds: an API call given an address in a block the caller does not hold reads or writes it, as it reads any guest memory the call is given (the host never walks the guest's tables).
-- 16-bit programs run without process tables for the arena and still reach all of it.
+- ~~The host side does not check holds~~ and ~~16-bit programs reach all of the arena~~: see the second addendum below.
 - `PAG_EXECUTE` alone reads (32-bit paging has no execute-only pages).
 
 Unverified (Warpine's own): read-only unless `PAG_WRITE` is asked for on a get or give; asking again keeping the larger access; `PAG_FREE` for an arena page the process does not hold.
 
 Tests: `holders_have_their_own_access`, `lost_blocks_are_those_let_go`, `reaping_a_child_sweeps_the_table_at_once`, `the_process_tables_map_the_allocators_region`, `no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page`; `samples/shmem_test` (a gettable block not got yet faults and is free to `DosQueryMem`, a block got read-only cannot be written, a block let go cannot be touched; 31 checks + 18 in the child).
+
+## Addendum (2026-11-25): API calls held to the same holds; 16-bit programs checked
+
+- **API calls.** `GuestMemory` keeps the blocks the process holds (`ArenaGuard`: guest start and end, writable or not), set after every change of the table (`with_arena_table` → `held_blocks`). A read or write through a guest address that touches the arena (`read`, `read_bytes`, `write`, `write_bytes`, `slice_mut`, `Loader::guest_ptr`) must lie inside held blocks, writable ones for a write; else it fails like any bad address and the call returns its usual error (`ERROR_INVALID_PARAMETER` for `DosRead` / `DosWrite`). A miss first reads the session's table again (`held_in_table_file`), without its lock: the table is replaced by rename, so the read sees a whole version and no lock of the session can deadlock with the caller's. That finds a block another process has just given. Warpine's own writes to its structures (`write_system`) are not checked.
+- **Read-only buffers.** Calls that only read a guest buffer read it with `Loader::guest_read_buffer` (32-bit and 16-bit `DosWrite`, 16-bit `VioWrtTTY`, `DosWriteQueue`), not `guest_slice_mut`, so a block held read-only can be written to a file; Warpine's protected memory stays refused there, as before.
+- **16-bit programs.** Their threads get their paging block from the same `alloc_paging_block`, whose directory leads the arena's chunks to the process tables: their code reaches no arena page, as they can hold no block (no 16-bit call allocates one). The note above was wrong; `samples/ne_arena_test` reads the arena through the GDT data tile that covers it and traps.
+- **Fixed on the way:** `DosRead` of a file ignored a buffer it could not write and returned `NO_ERROR`; it now returns `ERROR_INVALID_PARAMETER`, as for a pipe.
+
+Tests: `the_arena_guard_allows_only_held_ranges`, `host_accesses_reach_only_held_blocks`; `shmem_test` (`DosWrite` from a block not got fails, from one got read-only works, `DosRead` into it fails; 31 checks + 22 in the child); `a_16_bit_program_cannot_reach_the_shared_arena`.

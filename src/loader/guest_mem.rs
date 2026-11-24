@@ -109,6 +109,37 @@ pub fn protected(offset: u32, len: usize) -> bool {
 pub struct GuestMemory {
     ptr:  *mut u8,
     size: usize,
+    /// The shared-arena blocks this process may reach through a guest
+    /// address (ADR-0049 addendum); `None`: no session arena, nothing to
+    /// check.
+    arena: std::sync::RwLock<Option<ArenaGuard>>,
+}
+
+/// A held block of the shared arena: guest addresses `start..end`, and
+/// whether this process may write it.
+pub type HeldBlock = (u32, u32, bool);
+
+/// What [`GuestMemory`] knows of this process's holds in the shared arena.
+pub struct ArenaGuard {
+    /// The blocks held, as of the last look at the session's table.
+    pub holds: Vec<HeldBlock>,
+    /// Look again (the session's table, read without its lock: it is
+    /// replaced by rename, so a read sees one whole version); `None` when
+    /// it cannot be read, which keeps the holds known.
+    pub refresh: Box<dyn Fn() -> Option<Vec<HeldBlock>> + Send + Sync>,
+}
+
+/// Whether `start..end` lies inside held blocks (writable ones for a
+/// write); blocks may follow each other.
+fn covered(holds: &[HeldBlock], start: u64, end: u64, write: bool) -> bool {
+    let mut at = start;
+    while at < end {
+        match holds.iter().find(|&&(s, e, w)| u64::from(s) <= at && at < u64::from(e) && (w || !write)) {
+            Some(&(_, e, _)) => at = u64::from(e),
+            None => return false,
+        }
+    }
+    true
 }
 
 unsafe impl Send for GuestMemory {}
@@ -137,7 +168,45 @@ impl GuestMemory {
         }
         let p = raw as *mut u8;
         unsafe { ptr::write_bytes(p, 0, size); }
-        GuestMemory { ptr: p, size }
+        GuestMemory { ptr: p, size, arena: std::sync::RwLock::new(None) }
+    }
+
+    /// Check guest addresses in the shared arena from now on (`guard`):
+    /// an access through a guest address that touches the arena must lie
+    /// in blocks the process holds (ADR-0049 addendum).
+    pub fn guard_arena(&self, guard: ArenaGuard) {
+        *self.arena.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(guard);
+    }
+
+    /// The blocks the process holds now (after a change of the table).
+    pub fn set_arena_holds(&self, holds: Vec<HeldBlock>) {
+        if let Some(g) = self.arena.write().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+            g.holds = holds;
+        }
+    }
+
+    /// Whether a guest-address access of `len` bytes at `offset` may touch
+    /// the shared arena: outside it, or inside blocks the process holds
+    /// (writable ones for a write). A miss looks at the session's table
+    /// again first: another process may have just given a block.
+    pub fn arena_allows(&self, offset: u32, len: usize, write: bool) -> bool {
+        use super::constants::{SHARED_ARENA_BASE, SHARED_ARENA_SIZE};
+        let (lo, hi) = (u64::from(SHARED_ARENA_BASE), u64::from(SHARED_ARENA_BASE) + u64::from(SHARED_ARENA_SIZE));
+        let (start, end) = (u64::from(offset), u64::from(offset).saturating_add(len.max(1) as u64));
+        if end <= lo || start >= hi {
+            return true;
+        }
+        let (start, end) = (start.max(lo), end.min(hi));
+        let refresh = {
+            let g = self.arena.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(guard) = g.as_ref() else { return true };
+            if covered(&guard.holds, start, end, write) { return true; }
+            (guard.refresh)()
+        };
+        let Some(holds) = refresh else { return false };
+        let ok = covered(&holds, start, end, write);
+        self.set_arena_holds(holds);
+        ok
     }
 
     /// Total size of the guest memory region in bytes.
@@ -197,6 +266,9 @@ impl GuestMemory {
     /// Read a `Copy` value from guest memory at `offset`.
     /// Returns `None` if the access would be out of bounds.
     pub fn read<T: Copy>(&self, offset: u32) -> Option<T> {
+        if !self.arena_allows(offset, std::mem::size_of::<T>(), false) {
+            return None;
+        }
         let p = self.ptr_at(offset, std::mem::size_of::<T>())?;
         Some(unsafe { ptr::read_unaligned(p as *const T) })
     }
@@ -205,7 +277,7 @@ impl GuestMemory {
     /// Returns `None` if the access would be out of bounds, or would touch
     /// Warpine's protected memory ([`protected`]).
     pub fn write<T: Copy>(&self, offset: u32, val: T) -> Option<()> {
-        if protected(offset, std::mem::size_of::<T>()) {
+        if protected(offset, std::mem::size_of::<T>()) || !self.arena_allows(offset, std::mem::size_of::<T>(), true) {
             return None;
         }
         self.write_system(offset, val)
@@ -215,7 +287,7 @@ impl GuestMemory {
     /// Returns `None` if the write would be out of bounds, or would touch
     /// Warpine's protected memory ([`protected`]).
     pub fn write_bytes(&self, offset: u32, data: &[u8]) -> Option<()> {
-        if protected(offset, data.len()) {
+        if protected(offset, data.len()) || !self.arena_allows(offset, data.len(), true) {
             return None;
         }
         self.write_bytes_system(offset, data)
@@ -244,6 +316,9 @@ impl GuestMemory {
 
     /// Copy `len` bytes out of guest memory; `None` if out of bounds.
     pub fn read_bytes(&self, offset: u32, len: usize) -> Option<Vec<u8>> {
+        if !self.arena_allows(offset, len, false) {
+            return None;
+        }
         let p = self.ptr_at(offset, len)?;
         // SAFETY: `ptr_at` checked that `len` bytes from `p` lie inside
         // the mapping; they are copied out at once.
@@ -259,7 +334,7 @@ impl GuestMemory {
     /// ensure no other live mutable reference into the same region exists.
     #[allow(clippy::mut_from_ref)]
     pub fn slice_mut(&self, offset: u32, len: usize) -> Option<&mut [u8]> {
-        if protected(offset, len) {
+        if protected(offset, len) || !self.arena_allows(offset, len, true) {
             return None;
         }
         let p = self.ptr_at(offset, len)?;
@@ -278,6 +353,9 @@ impl Drop for GuestMemory {
 impl super::Loader {
     /// Returns a checked raw pointer into guest memory, or `None` if OOB.
     pub fn guest_ptr(&self, offset: u32, len: usize) -> Option<*mut u8> {
+        if !self.shared.guest_mem.arena_allows(offset, len, false) {
+            return None;
+        }
         self.shared.guest_mem.ptr_at(offset, len)
     }
 
@@ -294,6 +372,18 @@ impl super::Loader {
     /// Copy bytes into guest memory with bounds check.
     pub fn guest_write_bytes(&self, offset: u32, data: &[u8]) -> Option<()> {
         self.shared.guest_mem.write_bytes(offset, data)
+    }
+
+    /// A buffer the guest gives an API call to read from (`DosWrite`,
+    /// `DosWriteQueue`, …): its bytes, `None` when out of bounds, in
+    /// Warpine's protected memory ([`protected`]: the guest cannot read
+    /// that either) or in a shared block the process does not hold. A
+    /// block held read-only is readable.
+    pub fn guest_read_buffer(&self, offset: u32, len: usize) -> Option<Vec<u8>> {
+        if protected(offset, len) {
+            return None;
+        }
+        self.shared.guest_mem.read_bytes(offset, len)
     }
 
     /// Copy `len` bytes out of guest memory; `None` if out of bounds.
@@ -362,6 +452,30 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::super::Loader;
+
+    /// The arena guard: blocks that follow each other cover a range
+    /// together, a gap or a read-only block refuses it, addresses outside
+    /// the arena are not checked, and no guard checks nothing.
+    #[test]
+    fn the_arena_guard_allows_only_held_ranges() {
+        use super::{covered, ArenaGuard, GuestMemory};
+        use super::super::constants::{SHARED_ARENA_BASE as A, SHARED_ARENA_SIZE};
+        let held = [(A, A + 0x1000, true), (A + 0x1000, A + 0x2000, true), (A + 0x3000, A + 0x4000, false)];
+        assert!(covered(&held, u64::from(A) + 0xFF0, u64::from(A) + 0x1010, true), "across two blocks");
+        assert!(!covered(&held, u64::from(A) + 0x1FF0, u64::from(A) + 0x3010, false), "a gap");
+        assert!(covered(&held, u64::from(A) + 0x3000, u64::from(A) + 0x3004, false));
+        assert!(!covered(&held, u64::from(A) + 0x3000, u64::from(A) + 0x3004, true), "read-only");
+        let gm = GuestMemory::alloc(0x1000);
+        assert!(gm.arena_allows(A, 4, true), "no guard: not checked");
+        gm.guard_arena(ArenaGuard { holds: held.to_vec(), refresh: Box::new(|| None) });
+        assert!(gm.arena_allows(A + 4, 4, true));
+        assert!(!gm.arena_allows(A + 0x2000, 4, false));
+        assert!(gm.arena_allows(A - 8, 4, true) && gm.arena_allows(A + SHARED_ARENA_SIZE, 4, true), "outside");
+        assert!(gm.arena_allows(A - 2, 4, false), "straddling its start into a held block");
+        assert!(!gm.arena_allows(A + 0x1FFE, 4, false), "straddling into a gap");
+        gm.set_arena_holds(Vec::new());
+        assert!(!gm.arena_allows(A + 4, 4, false), "let go");
+    }
 
     /// Memory handed out again is zero, as OS/2 commits it: DosAllocMem
     /// after DosFreeMem does not show the old contents; fresh memory is

@@ -19,7 +19,9 @@
  * it holds them with (ADR-0049 addendum): the child cannot touch the
  * gettable block before DosGetSharedMem, can only read it after getting it
  * with PAG_READ, and cannot touch a block after DosFreeMem. A probe that
- * faults is left by longjmp from an exception handler.
+ * faults is left by longjmp from an exception handler. API calls are held
+ * to the same: DosWrite from the gettable block fails before it is got and
+ * works after, and DosRead into it, got read-only, fails.
  *
  * Each check is written to stdout:
  *
@@ -144,6 +146,22 @@ static int child_main( const char *args )
     check( "the parent gave its block", sh->go, 1 );
     check_str( "a given block outlives the giver's DosFreeMem", given, "given" );
     check( "a gettable block not got yet cannot be read", faults( read_at, gettable ), 1 );
+    {
+        HFILE  hf;
+        ULONG  action, n;
+        check( "DosOpen(a scratch file)",
+               DosOpen( (PSZ)"SHMPROBE.TMP", &hf, &action, 0, FILE_NORMAL,
+                        OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS,
+                        OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE, NULL ), NO_ERROR );
+        check( "DosWrite from a block not got yet fails", DosWrite( hf, gettable, 8, &n ) != NO_ERROR, 1 );
+        DosGetSharedMem( gettable, PAG_READ );
+        check( "DosWrite from it once got read-only", DosWrite( hf, gettable, 8, &n ), NO_ERROR );
+        DosSetFilePtr( hf, 0, FILE_BEGIN, &n );
+        check( "DosRead into a block got read-only fails", DosRead( hf, gettable, 8, &n ) != NO_ERROR, 1 );
+        DosClose( hf );
+        DosDelete( (PSZ)"SHMPROBE.TMP" );
+        DosFreeMem( gettable );
+    }
     check( "-> DosQueryMem: free to this process", query_flags( gettable ), PAG_FREE );
     check( "DosGetSharedMem(gettable, read only)", DosGetSharedMem( gettable, PAG_READ ), NO_ERROR );
     check_str( "a gettable block's data", gettable, "gettable" );

@@ -1557,7 +1557,7 @@ fn test_shared_memory_between_processes() {
     let (out, code) = run_sample(SAMPLE, 60);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("shmem_test: ") && !l.contains(": done")).collect();
-    assert!(checks.iter().filter(|l| l.contains(": child: ")).count() >= 18, "the child's checks:\n{out}");
+    assert!(checks.iter().filter(|l| l.contains(": child: ")).count() >= 22, "the child's checks:\n{out}");
     let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     assert!(out.contains("shmem_test: done 31/31"), "{out}");

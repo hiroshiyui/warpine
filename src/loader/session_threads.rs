@@ -382,6 +382,9 @@ pub struct ThreadSession {
 }
 
 impl ThreadSession {
+    /// The session directory's path (its tables are files in it).
+    pub fn dir_path(&self) -> &std::path::Path { self.dir.path() }
+
     /// A session at `dir` with `limit` threads for process `me`.
     pub fn new(dir: SessionDir, limit: u32, me: Identity, start_time: StartTimeFn) -> Self {
         ThreadSession { dir, limit, me, os2pid: 0, threads: 0, next_seq: 0, start_time, local_only: false, left: false }

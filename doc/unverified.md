@@ -229,7 +229,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - a closed member giving `ERROR_INVALID_HANDLE`;
   - wait-all returning the last record's user value.
 - **The Landlock sandbox** (ADR-0111): the display and sound paths (tested with SDL's dummy drivers only); the whole runtime directory and `/dev` writable; the library directories executable; the program's directory readable.
-- **Shared memory access** (ADR-0049 addendum): a get or give without `PAG_WRITE` is read-only to that process; asking again keeps the larger access; `DosQueryMem` reports an arena page the process does not hold as `PAG_FREE`.
+- **Shared memory access** (ADR-0049 addenda): `ERROR_INVALID_PARAMETER` from `DosRead` / `DosWrite` for a buffer in a block not held; a get or give without `PAG_WRITE` is read-only to that process; asking again keeps the larger access; `DosQueryMem` reports an arena page the process does not hold as `PAG_FREE`.
 - **No address randomisation in the guest** (ADR-0125): whether OS/2 itself randomised anything is not known.
 - **`PrfQueryProfile` / `PrfReset`**: lengths counting the NUL; `PMERR_BUFFER_TOO_SMALL` for a short buffer; `PMERR_INVALID_PARM` when `pszSysName` is not the system profile; `PL_ALTERED` posted with 0, 0 to every queue of the session; the user profile changed for the whole session (kept in its directory).
 - **`WinSetCp(0)`** refused as an unknown codepage (`PMERR_RESOURCE_NOT_FOUND`): the PM Reference lists the codepages a queue takes and gives 0 no meaning.
