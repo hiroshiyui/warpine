@@ -230,7 +230,7 @@ pub const SOM_METHOD_NOT_IMPLEMENTED: u32 = 3198;
 // from 3300, SOMClassMgr's from 3400; the module has SOM_ORDINALS.
 const _: () = assert!(SOM_LAST_IBM < SOM_FIRST_PRIVATE && SOM_RESOLVE_BY_NAME >= SOM_FIRST_PRIVATE);
 /// The last ordinal of Warpine's own exports (SOMClassMgr's last method).
-pub const SOM_LAST_PRIVATE: u32 = 3408;
+pub const SOM_LAST_PRIVATE: u32 = 3409;
 const _: () = assert!(SOM_LAST_PRIVATE < super::constants::SOM_ORDINALS);
 /// A method of a root class Warpine does not implement yet: its token
 /// resolves to [`SOM_METHOD_NOT_IMPLEMENTED`].
@@ -268,9 +268,9 @@ pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
     (NOT_IMPLEMENTED, "somGetClassData"), (3301, "somNewNoInit"), (3329, "somRenewNoInit"),
     (3306, "somGetInstanceToken"), (3332, "somGetMemberToken"), (NOT_IMPLEMENTED, "somcPrivate1"),
     (3335, "somGetMethodData"), (NOT_IMPLEMENTED, "somOverrideMtab"), (3314, "somGetMethodToken"),
-    (NOT_IMPLEMENTED, "somGetParents"), (NOT_IMPLEMENTED, "somGetPClsMtabs"), (3316, "somInitMIClass"),
+    (3338, "somGetParents"), (NOT_IMPLEMENTED, "somGetPClsMtabs"), (3316, "somInitMIClass"),
     (3318, "somGetVersionNumbers"), (3325, "somLookupMethod"),
-    (NOT_IMPLEMENTED, "_get_somInstanceDataOffsets"), (3330, "somRenewNoZero"),
+    (3339, "_get_somInstanceDataOffsets"), (3330, "somRenewNoZero"),
     (3331, "somRenewNoInitNoZero"), (3326, "somAllocate"), (3327, "somDeallocate"),
     (NOT_IMPLEMENTED, "somGetRdStub"), (3336, "somGetNthMethodData"),
     (NOT_IMPLEMENTED, "somcPrivate2"), (NOT_IMPLEMENTED, "somcPrivate3"),
@@ -290,7 +290,7 @@ pub const SOMCLASSMGR_METHODS: &[(u32, &str)] = &[
     (3403, "somFindClsInFile"), (3400, "somFindClass"), (3401, "somClassFromId"), (3402, "somRegisterClass"),
     (3406, "somUnregisterClass"), (3404, "somLocateClassFile"), (3405, "somLoadClassFile"),
     (3407, "somUnloadClassFile"), (3408, "somGetInitFunction"), (NOT_IMPLEMENTED, "somMergeInto"),
-    (NOT_IMPLEMENTED, "somGetRelatedClasses"), (NOT_IMPLEMENTED, "somSubstituteClass"),
+    (3409, "somGetRelatedClasses"), (NOT_IMPLEMENTED, "somSubstituteClass"),
     (NOT_IMPLEMENTED, "_get_somInterfaceRepository"), (NOT_IMPLEMENTED, "_set_somInterfaceRepository"),
     (NOT_IMPLEMENTED, "_get_somRegisteredClasses"), (NOT_IMPLEMENTED, "somBeginPersistentClasses"),
     (NOT_IMPLEMENTED, "somEndPersistentClasses"), (NOT_IMPLEMENTED, "somcmPrivate1"),
@@ -524,6 +524,9 @@ pub struct SomRuntime {
     pub casts: HashMap<u32, u32>,
     /// Classes made while the class manager loaded a module: its handle.
     pub modules: HashMap<u32, u32>,
+    /// The class whose lookup loaded each module (the first of its
+    /// affinity group, `somGetRelatedClasses`).
+    pub module_cause: HashMap<u32, u32>,
     /// The guest copy of "SOMInitModule" the default
     /// `SOMClassInitFuncName` returns.
     pub init_func_name: u32,
@@ -2200,12 +2203,16 @@ impl Loader {
             SomLoad::Program => chain.last == 0,
             SomLoad::Default { inits, entry } => entry && som_inits_ok(&chain.results, inits),
         };
+        let name = self.som_id_name(id);
         if loaded && hmod != 0 {
             let mut rt = self.shared.som.lock_or_recover();
             let made: Vec<u32> = rt.ready_order.iter().skip(first as usize).copied().collect();
             for c in made { rt.modules.insert(c, hmod); }
+            if let Some(cause) = name.as_ref().and_then(|n| rt.by_name.get(n).copied()) {
+                rt.module_cause.insert(hmod, cause);
+            }
         }
-        let Some(name) = self.som_id_name(id) else { return 0 };
+        let Some(name) = name else { return 0 };
         let cls = self.shared.som.lock_or_recover().by_name.get(&name).copied();
         match (loaded, cls) {
             (true, Some(cls)) => self.som_version_checked(cls, &name, version),
@@ -2589,6 +2596,19 @@ impl Loader {
             }
             // somGetMethodDescriptor(id): no descriptors are kept.
             3337 => ok(0),
+            // somGetParents / _get_somInstanceDataOffsets return a sequence
+            // by value: as Open Watcom's _System passes it, the caller's
+            // buffer comes first (a[0]) and the caller removes it; the
+            // receiver is a[1]. The buffer is SOMMalloc'ed.
+            3338 => {
+                let parents = self.shared.som.lock_or_recover().classes.get(&a[1]).map(|c| c.parents.clone()).unwrap_or_default();
+                ok(self.som_write_sequence(a[0], &parents, 1))
+            }
+            3339 => {
+                let parts = self.shared.som.lock_or_recover().classes.get(&a[1]).map(|c| c.parts.clone()).unwrap_or_default();
+                let words: Vec<u32> = parts.iter().flat_map(|&(c, off)| [c, off]).collect();
+                ok(self.som_write_sequence(a[0], &words, 2))
+            }
             3302 => ok(info(a[0], &|c| c.name_addr)),
             3303 => ok(info(a[0], &|c| c.parents.first().copied().unwrap_or(0))),
             3304 => ok(info(a[0], &|c| c.instance_size)),
@@ -2673,6 +2693,26 @@ impl Loader {
             }
             3400 => self.som_find_via_methods(vcpu, a, false).unwrap_or_else(|| self.som_find_class(vcpu, a[1], a[2], a[3], None, false)),
             3403 => self.som_find_via_methods(vcpu, a, true).unwrap_or_else(|| self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), false)),
+            // somGetRelatedClasses(cls): the affinity group of the module
+            // that made the class, a SOMMalloc'ed array ending with NULL —
+            // the class whose lookup loaded it, then the group newest
+            // first; NULL for a class no module made.
+            3409 => {
+                let group = {
+                    let rt = self.shared.som.lock_or_recover();
+                    rt.modules.get(&a[1]).map(|&hmod| {
+                        let mut g: Vec<u32> = rt.ready_order.iter().rev()
+                            .filter(|c| rt.modules.get(c) == Some(&hmod)).copied().collect();
+                        g.insert(0, rt.module_cause.get(&hmod).copied().unwrap_or_else(|| *g.last().unwrap_or(&a[1])));
+                        g
+                    })
+                };
+                let Some(mut group) = group else { return ok(0) };
+                group.push(0);
+                let Some(array) = self.som_malloc(group.len() as u32 * 4) else { return ok(0) };
+                for (i, c) in group.iter().enumerate() { let _ = self.guest_write::<u32>(array + 4 * i as u32, *c); }
+                ok(array)
+            }
             // somGetInitFunction: the name SOMClassInitFuncName gives.
             3408 => {
                 let func = self.som_var(SOM_VAR_CLASS_INIT_FUNC_NAME);
@@ -2694,6 +2734,20 @@ impl Loader {
             }
             _ => ok(0),
         }
+    }
+
+    /// Write a sequence (`_maximum`, `_length`, `_buffer`) of the
+    /// `words.len() / per_item` items in `words` to `seq`, its buffer
+    /// SOMMalloc'ed (NULL for none); returns `seq`, as a structure return does.
+    fn som_write_sequence(&self, seq: u32, words: &[u32], per_item: usize) -> u32 {
+        let n = (words.len() / per_item) as u32;
+        let buffer = if words.is_empty() { 0 } else {
+            let Some(b) = self.som_malloc(words.len() as u32 * 4) else { return 0 };
+            for (i, w) in words.iter().enumerate() { let _ = self.guest_write::<u32>(b + 4 * i as u32, *w); }
+            b
+        };
+        for (off, v) in [(0, n), (4, n), (8, buffer)] { let _ = self.guest_write::<u32>(seq + off, v); }
+        seq
     }
 
     /// `somFree`'s chain called `somUninit`: the object's memory goes.
@@ -4029,5 +4083,32 @@ mod tests {
         let sci = put_sci(&l, 0x4000, id, &[], 0x5900, 0, 0x5000, 0, [(0x0FFF_FFF0, u32::MAX); 6], 0, 0, 0);
         let r = call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]);
         assert!(matches!(r, ApiResult::Normal(c) if c != 0), "{r:?}");
+    }
+
+    /// somGetParents and _get_somInstanceDataOffsets fill the caller's
+    /// sequence (the hidden first argument) and return it;
+    /// somGetRelatedClasses is NULL for a class no class file made.
+    #[test]
+    fn sequences_by_value_and_related_classes() {
+        let l = Loader::new_mock();
+        l.som_init();
+        let (som_object, som_class) = (root(&l, SOM_OBJECT_CLASS_DATA), root(&l, SOM_CLASS_CLASS_DATA));
+        let a = new_class(&l, som_class, "SeqA", &[som_object], 4, &[]);
+        let b = new_class(&l, som_class, "SeqB", &[som_object], 8, &[]);
+        let both = new_class(&l, som_class, "SeqAB", &[a, b], 4, &[]);
+        let seq = 0x0020_0000;
+        assert_eq!(ok(call(&l, 3338, &[seq, both])), seq);
+        let read = |at: u32| l.guest_read::<u32>(at).unwrap();
+        assert_eq!((read(seq), read(seq + 4)), (2, 2));
+        assert_eq!((read(read(seq + 8)), read(read(seq + 8) + 4)), (a, b), "left to right");
+        assert_eq!(ok(call(&l, 3338, &[seq, som_object])), seq);
+        assert_eq!((read(seq + 4), read(seq + 8)), (0, 0), "SOMObject: none, no buffer");
+        assert_eq!(ok(call(&l, 3339, &[seq, both])), seq);
+        let n = read(seq + 4);
+        let last = read(seq + 8) + 8 * (n - 1);
+        assert!(n >= 3, "SOMObject, the parents and the class itself: {n}");
+        assert_eq!(read(last), both, "the class's own data last");
+        let mgr = root(&l, SOM_CLASS_MGR_OBJECT);
+        assert_eq!(ok(call(&l, 3409, &[mgr, a])), 0);
     }
 }

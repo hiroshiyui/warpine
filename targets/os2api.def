@@ -1008,6 +1008,8 @@ SOM.3334   WrpSOMClass_somGetNthMethodInfo
 SOM.3335   WrpSOMClass_somGetMethodData
 SOM.3336   WrpSOMClass_somGetNthMethodData
 SOM.3337   WrpSOMClass_somGetMethodDescriptor
+SOM.3338   WrpSOMClass_somGetParents
+SOM.3339   WrpSOMClass__get_somInstanceDataOffsets
 SOM.3400   WrpSOMClassMgr_somFindClass
 SOM.3401   WrpSOMClassMgr_somClassFromId
 SOM.3402   WrpSOMClassMgr_somRegisterClass
@@ -1017,6 +1019,7 @@ SOM.3405   WrpSOMClassMgr_somLoadClassFile
 SOM.3406   WrpSOMClassMgr_somUnregisterClass
 SOM.3407   WrpSOMClassMgr_somUnloadClassFile
 SOM.3408   WrpSOMClassMgr_somGetInitFunction
+SOM.3409   WrpSOMClassMgr_somGetRelatedClasses
 
 # ── REXX ─────────────────────────────────────────────────────────────────────
 REXX.1      RexxStart

@@ -701,7 +701,7 @@ DosQueryCtryInfo (NLS 5), DosQueryDBCSEnv (NLS 6), DosMapCase (NLS 7), DosQueryC
 
 ### Sockets (SO32DLL 30, TCP32DLL 46 APIs)
 
-BSD socket calls on Linux sockets. Socket options use OS/2's BSD numbering (`SOL_SOCKET` 0xFFFF, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_SNDBUF` / `SO_RCVBUF`, `SO_ERROR`, `SO_TYPE`, …, and `TCP_NODELAY`) and are translated; `SO_SNDTIMEO` / `SO_RCVTIMEO` and IP-level options fail with `SOCENOPROTOOPT`.
+BSD socket calls on Linux sockets. `sock_errno` returns `SOCBASEERR` (10000) plus the BSD error number, as `<nerrno.h>` defines the `SOCE*` codes (`SOCEWOULDBLOCK` 10035). C programs built with the SDK declare the calls through its TCP/IP headers (`<sys/socket.h>` …; TCP/IP 4.0 layouts). Socket options use OS/2's BSD numbering (`SOL_SOCKET` 0xFFFF, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_SNDBUF` / `SO_RCVBUF`, `SO_ERROR`, `SO_TYPE`, …, and `TCP_NODELAY`) and are translated; `SO_SNDTIMEO` / `SO_RCVTIMEO` and IP-level options fail with `SOCENOPROTOOPT`.
 
 `select` takes the OS/2 TCP/IP `fd_set` of Open Watcom's `<types.h>`: a count (`u_short fd_count`, then 2 bytes of padding) and an array of up to 64 socket numbers (`int fd_array[64]`), not a bit mask, so any socket number fits (Warpine's start at `0xA000`). Every number must be an open socket (else `SOCENOTSOCK`); a count above 64 or a timeout with negative seconds or microseconds of 1 000 000 or more is `SOCEINVAL`; `nfds` is ignored. On return each set holds the ready sockets in their original order, and the result is their total (0 after the timeout). A socket counts as readable or writable also after an error or a hang-up. A signal interrupts the wait with `SOCEINTR`. `bsdselect` and `os2_select` are not provided; their ordinals are not known (ADR-0041).
 
@@ -878,6 +878,7 @@ What they do:
 - `somNew` calls the new object's `somDefaultInit` (by default its `somInit`); `somFree` calls its `somDestruct` with doFree set (by default its `somUninit`, then the memory goes); all may be the program's overrides. `somIdFromString` gives the caller an id of its own, which it may free with `SOMFree`. `somGetNumStaticMethods` counts inherited methods too.
 - Method tables (ADR-0072) have IBM's `somMethodTab` header — `classObject`, `classInfo` (0), `className`, `instanceSize`, `dataAlignment` (4), `mtabSize` (bytes, header included), `protectedDataOffset`, `protectedDataToken`, `embeddedObjs` (0) — then the procedures in token order.
 - `SOMClass`'s `somRenew`, `somRenewNoInit`, `somRenewNoZero`, `somRenewNoInitNoZero(obj)` make an instance in the caller's memory at `obj` (zeroed unless NoZero, initialized as by `somNew` unless NoInit); `somGetMemberToken(offset, instanceToken)` a data token for a member of a class's part; `somGetMethodIndex(id)` a method's place in the class's table (-1 when none); `somGetNthMethodInfo(n, &descriptor)` its somId; `somGetMethodData(id, &md)` / `somGetNthMethodData(n, &md)` fill a `somMethodData` (id, type 0, descriptor 0, token, procedure, 0); `somGetMethodDescriptor` gives 0 (no descriptors are kept). `SOMObject`'s `somCastObj(cls)` makes the object answer as ancestor `cls` (its method table) until `somResetObj`, which is always TRUE. `SOMClassMgr`'s `somGetInitFunction` gives `SOMClassInitFuncName`'s name.
+- `somGetParents` (the parents, left to right) and `_get_somInstanceDataOffsets` (each class's instance data offset, `SOMObject` first, the class last) return a sequence by value: the caller's buffer is a hidden first argument that the caller removes, as Open Watcom's `_System` passes it; the sequence's buffer comes from `SOMMalloc` (NULL when empty). From C with the SDK, `_somGetParents(cls)` / `__get_somInstanceDataOffsets(cls)` pass the buffer for GCC and clang. `somGetRelatedClasses(cls)` returns the class's affinity group, a NULL-terminated array to `SOMFree`: the class whose lookup loaded its module, then the module's classes newest first; NULL for a class no class file made.
 - Root methods of the release order Warpine does not implement (the dispatch family, the private slots, the class manager's repository and class-library methods) raise `SOMERROR_NotImplementedYet` with the Ignore severity (20171; IBM's 20179 is fatal) through `SOMError` and return 0. `SOMClass` also has `somCheckVersion` (same major version, at least the minor one; 0.0 asks for nothing; the root classes are 1.5), `somGetVersionNumbers`, `somFindMethod` / `somFindMethodOk`, `somFindSMethod` / `somFindSMethodOk`, `somLookupMethod` (the `…Ok` forms and `somLookupMethod` raise `SOMERROR_MethodNotFound`, 20039), `somGetClassMtab`, `somGetInstanceOffset`, `somAllocate` / `somDeallocate`. Errors the kernel raises go to a program's own `SOMError` (file `som.dll`), else to the default one.
 - `somBuildClass(inheritVars, sci, major, minor)` (by name; ADR-0073) builds the class a `somStaticClassInfo` describes, as code from IBM's SOM compiler asks: layout versions 1–4; returns the class `ClassData.classObject` already names; parents and an explicit metaclass by name (`SOMERROR_NoParentClass` 20219, `SOMERROR_NoMetaClass` 20229; a malformed structure `SOMERROR_BadArgument` 20199); static methods (`smt`, and `mt`'s static, dynamic and nonstatic ones) with their tokens written into `ClassData`; overrides by name (`omt`, a scoped `Class::method` by its last part) and by token (`mt` action 6); a parent's implementation (`imt`, parents from 1); public data tokens (`nit`: the field at `basisForDataOffset − nitReferenceBase`, resolved by `somDataResolve`); procedure and `va_list` entries (`pmt`, `vft`); then `ClassData.classObject`, `CClassData.parentMtab` (a `somParentMtabStruct`) and `instanceDataToken`, and last the class init function. `inheritVars`, initializers, direct-init classes, DirectToSOM classes, migrated methods and `somDynamicSCI` are not used yet.
 - Warpine's initializer and destructor protocol (ADR-0122; not IBM's, whose control-block layout is unpublished):
@@ -1192,7 +1193,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 537 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 540 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1213,13 +1214,13 @@ Counts are taken from the static registry (`api_registry.rs`, 537 entries) and t
 | PMCTLS (standard dialogs, circular slider) | registry | 6 | 0 | 6 |
 | WARPINE (Warpine's own extensions) | registry | 10 | 0 | 10 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
-| SOM (the SOM runtime kernel) | registry | 147 | 3 | 150 |
+| SOM (the SOM runtime kernel) | registry | 150 | 3 | 153 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **953** | **21** | **974** |
+| **Total** | | **956** | **21** | **977** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

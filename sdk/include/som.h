@@ -259,6 +259,23 @@ typedef somTP_SOMClassMgr_somUnloadClassFile *somTD_SOMClassMgr_somUnloadClassFi
 typedef zString SOMLINK somTP_SOMClassMgr_somGetInitFunction( SOMClassMgr * );
 typedef somTP_SOMClassMgr_somGetInitFunction *somTD_SOMClassMgr_somGetInitFunction;
 #define _somGetInitFunction( m ) SOM_Resolve( m, SOMClassMgr, somGetInitFunction )( (SOMClassMgr *)(m) )
+typedef SOMClassArray SOMLINK somTP_SOMClassMgr_somGetRelatedClasses( SOMClassMgr *, SOMClass * );
+typedef somTP_SOMClassMgr_somGetRelatedClasses *somTD_SOMClassMgr_somGetRelatedClasses;
+#define _somGetRelatedClasses( m, c ) SOM_Resolve( m, SOMClassMgr, somGetRelatedClasses )( (SOMClassMgr *)(m), (c) )
+
+/* Methods returning a sequence by value. OS/2's _System passes the
+ * caller's result buffer as a hidden first argument and the caller removes
+ * it; i386 GCC and clang have the callee remove it instead. So the
+ * procedure types name the buffer, and the macros pass it explicitly
+ * (statement expressions, as GCC and clang both take). */
+typedef SOMClassSequence * SOMLINK somTP_SOMClass_somGetParents( SOMClassSequence *, SOMClass * );
+typedef somTP_SOMClass_somGetParents *somTD_SOMClass_somGetParents;
+#define _somGetParents( c ) __extension__ ({ SOMClassSequence __somr; \
+        SOM_Resolve( c, SOMClass, somGetParents )( &__somr, (SOMClass *)(c) ); __somr; })
+typedef somOffsets * SOMLINK somTP_SOMClass__get_somInstanceDataOffsets( somOffsets *, SOMClass * );
+typedef somTP_SOMClass__get_somInstanceDataOffsets *somTD_SOMClass__get_somInstanceDataOffsets;
+#define __get_somInstanceDataOffsets( c ) __extension__ ({ somOffsets __somr; \
+        SOM_Resolve( c, SOMClass, _get_somInstanceDataOffsets )( &__somr, (SOMClass *)(c) ); __somr; })
 #define _somFindClass( m, id, ma, mi ) \
     SOM_Resolve( m, SOMClassMgr, somFindClass )( (SOMClassMgr *)(m), (id), (ma), (mi) )
 #define _somFindClsInFile( m, id, ma, mi, f ) \

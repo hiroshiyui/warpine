@@ -679,6 +679,8 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             3335 => "WrpSOMClass_somGetMethodData",
             3336 => "WrpSOMClass_somGetNthMethodData",
             3337 => "WrpSOMClass_somGetMethodDescriptor",
+            3338 => "WrpSOMClass_somGetParents",
+            3339 => "WrpSOMClass__get_somInstanceDataOffsets",
             3400 => "WrpSOMClassMgr_somFindClass",
             3401 => "WrpSOMClassMgr_somClassFromId",
             3402 => "WrpSOMClassMgr_somRegisterClass",
@@ -688,6 +690,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             3406 => "WrpSOMClassMgr_somUnregisterClass",
             3407 => "WrpSOMClassMgr_somUnloadClassFile",
             3408 => "WrpSOMClassMgr_somGetInitFunction",
+            3409 => "WrpSOMClassMgr_somGetRelatedClasses",
             _ => "?",
         },
 

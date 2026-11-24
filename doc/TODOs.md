@@ -30,7 +30,7 @@ Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, A
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
   - seccomp filters per process role (guest processes, the desktop server);
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs and bitmaps, a minute per target on each push and ten minutes weekly): the other resources Warpine reads from a running program (dialog and menu templates, string tables), which first need their parsers taken out of `pm_dialog.rs` / `pm_win.rs` as `bitmap_codec.rs` was.
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps and the dialog / menu / accelerator / string / `PRESPARAMS` resources, a minute per target on each push and ten minutes weekly): the pointer and icon decoder (`decode_pointer_resource` in `pm_pointer.rs`) and the WAV parser (`parse_wav` in `mmpm.rs`, files a guest names), once taken out into modules of their own.
 - [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---
@@ -53,12 +53,11 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
 
 - [x] **Checked the kernel against the OS/2 SOM Programming Reference** (2026-11-23): of its 130 kernel entries (functions, runtime variables, macros, and the `SOMObject`, `SOMClass` and `SOMClassMgr` methods), 55 match, 26 differ and 47 are missing. The findings, in the suggested order of work:
 - [ ] **Missing, documented by the Reference** (the rest came 2026-11-24):
-  - methods returning a sequence by value (`somGetParents`, `_get_somInstanceDataOffsets`, `somGetRelatedClasses`): the i386 convention for a returned struct (a hidden pointer the callee pops) needs the thunks to return differently;
   - the class manager's `somSubstituteClass` and `somMergeInto`;
   - dispatch: `somApply`, `somDispatch`, `somClassDispatch` (the `somDispatchV` / `L` / `A` / `D` forms call it), the `somVaBuf_*` and `somvalistGetTarget` / `somvalistSetTarget` helpers, then `somAddDynamicMethod` and dynamic methods: they need method descriptors (argument types), which the kernel does not keep;
   - TypeCodes (`any` carries an opaque one).
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
-  - ordinals 48 and above: unassigned until a permissive source lists them — none of the manuals above does; asking the rights holders is the route left;
+  - ordinals 48 and above: no public source lists them, so SOM.DLL's other exports sit at Warpine's own ordinals (3072 and up), which programs built with `somidl` and the SDK link by name — source-level compatibility (ADR-0123); IBM-built SOM binaries importing by IBM's numbers stay out of reach unless a public list turns up;
   - IBM-built class libraries also need IBM's initializer / destructor / assignment control blocks, whose layout no public source gives; code rebuilt with `somidl` uses Warpine's own protocol instead (ADR-0122). Still unused by `somBuildClass` (ADR-0073): DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`;
   - the root methods that resolve to the not-implemented procedure: see "Missing, documented by the Reference" above; the class manager's `somInterfaceRepository` / `somRegisteredClasses` attributes are not in the Reference.
 - [ ] **`somidl` beyond ADR-0122's four stages** (all done: C and C++ bindings, multiple inheritance, initializers, exceptions; Open Watcom's hello, animals and hellocpp build from them), if needed: OIDL `.csc` input (Open Watcom's classes sample stays hand-bound), an `ir` emitter and an interface repository, TypeCodes behind `any`, DSOM.
@@ -250,7 +249,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **TCP/IP calls still missing** (the chart's TCP/IP row; Warpine's own ordinals per ADR-0123):
-  - socket headers for the SDK (`sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `netdb.h`, `sys/ioctl.h`, `sys/uio.h`), so C programs reach the socket calls by name;
   - the host, network and service databases (`sethostent` / `gethostent` / `endhostent`, `getnetbyname` / `getnetbyaddr` / `getnetent` …, `getservent` …) and `%ETC%` files to read them from;
   - the resolver (`res_init`, `res_mkquery`, `res_send`, `res_query`, `res_search`, `res_querydomain`), `dn_find`, compression in `dn_comp`;
   - `sendmsg` / `recvmsg`, `so_cancel`, `addsockettolist` / `removesocketfromlist`, `rexec`, the SOCKS calls (`Raccept`, `Rbind`, `Rconnect`, `Rlisten`, `Rgetsockname`, `Rgethostbyname`), `tcp_h_errno`.
@@ -323,7 +321,7 @@ Where no such source turns up and the original cannot be rebuilt (SOM, the WPS, 
 **Missing export lists or ordinals**
 - **DIVE** and **OpenGL / PGL** ([Graphics](#graphics)): their export lists.
 - **The compatibility chart** ([Kernel and processes](#kernel-and-processes)): the SO32DLL / TCP32DLL export split; dates for the `unknown` exports.
-- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no permissive source lists them. None of the IBM manuals now at hand does either (2026-11-23); the route left is asking the rights holders.
+- **SOM.DLL ordinals 48 and above** ([SOM](#som--workplace-shell)): no public source lists them; Warpine's own (3072 and up, ADR-0123) serve programs built from source, IBM-built binaries need IBM's.
 - **SOM Stage B2/B3**, classes built from IBM's static class data ([SOM](#som--workplace-shell)): waits for those ordinals, or a source for the initializer / destructor control-block protocol. It holds back IBM-built SOM programs, and with them the Workplace Shell's compatibility.
 
 **Behaviour the public documentation does not settle**

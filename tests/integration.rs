@@ -35,7 +35,7 @@ fn sample_path(path: impl AsRef<Path>) -> String {
     let compiler = cc.strip_prefix("ci-").unwrap_or(&cc);
     let compiler = compiler.strip_suffix("-pinned").unwrap_or(compiler);
     assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
-    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "c_som_test", "som_idl_test", "cxx_test",
+    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_socket_test", "c_pm_test", "c_gdb_test", "c_msg_test", "c_som_test", "som_idl_test", "cxx_test",
                                   "rust_hello", "shapes", "som_test", "wcxx_throw_test"];
     let Some(rest) = path.strip_prefix("samples/") else { return path };
     let Some((dir, _)) = rest.split_once('/') else { return path };
@@ -2079,6 +2079,36 @@ fn test_c_sdk_from_gcc_and_clang() {
     }
 }
 
+/// ADR-0123: samples/c_socket_test, built with the SDK's socket headers by
+/// GCC and by clang (each when installed) and linked by name, runs the
+/// TCP/IP calls over loopback.
+#[test]
+fn test_c_socket_headers_from_gcc_and_clang() {
+    let has_make = Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !has_make { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_socket_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+        for target in ["sdk", "samples/c_socket_test"] {
+            let out = Command::new("make").args(["-s", "-C", target]).args(&vars).output().expect("run make");
+            assert!(out.status.success(), "make -C {target} ({compiler}):\n{}{}",
+                    String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        let exe = dir.path().join("c_socket_test.exe");
+        let (out, code) = run_sample(exe.to_str().unwrap(), 30);
+        let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+        assert!(failures.is_empty(), "{compiler}: {failures:?}\n{out}");
+        assert!(out.contains("c_socket_test: done 22/22"), "{compiler}:\n{out}");
+        assert_eq!(code, 0, "{compiler}:\n{out}");
+    }
+}
+
 /// ADR-0101: every structure the C SDK declares that Open Watcom's headers
 /// declare too has the same size and field offsets: tests/sdk_layout/
 /// layout.c prints them, built by Open Watcom with its headers and by GCC
@@ -2418,7 +2448,7 @@ fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
             .output().expect("run warpine");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
-        assert!(text.contains("c_som_test: done 20/20"), "{compiler}:\n{text}");
+        assert!(text.contains("c_som_test: done 24/24"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
     }
 }

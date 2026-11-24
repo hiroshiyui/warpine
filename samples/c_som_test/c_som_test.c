@@ -148,6 +148,21 @@ int main( void )
                _somCastObj( cast, Left ) && _somGetClass( cast ) == Left );
         check( "somResetObj: as Bottom again", _somResetObj( cast ) && _somGetClass( cast ) == Bottom );
         _somFree( cast );
+        {
+            SOMClassSequence parents = _somGetParents( Bottom );
+            somOffsets offsets = __get_somInstanceDataOffsets( Bottom );
+            SOMClassSequence none = _somGetParents( SOMObjectClassData.classObject );
+            check( "somGetParents: left to right (a sequence by value)",
+                   parents._length == 2 && parents._buffer[0] == Left && parents._buffer[1] == Right );
+            check( "somGetParents: none for SOMObject", none._length == 0 );
+            check( "_get_somInstanceDataOffsets: Bottom's own data last",
+                   offsets._length >= 2 && offsets._buffer[offsets._length - 1].cls == Bottom
+                   && offsets._buffer[offsets._length - 1].offset > 0 );
+            check( "somGetRelatedClasses: no affinity group without a class file",
+                   _somGetRelatedClasses( SOMClassMgrObject, Base ) == NULL );
+            SOMFree( parents._buffer );
+            SOMFree( offsets._buffer );
+        }
         check( "somGetInitFunction", strcmp( _somGetInitFunction( SOMClassMgrObject ), "SOMInitModule" ) == 0 );
         check( "somMainProgram", SOM_MainProgram() == SOMClassMgrObject );
         SOM_Test( total > 0 );

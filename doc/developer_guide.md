@@ -1941,7 +1941,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (537 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (540 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -2032,7 +2032,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (537 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (540 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -2194,7 +2194,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2420: 2305 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
+The unit tests (2425: 2310 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 18 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2363,8 +2363,9 @@ samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
   - `os2rc`, the whole of `src/bin/os2rc.rs`: `compile_in_memory` compiles a script to a .res file without reading any file (no `#include`, `RCINCLUDE` or resource file);
   - `somidl`, `src/cpp.rs` and `src/somidl/`: `parse_in_memory` preprocesses and parses an IDL file without reading any file, and a parsed file is dumped;
   - `bitmap`, `src/loader/bitmap_codec.rs` (the byte-slice codec `pm_bitmap.rs` builds surfaces on), with shims for six constants and `MAX_SURFACE_DIM`: an `RT_BITMAP` resource is split into its format and pel data, decoded when it has at most 2²⁰ pels;
+  - `res_templates`, `src/loader/res_templates.rs` (the dialog, menu, accelerator, string-bundle and `PRESPARAMS` parsers, taken out of `pm_dialog.rs`, `pm_win.rs`, `pm_winmisc.rs` and `pm_presparam.rs`, which re-export them), with shims for three `MIS_*` constants and a Latin-1 decoder: the first byte picks the parser, and the results are checked against their bounds (items that fit, the focus and parents in range, `MAX_MENU_DEPTH`, `MAX_PRESPARAMS`);
   - `lx_link`, the whole of `src/bin/lx_link.rs`: `link_in_memory` reads one input (its first byte picks `.o`, `.res`, `.dll` or `.msg`; archives are told by their magic), links it, with `--gc-sections` when the byte's top bit is set, and writes the debug companion when it has DWARF.
-- **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs, message files, resource scripts and lx-link inputs into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
+- **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs, message files, resource scripts, lx-link inputs and resource files (behind each of `res_templates`' five kinds) into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
 - **In CI** the watcom entry runs each target for a minute after `cargo deny check` (advisories included) in both workspaces. `.github/workflows/fuzz.yml` runs every target for ten minutes each Monday, and on demand with another length (`ci/matrix.sh fuzz`, seeded from Open Watcom's and GCC's samples; `FUZZ_SECONDS=600 ci/run.sh fuzz` on a workstation).
 
 ### GUI regression tests
@@ -2517,14 +2518,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (537 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (540 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2420 unit tests (2305 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 232 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2425 unit tests (2310 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 18 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 233 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2604,9 +2605,10 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `os2/pmshl.h`, `os2/pmstddlg.h`, `os2/pmhelp.h`, `os2/pmspl.h` (ADR-0100) have PMSHAPI, PMCTLS / PMDRAG, HELPMGR and PMSPL; `os2/pmctl.h` (ADR-0101) the standard controls' messages and structures, DDE, tracking, bundles and the spooler's queries; `pm.h` includes them.
   - `rexxsaa.h` (REXX / REXXAPI), `os2me.h` (MCI), `pmerr.h`, `time.h`, `stdint.h`, `unwind.h` (ADR-0101, ADR-0103).
   - SOM (ADR-0122): `som.h` (the root classes), `som.xh` (the root classes as C++ classes, ADR-0061), `somapi.h` (the kernel, the data exports as macros over `WrpSomDataExport`, the initializer protocol's structures), `somcdev.h` (the binding macros, `SOM_InitBegin` / `SOM_DestructEnd` …, handing an inherited initializer to `WrpSomInitWalk`); `somobj.idl`, `somcls.idl`, `somcm.idl` and `somtypes.idl` for `somidl`. `check-headers` reads the `som*.h` files too, `SOMLINK` declarations included. `samples/c_som_test` uses them.
+  - TCP/IP (ADR-0123): `types.h` (the `u_*` types, the count-and-array `fd_set` with inline `FD_ISSET` / `FD_CLR`, `timeval`), `sys/types.h`, `sys/socket.h` (SO32DLL's calls; BSD 4.3 `sockaddr` with a 16-bit family, OS/2's option numbering), `netinet/in.h`, `arpa/inet.h`, `netdb.h`, `sys/ioctl.h`, `sys/uio.h`, `resolv.h` and `nerrno.h` (`SOCBASEERR` 10000 plus the BSD number). They follow TCP/IP 4.0, not Open Watcom's BSD 4.4 headers (TCPIP32), so the layout test compares only `hostent`, `servent`, `protoent`, `iovec`, `fd_set`, `timeval` and `linger`. `inet_makeaddr` returns its `in_addr` in EAX as OS/2's `_System` does, while i386 GCC returns structures in memory: the import is declared returning a `u_long` (`_wrp_inet_makeaddr`, linked as `inet_makeaddr` through `OS2_IMPORT`, which `check-headers` follows) under an inline wrapper with a symbol of its own. `samples/c_socket_test` uses them.
   - `include/c++/`: the C++ headers (ADR-0103), `<new>`, `<exception>`, `<typeinfo>`, `<initializer_list>`, `<utility>`, `<stdexcept>` and the `<c…>` wrappers.
   - Together the headers declare 661 of the 670 entries of their modules (`gen_api check-headers` counts what is left).
-  - **Layouts:** `tests/sdk_layout/layout.c` prints every structure's size and field offsets, 142 structures, built by Open Watcom with its headers and by GCC and clang with the SDK's; `sdk_structure_layouts_match_open_watcom` compares the three. Add a structure to `fields.inc` when the SDK gains one Open Watcom also has.
+  - **Layouts:** `tests/sdk_layout/layout.c` prints every structure's size and field offsets, 158 structures, built by Open Watcom with its headers and by GCC and clang with the SDK's; `sdk_structure_layouts_match_open_watcom` compares the three. Add a structure to `fields.inc` when the SDK gains one Open Watcom also has.
 - **Pascal calls:** each subsystem call is one `OS2_PASCAL_API(ret, Name, (params), (reversed params), (reversed args))` line. It declares the import `_os2p_Name` (stdcall, the arguments reversed and widened, linked as `Name`) and an always-inline `Name` in the documented order, linked as `_os2i_Name` so the two never share a symbol (clang would otherwise call the wrapper as the import).
 - **The runtime** (`libc/`):
   - `crt0.c`: `argv` / `envp`, the init arrays, `exit(main(...))`, the program's `__dso_handle`;

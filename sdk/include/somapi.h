@@ -94,6 +94,22 @@ typedef struct SOMClassSequence {
     SOMClass      **_buffer;
 } SOMClassSequence;
 
+/* A NULL-terminated array of class objects (somGetRelatedClasses). */
+typedef SOMClass **SOMClassArray;
+
+/* somOffsets: where each class's instance data lies in an instance of a
+ * class (_get_somInstanceDataOffsets). */
+typedef struct somOffsetInfo {
+    SOMClass *cls;
+    long      offset;
+} somOffsetInfo;
+
+typedef struct somOffsets {
+    unsigned long   _maximum;
+    unsigned long   _length;
+    somOffsetInfo  *_buffer;
+} somOffsets;
+
 typedef struct Environment {
     long  _major;
     void *exception_id;

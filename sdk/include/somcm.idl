@@ -25,7 +25,7 @@ interface SOMClassMgr : SOMObject
     long somUnloadClassFile(in SOMClass classObj);
     string somGetInitFunction();
     void somMergeInto(in SOMObject targetObj);
-    SOMClassSequence somGetRelatedClasses(in SOMClass classObj);
+    SOMClassArray somGetRelatedClasses(in SOMClass classObj);
     long somSubstituteClass(in string origClassName, in string newClassName);
     attribute Repository somInterfaceRepository;
     readonly attribute SOMClassSequence somRegisteredClasses;

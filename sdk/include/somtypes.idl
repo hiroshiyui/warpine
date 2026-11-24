@@ -23,5 +23,6 @@ typedef unsigned long somDestructCtrl;
 typedef unsigned long somAssignCtrl;
 typedef unsigned long va_list;
 typedef unsigned long Repository;
+typedef unsigned long SOMClassArray;
 
 #endif
