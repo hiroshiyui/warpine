@@ -92,7 +92,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - binary OS/2 INI files (format unpublished).
 - [ ] **CONFIG.SYS** (ADR-0032, 0092):
   - check the `THREADS=` range (32 or 64? 4095 or 4096?) and the parsing rules against IBM's Command Reference itself (`CMDREF.INF`): a web search found only secondary sources, which disagree (`config_sys.rs`);
-  - BEGINLIBPATH / ENDLIBPATH passed to child processes, `%BEGINLIBPATH%` / `%ENDLIBPATH%` expanded by `DosSetExtLIBPATH`;
   - `MAXWAIT`, `DPATH` use, ….
 - [ ] **Compatibility chart** (ADR-0033):
   - date the `unknown` exports (22 of os2386.lib, 7 of the other modules);
@@ -247,7 +246,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - the resolver (`res_init`, `res_mkquery`, `res_send`, `res_query`, `res_search`, `res_querydomain`), `dn_find`, compression in `dn_comp`;
   - `sendmsg` / `recvmsg`, `so_cancel`, `addsockettolist` / `removesocketfromlist`, `rexec`, the SOCKS calls (`Raccept`, `Rbind`, `Rconnect`, `Rlisten`, `Rgetsockname`, `Rgethostbyname`).
 - [ ] **VIO and KBD calls still missing** (the chart's VIO / KBD row):
-  - `KbdSetStatus`'s modes acted on by the reads (echo, ASCII line editing, the turnaround character);
+  - `KbdStringIn`'s line-editing keys beyond Backspace (the template recall of `cchIn`), and the TERM mode;
   - `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`, keyboard layouts other than the US one (`KbdXlate`);
   - `VioGetFont` / `VioSetFont`, `VioGetBuf` / `VioShowBuf` (stubs), `VioSetState` / `VioSetCp` acted on by the renderer, `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
 - [ ] **VIO window**:

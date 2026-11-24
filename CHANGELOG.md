@@ -6,11 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-### Security
-- **API calls are held to shared-memory holds** (ADR-0049 second addendum): a buffer in a shared block the calling process does not hold, or a read-only block it would write into, fails the call instead of being read or written; a block another process has just given is found by reading the session's table again. Calls that only read a buffer accept a block held read-only. 16-bit programs were checked to reach none of the shared arena (new sample `ne_arena_test`); the earlier note that they reached all of it was wrong.
+### Added
+- **`KbdStringIn` follows the keyboard's mode**: ASCII mode edits with Backspace, ends at the turnaround character `KbdSetStatus` set and echoes only with echo on; binary mode keeps every byte, never echoes, and ends when the buffer is full. The keyboard now starts as the KBD reference says, in ASCII mode (with echo on), and `KbdGetStatus` reports it so. `vio_kbd_test` has 59 checks.
+- **Extended LIBPATHs are inherited**: a child starts with its parent's BEGINLIBPATH and ENDLIBPATH, and `DosSetExtLIBPATH` expands `%BeginLIBPATH%` / `%EndLIBPATH%` and keeps to 1024 bytes. `libpath_test` has 17 checks and a child.
 
 ### Fixed
 - **`DosRead` of a file returned `NO_ERROR` when it could not write the program's buffer**: it now returns `ERROR_INVALID_PARAMETER`, as for a pipe.
+
+### Security
+- **API calls are held to shared-memory holds** (ADR-0049 second addendum): a buffer in a shared block the calling process does not hold, or a read-only block it would write into, fails the call instead of being read or written; a block another process has just given is found by reading the session's table again. Calls that only read a buffer accept a block held read-only. 16-bit programs were checked to reach none of the shared arena (new sample `ne_arena_test`); the earlier note that they reached all of it was wrong.
 
 ## [0.0.17] - 2026-11-24
 

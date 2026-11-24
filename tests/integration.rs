@@ -949,7 +949,9 @@ fn test_pipe_writes_interrupted_mid_message() {
 
 /// libpath_test (ADR-0092): CONFIG.SYS's SET statements make the starting
 /// environment; DLLs are found along BEGINLIBPATH, LIBPATH (`.` the
-/// current directory) and ENDLIBPATH, in that order.
+/// current directory) and ENDLIBPATH, in that order; `%BeginLIBPATH%`
+/// expands to the current value, and a child inherits both extended
+/// LIBPATHs and finds its DLLs along them.
 #[test]
 fn test_config_sys_libpath_and_set() {
     let sample = "samples/libpath_test/libpath_test.exe";
@@ -969,7 +971,8 @@ fn test_config_sys_libpath_and_set() {
     let home = data.path().to_str().unwrap();
     let (out, code) = run_sample_env(sample, 30, &[("XDG_DATA_HOME", home)]);
     assert!(!out.contains("FAIL"), "{out}");
-    assert!(out.contains("libpath_test: done 14/14"), "{out}");
+    assert!(out.contains("libpath_test: done 17/17"), "{out}");
+    assert!(out.contains("libpath_test: child: done 4/4"), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 

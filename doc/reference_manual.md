@@ -383,6 +383,8 @@ Ending threads and processes give their slots back — also a process killed by 
 3. the `LIBPATH=` directories, or `C:\OS2\DLL` without the statement;
 4. ENDLIBPATH, as set by `DosSetExtLIBPATH(…, END_LIBPATH)`.
 
+In a value given to `DosSetExtLIBPATH`, `%BeginLIBPATH%` and `%EndLIBPATH%` (any case) stand for the current settings, and NULL or an empty string removes it; a value is at most 1024 bytes (`ERROR_INVALID_PARAMETER`, or `ERROR_NOT_ENOUGH_MEMORY` when the expansion makes it longer; unverified). A process starts with its parent's BEGINLIBPATH and ENDLIBPATH as they were when the parent started it; later changes on either side stay there.
+
 Each directory is an OS/2 path on a mounted drive, with `.` meaning the current directory. Names match as they do on the drive, and an entry cannot lead outside the drives. Up to 64 directories of up to 260 bytes are used.
 
 `SET name=value` puts a variable in the environment a program starts with when no other program gives it one. This applies to the first program of a session, a CMD.EXE nobody started, and CMD's `START` without `/I`. That environment is Warpine's base, `PATH=C:\`, `COMSPEC=C:\CMD.EXE`, `OS=OS2` and `TMP=C:\TMP`, with the `SET` statements applied in order:
@@ -783,7 +785,8 @@ VioGetBuf (31), VioShowBuf (43)
 KbdGetCp (3), KbdCharIn (4), KbdSetCp (5), KbdSynch (7), KbdStringIn (9), KbdGetStatus (10), KbdSetStatus (11), KbdGetFocus (12), KbdFlushBuffer (13), KbdXlate (14), KbdClose (17), KbdFreeFocus (18), KbdPeek (22), KbdOpen (23), KbdGetHWID (24)
 
 - **`KbdPeek`** returns the next key without taking it (fbStatus 0x40), or a record of zeros; `KbdFlushBuffer` drops what is typed ahead.
-- **`KbdSetStatus`** checks `KBDINFO.cb` (10, `ERROR_KBD_INVALID_LENGTH`), echo on with off (`ERROR_KBD_INVALID_ECHO_MASK`) and binary with ASCII (`ERROR_KBD_INVALID_INPUT_MASK`), and keeps the modes, turnaround character, interim and shift states for `KbdGetStatus`; the reads do not act on them yet.
+- **`KbdSetStatus`** checks `KBDINFO.cb` (10, `ERROR_KBD_INVALID_LENGTH`), echo on with off (`ERROR_KBD_INVALID_ECHO_MASK`) and binary with ASCII (`ERROR_KBD_INVALID_INPUT_MASK`), and keeps the modes, turnaround character, interim and shift states for `KbdGetStatus`. The keyboard starts in ASCII mode with echo on and CR as the turnaround character.
+- **`KbdStringIn`** follows the mode (KBD reference): in ASCII mode characters go into the buffer, Backspace takes the last one back, and the turnaround character (not stored) or a full buffer ends the call, each character echoed when echo is on; in binary mode every byte goes into the buffer, nothing is echoed, and only a full buffer ends it. At most 255 bytes. `KbdCharIn` does not depend on the mode. Warpine's own (unverified): echo on by default (the reference names ASCII as the default mode only).
 - **`KbdSetCp` / `KbdGetCp`:** the keyboard codepage, 0 (the default table) or one Warpine knows (`ERROR_KBD_INVALID_CODEPAGE`); it does not change the process or display codepage.
 - **`KbdXlate`:** a `KBDTRANS`'s `chScan` and `fsState` into `chChar` (US layout, set-1 scan codes; Shift, Caps Lock for letters, Ctrl for letters 1–26; Alt and keys without a character give 0 with the extended-key status), `fbStatus` `KBDTRF_FINAL_CHAR_IN` and `fsXlate` bit 0; an unknown scan code gives 0, not final.
 - **`KbdGetHWID`:** an enhanced keyboard, ID 0xAB41, in as much of `KBDHWID` as `cb` gives (at least 4).

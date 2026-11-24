@@ -649,8 +649,8 @@ impl Loader {
             mou_cond: Condvar::new(),
             api_ring: Mutex::new(ApiRingBuffer::new()),
             config_sys_cell: std::sync::OnceLock::new(),
-            begin_libpath: Mutex::new(String::new()),
-            end_libpath: Mutex::new(String::new()),
+            begin_libpath: Mutex::new(inherit::inherited_libpath(inherit::BEGINLIBPATH_ENV)),
+            end_libpath: Mutex::new(inherit::inherited_libpath(inherit::ENDLIBPATH_ENV)),
             gdb_state: None,
         });
 

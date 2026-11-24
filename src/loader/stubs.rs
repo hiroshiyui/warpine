@@ -1207,19 +1207,30 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetExtLIBPATH (ordinal 873): set extended LIBPATH prefix or suffix.
-    ///
-    /// OS/2 signature: DosSetExtLIBPATH(PCSZ pszExtLIBPATH, ULONG flags)
-    /// - flags 1 (BEGIN_LIBPATH): prepend path
-    /// - flags 2 (END_LIBPATH):   append path
+    /// DosSetExtLIBPATH (ordinal 873): the path searched before
+    /// (`BEGIN_LIBPATH`) or after (`END_LIBPATH`) LIBPATH for DLLs, for this
+    /// process and the children it starts afterwards (`inherit.rs`). In the
+    /// new value `%BeginLIBPATH%` and `%EndLIBPATH%` (any case) stand for
+    /// the current settings; NULL or an empty string removes it. At most
+    /// 1024 bytes: a longer value is `ERROR_INVALID_PARAMETER`, and one that
+    /// grows past that by the expansion `ERROR_NOT_ENOUGH_MEMORY`
+    /// (unverified).
     pub fn dos_set_ext_libpath(&self, psz_path: u32, flags: u32) -> u32 {
+        use super::inherit::MAX_EXT_LIBPATH;
         let path = if psz_path != 0 { self.read_guest_string(psz_path) } else { String::new() };
         debug!("  DosSetExtLIBPATH('{}', flags={})", path, flags);
-        match flags {
-            BEGIN_LIBPATH => { *self.shared.begin_libpath.lock_or_recover() = path; NO_ERROR }
-            END_LIBPATH   => { *self.shared.end_libpath.lock_or_recover() = path;   NO_ERROR }
-            _             => ERROR_INVALID_FUNCTION,
-        }
+        let target = match flags {
+            BEGIN_LIBPATH => &self.shared.begin_libpath,
+            END_LIBPATH => &self.shared.end_libpath,
+            _ => return ERROR_INVALID_FUNCTION,
+        };
+        if path.len() > MAX_EXT_LIBPATH { return ERROR_INVALID_PARAMETER; }
+        let begin = self.shared.begin_libpath.lock_or_recover().clone();
+        let end = self.shared.end_libpath.lock_or_recover().clone();
+        let expanded = expand_ext_libpath(&path, &begin, &end);
+        if expanded.len() > MAX_EXT_LIBPATH { return ERROR_NOT_ENOUGH_MEMORY; }
+        *target.lock_or_recover() = expanded;
+        NO_ERROR
     }
 
     /// DosQueryExtLIBPATH (ordinal 874): query extended LIBPATH prefix or suffix.
@@ -1257,6 +1268,33 @@ pub(super) fn ms_count() -> u32 {
     (ts.tv_sec as u64).wrapping_mul(1000).wrapping_add(ts.tv_nsec as u64 / 1_000_000) as u32
 }
 
+
+/// `value` with `%BeginLIBPATH%` and `%EndLIBPATH%` (letters in any case)
+/// replaced by `begin` and `end` (`DosSetExtLIBPATH`).
+fn expand_ext_libpath(value: &str, begin: &str, end: &str) -> String {
+    const BEGIN: &str = "%BEGINLIBPATH%";
+    const END: &str = "%ENDLIBPATH%";
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let starts = |sym: &str| tail.len() >= sym.len() && tail.is_char_boundary(sym.len())
+            && tail[..sym.len()].eq_ignore_ascii_case(sym);
+        if starts(BEGIN) {
+            out.push_str(begin);
+            rest = &tail[BEGIN.len()..];
+        } else if starts(END) {
+            out.push_str(end);
+            rest = &tail[END.len()..];
+        } else {
+            out.push('%');
+            rest = &tail[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -1487,6 +1525,34 @@ mod tests {
         assert_eq!(loader.dos_set_ext_libpath(buf, BEGIN_LIBPATH), NO_ERROR);
         assert_eq!(loader.dos_query_ext_libpath(out_begin, BEGIN_LIBPATH), NO_ERROR);
         assert_eq!(loader.guest_read_bytes(out_begin, 8).as_deref(), Some(&b"C:\\CAF\x82\0"[..]));
+    }
+
+    /// `%BeginLIBPATH%` / `%EndLIBPATH%` stand for the current settings, in
+    /// any case and in either flag; a lone `%` stays; a value over 1024
+    /// bytes is refused, before or after the expansion.
+    #[test]
+    fn ext_libpath_expands_the_current_settings_and_is_bounded() {
+        use super::super::constants::{BEGIN_LIBPATH, END_LIBPATH, ERROR_INVALID_PARAMETER,
+                                      ERROR_NOT_ENOUGH_MEMORY, NO_ERROR};
+        assert_eq!(super::expand_ext_libpath("A;%BeginLIBPATH%;B", "X", "Y"), "A;X;B");
+        assert_eq!(super::expand_ext_libpath("%endlibpath%%BEGINLIBPATH%", "X", "Y"), "YX");
+        assert_eq!(super::expand_ext_libpath("50%;%BEGIN%;é%", "X", "Y"), "50%;%BEGIN%;é%");
+        let loader = Loader::new_mock();
+        let buf = 0x0020_0000u32;
+        let set = |s: &[u8], flag: u32| {
+            loader.guest_write_bytes(buf, s).unwrap();
+            loader.guest_write::<u8>(buf + s.len() as u32, 0).unwrap();
+            loader.dos_set_ext_libpath(buf, flag)
+        };
+        assert_eq!(set(b"D:\\MYDLLS;", BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(set(b"D:\\TOMS;%BeginLIBPATH%;D:\\JOES;", BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(*loader.shared.begin_libpath.lock().unwrap(), "D:\\TOMS;D:\\MYDLLS;;D:\\JOES;");
+        assert_eq!(set(b"%BEGINLIBPATH%", END_LIBPATH), NO_ERROR);
+        assert_eq!(*loader.shared.end_libpath.lock().unwrap(), *loader.shared.begin_libpath.lock().unwrap());
+        assert_eq!(set(&[b'A'; 1025], BEGIN_LIBPATH), ERROR_INVALID_PARAMETER);
+        assert_eq!(set(&[b'A'; 600], BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(set(b"%BeginLIBPATH%%BeginLIBPATH%", BEGIN_LIBPATH), ERROR_NOT_ENOUGH_MEMORY);
+        assert_eq!(loader.shared.begin_libpath.lock().unwrap().len(), 600, "unchanged");
     }
 
     #[test]

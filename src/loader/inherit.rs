@@ -149,6 +149,24 @@ pub fn next_process_id(id: u32) -> u32 {
 
 /// Environment variable carrying a child process's nesting depth.
 pub const DEPTH_ENV: &str = "WARPINE_DEPTH";
+/// The extended LIBPATHs (`DosSetExtLIBPATH`) a child starts with: the
+/// parent's as they were when it was started (Control Program Reference:
+/// "Every process inherits the settings of BeginLIBPATH and EndLIBPATH
+/// from the process that starts it").
+pub const BEGINLIBPATH_ENV: &str = "WARPINE_BEGINLIBPATH";
+pub const ENDLIBPATH_ENV: &str = "WARPINE_ENDLIBPATH";
+/// Longest extended LIBPATH (`DosSetExtLIBPATH`'s 1024-byte buffer).
+pub const MAX_EXT_LIBPATH: usize = 1024;
+
+/// The extended LIBPATH a parent passed in `var` (empty without one; at
+/// most `MAX_EXT_LIBPATH` bytes, a longer one is dropped).
+pub fn inherited_libpath(var: &str) -> String {
+    std::env::var_os(var)
+        .map(|v| unescape(&v))
+        .filter(|b| b.len() <= MAX_EXT_LIBPATH)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default()
+}
 /// Deepest process nesting: a process at this depth starts no children.
 pub const MAX_PROCESS_DEPTH: u32 = 8;
 /// Most children a process keeps track of at once.
@@ -248,6 +266,11 @@ pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::C
     })?;
     cmd.env(PID_ENV, pid.to_string());
     cmd.env(PPID_ENV, shared.process_id().to_string());
+    // The extended LIBPATHs as they are now: later changes stay here.
+    for (var, path) in [(BEGINLIBPATH_ENV, &shared.begin_libpath), (ENDLIBPATH_ENV, &shared.end_libpath)] {
+        let path = path.lock_or_recover();
+        if path.is_empty() { cmd.env_remove(var); } else { cmd.env(var, escape(path.as_bytes())); }
+    }
     // The child's clock starts where this process's is (`clock.rs`); it also
     // overrides a `WARPINE_CLOCK` start date the child would otherwise reread.
     cmd.env(super::clock::CLOCK_OFFSET_ENV, shared.clock.offset_ms().to_string());
@@ -707,6 +730,23 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A child is given the extended LIBPATHs as they are when it starts
+    /// (escaped); none when they are empty; a value over 1024 bytes passed
+    /// in is not taken.
+    #[test]
+    fn children_inherit_the_extended_libpaths() {
+        let l = super::super::Loader::new_mock();
+        *l.shared.begin_libpath.lock().unwrap() = "C:\\A;C:\\B".into();
+        let mut cmd = std::process::Command::new("true");
+        let _adm = admit_child(&l.shared, &mut cmd).unwrap();
+        let envs: Vec<_> = cmd.get_envs().map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned()))).collect();
+        let get = |name: &str| envs.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+        assert_eq!(get(BEGINLIBPATH_ENV), Some(Some(escape(b"C:\\A;C:\\B"))));
+        assert_eq!(get(ENDLIBPATH_ENV), Some(None), "empty: removed, not left from a grandparent");
+        assert_eq!(unescape(&escape(b"C:\\A")), b"C:\\A");
+        assert_eq!(inherited_libpath("WARPINE_TEST_NO_SUCH_VARIABLE"), "");
+    }
     use super::super::Loader;
     use super::super::constants::OPEN_FLAGS_NOINHERIT;
     use std::io::{Read, Write};

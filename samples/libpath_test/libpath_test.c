@@ -8,7 +8,12 @@
    and copies of noinit.dll as C:\LIBB\K3LIB.DLL, C:\K3DOT.DLL,
    C:\END\K3END.DLL, C:\BEGIN\K3BOTH.DLL and C:\LIBB\K3BOTH.DLL
    (tests/integration.rs sets it up). Writes "libpath_test: <name>: ok" or
-   "... FAIL got <v> want <v>", then "libpath_test: done <p>/<t>". */
+   "... FAIL got <v> want <v>", then "libpath_test: done <p>/<t>".
+   %BeginLIBPATH% in DosSetExtLIBPATH stands for the current value; then
+   the program starts a copy of itself ("child" in its command line, at
+   pib_pchcmd), which inherits both extended LIBPATHs and finds its DLLs
+   along them; its checks print as "libpath_test: child: ..." and its exit
+   code is its number of failures. */
 #define INCL_DOS
 #define INCL_DOSERRORS
 #include <os2.h>
@@ -16,19 +21,20 @@
 #include <string.h>
 
 static int passed = 0, total = 0;
+static const char *prefix = "";
 
 static void check(const char *what, ULONG got, ULONG want)
 {
     total++;
-    if (got == want) { passed++; printf("libpath_test: %s: ok\n", what); }
-    else printf("libpath_test: %s: FAIL got %lu want %lu\n", what, got, want);
+    if (got == want) { passed++; printf("libpath_test: %s%s: ok\n", prefix, what); }
+    else printf("libpath_test: %s%s: FAIL got %lu want %lu\n", prefix, what, got, want);
 }
 
 static void check_str(const char *what, const char *got, const char *want)
 {
     total++;
-    if (got != NULL && strcmp(got, want) == 0) { passed++; printf("libpath_test: %s: ok\n", what); }
-    else printf("libpath_test: %s: FAIL got '%s' want '%s'\n", what, got ? got : "(none)", want);
+    if (got != NULL && strcmp(got, want) == 0) { passed++; printf("libpath_test: %s%s: ok\n", prefix, what); }
+    else printf("libpath_test: %s%s: FAIL got '%s' want '%s'\n", prefix, what, got ? got : "(none)", want);
 }
 
 /* The value of environment variable `name`, or NULL. */
@@ -48,6 +54,53 @@ static void load(const char *name, char *path, ULONG cb)
     if (DosQueryModuleName(hmod, cb, (PCHAR)path) != NO_ERROR) strcpy(path, "no name");
 }
 
+/* The command line's arguments: the second string at pib_pchcmd. */
+static const char *command_args(void)
+{
+    PTIB ptib;
+    PPIB ppib;
+    DosGetInfoBlocks(&ptib, &ppib);
+    if (ppib->pib_pchcmd == NULL) return "";
+    return ppib->pib_pchcmd + strlen(ppib->pib_pchcmd) + 1;
+}
+
+/* The copy: the extended LIBPATHs it was started with, and its DLLs
+   found along them. */
+static int child_main(void)
+{
+    char ext[1024], path[CCHMAXPATH];
+    prefix = "child: ";
+    ext[0] = '\0';
+    DosQueryExtLIBPATH((PSZ)ext, BEGIN_LIBPATH);
+    check_str("BEGINLIBPATH inherited", ext, "C:\\LIBA;C:\\BEGIN");
+    ext[0] = '\0';
+    DosQueryExtLIBPATH((PSZ)ext, END_LIBPATH);
+    check_str("ENDLIBPATH inherited", ext, "C:\\END");
+    load("K3BOTH", path, sizeof path);
+    check_str("BEGINLIBPATH still comes first", path, "C:\\BEGIN\\K3BOTH.DLL");
+    load("K3END", path, sizeof path);
+    check_str("ENDLIBPATH finds K3END", path, "C:\\END\\K3END.DLL");
+    printf("libpath_test: child: done %d/%d\n", passed, total);
+    return total - passed;
+}
+
+/* Start this program again as the child; its exit code. */
+static ULONG run_child(APIRET *rc)
+{
+    PTIB ptib;
+    PPIB ppib;
+    char me[CCHMAXPATH], args[CCHMAXPATH + 16];
+    RESULTCODES res;
+    DosGetInfoBlocks(&ptib, &ppib);
+    if (DosQueryModuleName(ppib->pib_hmte, sizeof me, me) != NO_ERROR) { *rc = 1; return 0; }
+    memset(args, 0, sizeof args);
+    strcpy(args, me);
+    strcpy(args + strlen(me) + 1, "child");
+    fflush(stdout);
+    *rc = DosExecPgm(NULL, 0, EXEC_SYNC, (PSZ)args, NULL, &res, (PSZ)me);
+    return res.codeResult;
+}
+
 int main(void)
 {
     char path[CCHMAXPATH];
@@ -55,6 +108,10 @@ int main(void)
     HMODULE hmod;
     PFN answer;
     char failed[32];
+    APIRET rc;
+    ULONG child_failures;
+
+    if (strcmp(command_args(), "child") == 0) return child_main();
 
     /* SET statements: the environment a program starts with. */
     check_str("SET adds a variable", env("K3VAR"), "from config.sys");
@@ -90,6 +147,17 @@ int main(void)
 
     load("K3NONE", path, sizeof path);
     check_str("a missing module", path, "error 126");
+
+    /* %BeginLIBPATH% stands for the current value. */
+    DosSetExtLIBPATH((PCSZ)"C:\\LIBA;%BeginLIBPATH%", BEGIN_LIBPATH);
+    ext[0] = '\0';
+    DosQueryExtLIBPATH((PSZ)ext, BEGIN_LIBPATH);
+    check_str("%BeginLIBPATH% expanded", ext, "C:\\LIBA;C:\\BEGIN");
+
+    /* A child starts with both. */
+    child_failures = run_child(&rc);
+    check("DosExecPgm(child)", rc, NO_ERROR);
+    check("-> the child's checks passed", child_failures, 0);
 
     printf("libpath_test: done %d/%d\n", passed, total);
     return passed == total ? 0 : 1;
