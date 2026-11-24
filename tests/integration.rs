@@ -429,7 +429,8 @@ fn test_dbcs_env_and_vio_char_types() {
 }
 
 /// ansi_test: ANSI escape sequences written with VioWrtTTY and DosWrite,
-/// read back with VioReadCellStr / VioGetCurPos. Headless with a piped
+/// read back with VioReadCellStr / VioGetCurPos, and the cursor position
+/// report (ESC[6n) read with KbdCharIn. Headless with a piped
 /// standard output the bytes reach the pipe unchanged, and the VIO screen
 /// still follows them.
 #[test]
@@ -440,8 +441,8 @@ fn test_ansi_escape_sequences_headless() {
     let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
     assert!(failures.is_empty(), "failures: {failures:?}\n{out}");
     assert!(out.contains("done: 0 failed"), "incomplete (exit {code}):\n{out}");
-    assert!(out.contains("ok ESC[2J clears the screen") && out.contains("ok a sequence split across writes"),
-            "checks missing:\n{out}");
+    assert!(out.contains("ok ESC[2J clears the screen") && out.contains("ok a sequence split across writes")
+            && out.contains("ok ESC[6n reports ESC[7;12R"), "checks missing:\n{out}");
     assert!(out.contains("\x1b[2J"), "the escape bytes reach the pipe as they are");
     assert_eq!(code, 0);
 }

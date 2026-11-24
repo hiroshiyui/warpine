@@ -73,6 +73,12 @@ impl super::Loader {
     /// shift state(u16), time(u32) at +6 — total 10 bytes.
     fn kbd_char_in(&self, p_key_info: u32, wait: u32, _hkbd: u32) -> u32 {
         debug!("  KbdCharIn(wait={})", wait);
+        // A cursor position report (`ESC[6n`) comes before any key.
+        let reply = self.shared.console_mgr.lock_or_recover().ansi_reply.pop_front();
+        if let Some(b) = reply {
+            self.write_key_info(p_key_info, b, 0, 0x40, 0);
+            return NO_ERROR;
+        }
 
         if self.shared.use_sdl_text.load(Ordering::Relaxed) {
             // SDL text mode: block on the keyboard condvar queue.
@@ -224,6 +230,11 @@ impl super::Loader {
     fn kbd_peek(&self, p_key_info: u32, hkbd: u32) -> u32 {
         debug!("  KbdPeek");
         if !self.shared.console_mgr.lock_or_recover().kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        let reply = self.shared.console_mgr.lock_or_recover().ansi_reply.front().copied();
+        if let Some(b) = reply {
+            self.write_key_info(p_key_info, b, 0, 0x40, 0);
+            return NO_ERROR;
+        }
         if self.shared.use_sdl_text.load(Ordering::Relaxed) {
             let next = self.shared.kbd_queue.lock().unwrap().front().cloned();
             match next {
@@ -257,6 +268,7 @@ impl super::Loader {
         self.shared.kbd_queue.lock().unwrap().clear();
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.kbd.peeked = None;
+        console.ansi_reply.clear();
         if !self.shared.use_sdl_text.load(Ordering::Relaxed) && console.is_raw_mode() {
             // What the terminal holds; bounded, in case input never pauses.
             for _ in 0..MAX_FLUSHED_BYTES {
@@ -798,5 +810,31 @@ mod tests {
         assert_eq!(loader.shared.kbd_queue.lock().unwrap().len(), 1, "still there");
         assert_eq!(loader.kbd_flush_buffer(0), NO_ERROR);
         assert!(loader.shared.kbd_queue.lock().unwrap().is_empty());
+    }
+
+    /// A cursor position report (`ESC[6n`) is read before any key typed;
+    /// KbdPeek leaves it; KbdFlushBuffer drops it.
+    #[test]
+    fn a_cursor_report_comes_before_the_keys() {
+        use super::super::constants::NO_ERROR;
+        use super::super::KbdKeyInfo;
+        let loader = Loader::new_mock();
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
+        loader.shared.kbd_queue.lock().unwrap().push_back(KbdKeyInfo { ch: b'q', scan: 0x10, state: 0 });
+        loader.shared.console_mgr.lock().unwrap().ansi_reply.extend(b"\x1b[1;2R");
+        let p = 0x0020_0000;
+        assert_eq!(loader.kbd_peek(p, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u8>(p), Some(0x1B));
+        let mut got = Vec::new();
+        for _ in 0..6 {
+            assert_eq!(loader.kbd_char_in(p, IO_WAIT, 0), NO_ERROR);
+            got.push(loader.guest_read::<u8>(p).unwrap());
+        }
+        assert_eq!(got, b"\x1b[1;2R");
+        assert_eq!(loader.kbd_char_in(p, IO_WAIT, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u8>(p), Some(b'q'), "then the key");
+        loader.shared.console_mgr.lock().unwrap().ansi_reply.extend(b"\x1b[1;1R");
+        assert_eq!(loader.kbd_flush_buffer(0), NO_ERROR);
+        assert!(loader.shared.console_mgr.lock().unwrap().ansi_reply.is_empty());
     }
 }

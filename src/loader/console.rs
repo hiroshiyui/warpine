@@ -17,6 +17,11 @@ const ANSI_MODE_FIRST_80_COLS: u16 = 2;
 const ANSI_MODE_ROWS: u16 = 25;
 /// ANSI `ESC[2J`: clear the screen.
 const ANSI_ED_SCREEN: u16 = 2;
+/// `ESC[6n`'s parameter: report the cursor position (device status report).
+const ANSI_DSR_CURSOR: u16 = 6;
+/// Most bytes of cursor reports waiting to be read; further reports are
+/// dropped, so a program that never reads them cannot grow the queue.
+pub const MAX_ANSI_REPLY: usize = 256;
 /// Glyph shown on a terminal for an ESC written as a character (CP437 0x1B).
 const ESC_GLYPH: char = '\u{2190}';
 
@@ -106,6 +111,10 @@ pub struct VioManager {
     pub kbd: super::vio_text::KbdState,
     /// The palette, overscan and intensity (`VioSetState`).
     pub vio_state: super::vio_text::VioState,
+    /// Cursor position reports (`ESC[6n`) waiting in the keyboard input:
+    /// the keyboard reads (`KbdCharIn`, `KbdPeek`, `DosRead` of the console)
+    /// return them before any key.
+    pub ansi_reply: std::collections::VecDeque<u8>,
 }
 
 impl Default for VioManager {
@@ -141,6 +150,7 @@ impl VioManager {
             scr_lock: None,
             kbd: super::vio_text::KbdState::default(),
             vio_state: super::vio_text::VioState::default(),
+            ansi_reply: std::collections::VecDeque::new(),
         }
     }
 
@@ -445,9 +455,17 @@ impl VioManager {
             }
             (Some(_), b'h') if csi.param(0, 0) == ANSI_MODE_WRAP => { self.wrap = true; return; }
             (Some(_), b'l') if csi.param(0, 0) == ANSI_MODE_WRAP => { self.wrap = false; return; }
-            // Graphics display modes 4–6, the cursor position report (ESC[6n) and
-            // keyboard reassignment (ESC[...p) are not supported; other
-            // sequences are dropped.
+            // The cursor position report: `ESC[row;colR` (1-based) goes
+            // into the keyboard input, as a program reads its answer there.
+            (None, b'n') if csi.param(0, 0) == ANSI_DSR_CURSOR => {
+                let report = format!("\x1b[{};{}R", self.cursor_row.min(last_row) + 1, self.cursor_col.min(last_col) + 1);
+                if self.ansi_reply.len() + report.len() <= MAX_ANSI_REPLY {
+                    self.ansi_reply.extend(report.bytes());
+                }
+                return;
+            }
+            // Graphics display modes 4–6 and keyboard reassignment
+            // (ESC[...p) are not supported; other sequences are dropped.
             _ => {
                 log::debug!("ANSI: ignored sequence {:?}", csi);
                 return;
@@ -959,6 +977,25 @@ pub fn map_key_to_os2(first: u8, vio: &VioManager) -> (u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ESC[6n` puts `ESC[row;colR` (1-based) into the keyboard input and
+    /// leaves the cursor; unanswered reports are bounded; other device
+    /// status requests are ignored.
+    #[test]
+    fn the_cursor_position_report_goes_to_the_keyboard_input() {
+        let mut v = VioManager::new();
+        v.sdl_mode = true;
+        v.track_tty(b"\x1b[3;5H\x1b[6n", 437);
+        assert_eq!(v.ansi_reply.iter().copied().collect::<Vec<u8>>(), b"\x1b[3;5R");
+        assert_eq!((v.cursor_row, v.cursor_col), (2, 4), "the cursor stays");
+        v.ansi_reply.clear();
+        v.track_tty(b"\x1b[5n\x1b[n", 437);
+        assert!(v.ansi_reply.is_empty(), "only 6 is answered");
+        for _ in 0..MAX_ANSI_REPLY {
+            v.track_tty(b"\x1b[6n", 437);
+        }
+        assert!(v.ansi_reply.len() <= MAX_ANSI_REPLY && !v.ansi_reply.is_empty(), "bounded");
+    }
 
     #[test]
     fn test_decode_vio_byte_ascii() {

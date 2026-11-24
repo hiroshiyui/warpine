@@ -8,7 +8,8 @@
  * VioReadCellStr / VioGetCurPos: cursor movement (CUP/HVP, CUU/CUD/CUF/CUB,
  * clamped at the edges), save / restore, ED (ESC[2J), EL (ESC[K), SGR
  * colours, wrap off (ESC[=7l), the text display modes (ESC[=1h, ESC[=3h),
- * a sequence split across two writes, and
+ * a sequence split across two writes, the cursor position report
+ * (ESC[6n, read back with KbdCharIn), and
  * VioSetAnsi(ANSI_OFF) showing the sequence as characters.
  *
  * The results are collected while the screen is in use and written at the
@@ -18,6 +19,7 @@
 
 #define INCL_DOS
 #define INCL_VIO
+#define INCL_KBD
 #include <os2.h>
 
 #define ESC "\x1b"
@@ -205,6 +207,26 @@ int main(void) {
     check("ANSI off: the rest follows", cell_is(12, 6, '[', 0x07) && cell_is(12, 11, 'H', 0x07) && cell_is(12, 12, 'x', 0x07));
     check("VioSetAnsi(2) is rejected", VioSetAnsi(2, 0) != 0);
     VioSetAnsi(ANSI_ON, 0);
+
+    /* ESC[6n: the cursor position, ESC[row;colR, comes as keyboard input
+       before any key; the cursor stays where it was. */
+    {
+        static const char want[] = ESC "[7;12R";
+        KBDKEYINFO k;
+        int i, same = 1;
+        tty(ESC "[7;12H" ESC "[6n");
+        check("ESC[6n leaves the cursor", cursor_at(6, 11));
+        KbdPeek(&k, 0);
+        check("KbdPeek sees the report", k.chChar == 0x1B && (k.fbStatus & 0x40) != 0);
+        for (i = 0; want[i]; i++) {
+            if (KbdCharIn(&k, IO_WAIT, 0) != 0 || k.chChar != (UCHAR)want[i]) same = 0;
+        }
+        check("ESC[6n reports ESC[7;12R", same);
+        tty(ESC "[6n");
+        KbdFlushBuffer(0);
+        KbdPeek(&k, 0);
+        check("KbdFlushBuffer drops a report", (k.fbStatus & 0x40) == 0);
+    }
 
     /* Leave a clean screen for the result lines. */
     tty(ESC "[2J");

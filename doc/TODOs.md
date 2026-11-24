@@ -85,7 +85,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - a GDB stop request kicking the vCPUs.
 - [ ] **Pipes**:
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
-  - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Threads per process**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
@@ -257,7 +256,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).
 - [ ] **MOUCALLS**: MOUCALLS for NE programs; calls passed to a registered subsystem (`MouRegister` records it only).
-- [ ] **ANSI**: `ESC[6n` (cursor position report), keyboard reassignment `ESC[…p`.
+- [ ] **ANSI**: keyboard reassignment `ESC[…p`.
 - [ ] **Audio**:
   - sound in headless runs (no main-thread loop now);
   - `MCI_RECORD` from an SDL3 recording device;

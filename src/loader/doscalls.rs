@@ -216,6 +216,18 @@ impl super::Loader {
         // Pending LF from a previous CR→CRLF translation (both modes).
         {
             let mut console = self.shared.console_mgr.lock_or_recover();
+            // A cursor position report (`ESC[6n`) waits in the keyboard
+            // input of a console: it comes first, unechoed.
+            let console_input = self.shared.use_sdl_text.load(Ordering::Relaxed)
+                || std::io::IsTerminal::is_terminal(&std::io::stdin());
+            if console_input && !console.ansi_reply.is_empty() {
+                let n = (len as usize).min(console.ansi_reply.len());
+                let bytes: Vec<u8> = console.ansi_reply.drain(..n).collect();
+                drop(console);
+                self.guest_write_bytes(buf_ptr, &bytes);
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
+                return 0;
+            }
             if console.stdin_pending_lf {
                 console.stdin_pending_lf = false;
                 self.guest_write::<u8>(buf_ptr, 0x0A);
