@@ -713,9 +713,11 @@ impl super::Loader {
                 // WinSetCp(HMQ hmq, ULONG idCodePage) -> BOOL
                 let hmq = read_stack(4);
                 let cp  = read_stack(8);
-                let ok = self.win_set_cp(hmq, cp);
-                debug!("  [VCPU {}] WinSetCp hmq={} cp={} -> {}", vcpu_id, hmq, cp, ok);
-                ApiResult::Normal(ok as u32)
+                debug!("  [VCPU {}] WinSetCp hmq={} cp={}", vcpu_id, hmq, cp);
+                match self.win_set_cp(hmq, cp) {
+                    Ok(()) => ApiResult::Normal(1),
+                    Err(code) => self.pm_fail(vcpu_id, code),
+                }
             }
             811 => {
                 // WinQueryCpList(HAB hab, ULONG ccpMax, PULONG prgcp) -> ULONG:
@@ -1859,11 +1861,16 @@ impl super::Loader {
     /// (`DosSetProcessCp`), as in PM: text of the queue's windows (window
     /// text, list items, typed characters) and of presentation spaces created
     /// afterwards for them is converted with it.
-    fn win_set_cp(&self, hmq: u32, cp: u32) -> bool {
-        if !super::stubs::is_pm_codepage(cp) { return false; }
-        let Some(mq) = self.shared.window_mgr.lock_or_recover().get_mq(hmq) else { return false };
+    /// WinSetCp: the codepage of message queue `hmq`. Only the codepages
+    /// the PM Reference lists (`WinQueryCpList`) are accepted; 0 is not one
+    /// of them and is refused like any other (`PMERR_RESOURCE_NOT_FOUND`;
+    /// the Reference gives 0 no meaning, unverified). An unknown queue is
+    /// `PMERR_INVALID_HMQ`.
+    fn win_set_cp(&self, hmq: u32, cp: u32) -> Result<(), u32> {
+        let mq = self.shared.window_mgr.lock_or_recover().get_mq(hmq).ok_or(PMERR_INVALID_HMQ)?;
+        if !super::stubs::is_pm_codepage(cp) { return Err(PMERR_RESOURCE_NOT_FOUND); }
         mq.lock_or_recover().codepage = cp;
-        true
+        Ok(())
     }
 
     /// WinQueryCp: codepage of message queue `hmq`, or 0 for an unknown queue.

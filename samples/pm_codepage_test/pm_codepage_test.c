@@ -7,6 +7,8 @@
  *
  *   - WinQueryCpList lists the queue codepages, including 1004;
  *   - WinSetCp(hmq, 1004) is accepted, DosSetProcessCp(1004) is not;
+ *     WinSetCp refuses an unknown codepage and 0 (PMERR_RESOURCE_NOT_FOUND)
+ *     and an unknown queue (PMERR_INVALID_HMQ);
  *   - window text set and read back on a CP1004 queue keeps CP1004 bytes
  *     (0x05 is a breve there, a control character elsewhere), and read on a
  *     CP852 queue it comes back as CP852's breve;
@@ -24,6 +26,7 @@
 #define INCL_GPI
 #define INCL_DOSNLS
 #define INCL_DOSFILEMGR
+#define INCL_WINERRORS
 #include <os2.h>
 #include <string.h>
 
@@ -117,6 +120,12 @@ int main( void )
     check( "WinQueryCp reports 1004", WinQueryCp( hmq ), CP_WINDOWS_EXTENDED );
     check( "the process codepage is unchanged", ( DosQueryCp( sizeof( n ), &n, &cb ), n ), process_cp );
     check( "WinSetCp refuses an unknown codepage", WinSetCp( hmq, 12345 ), FALSE );
+    check( "-> PMERR_RESOURCE_NOT_FOUND", ERRORIDERROR( WinGetLastError( hab ) ), PMERR_RESOURCE_NOT_FOUND );
+    check( "WinSetCp refuses 0", WinSetCp( hmq, 0 ), FALSE );
+    check( "-> PMERR_RESOURCE_NOT_FOUND (0)", ERRORIDERROR( WinGetLastError( hab ) ), PMERR_RESOURCE_NOT_FOUND );
+    check( "-> the queue keeps 1004", WinQueryCp( hmq ), CP_WINDOWS_EXTENDED );
+    check( "WinSetCp refuses an unknown queue", WinSetCp( (HMQ)0x7777, 850 ), FALSE );
+    check( "-> PMERR_INVALID_HMQ", ERRORIDERROR( WinGetLastError( hab ) ), PMERR_INVALID_HMQ );
 
     frame = WinCreateStdWindow( HWND_DESKTOP, WS_VISIBLE, &flags, "CodepageTest",
                                 "Codepage test", 0, NULLHANDLE, 0, &client );

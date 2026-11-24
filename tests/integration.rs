@@ -4972,7 +4972,7 @@ fn gui_pm_slider_valueset_test_matches_golden() {
 /// codepage (GpiQueryCp) until GpiSetCp changes it.
 #[test]
 fn gui_pm_codepage_test_follows_the_queue_codepage() {
-    assert_sample_checks_pass("samples/pm_codepage_test/pm_codepage_test.exe", "pm_codepage_test", 15);
+    assert_sample_checks_pass("samples/pm_codepage_test/pm_codepage_test.exe", "pm_codepage_test", 21);
 }
 
 /// pm_audio_test: DosBeep and MMPM/2 waveaudio played through the main-thread
