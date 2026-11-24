@@ -49,6 +49,8 @@ impl super::Loader {
             // KbdGetFocus(fWait, hkbd) → ESP+4=hkbd, +8=fWait; KbdFreeFocus(hkbd) → ESP+4=hkbd
             12 => self.kbd_focus(read_stack(4)),
             18 => self.kbd_focus(read_stack(4)),
+            // KbdXlate(pKbdTrans, hkbd) → ESP+4=hkbd, +8=pKbdTrans
+            14 => self.kbd_xlate(read_stack(8), read_stack(4)),
             // KbdSynch(fWait) → ESP+4=fWait
             7  => { debug!("  KbdSynch"); NO_ERROR },
             _ => { warn!("Warning: Unknown KBDCALLS Ordinal {}", ordinal); NO_ERROR }
@@ -61,7 +63,7 @@ impl super::Loader {
         match ordinal {
             4 => 12, 10 => 8, 9 => 16,
             22 => 8, 13 => 4, 11 => 8, 3 => 12, 5 => 12, 24 => 8,
-            23 => 4, 17 => 4, 12 => 8, 18 => 4, 7 => 4,
+            23 => 4, 17 => 4, 12 => 8, 18 => 4, 7 => 4, 14 => 8,
             _ => 0,
         }
     }
@@ -343,6 +345,42 @@ impl super::Loader {
             self.guest_write::<u16>(p_hwid + off, v);
         }
         NO_ERROR
+    }
+
+    /// KbdXlate (ordinal 14): translate the `KBDTRANS` at `p` — its
+    /// `chScan` and `fsState` — into `chChar`, with `fbStatus` and
+    /// `fsXlate` saying the character is final (US layout,
+    /// `vio_text::translate_scan`; a key without a character gives 0 and
+    /// the extended-key status). An unknown scan code is translated to 0
+    /// and not marked final.
+    fn kbd_xlate(&self, p: u32, hkbd: u32) -> u32 {
+        const KT_CHAR: u32 = 0;
+        const KT_SCAN: u32 = 1;
+        const KT_STATUS: u32 = 2;
+        const KT_STATE: u32 = 4;
+        const KT_XLATE: u32 = 12;
+        const KBDTRF_FINAL_CHAR_IN: u8 = 0x40;
+        /// fbStatus bit 1: an extended key (`KbdCharIn` sets it too).
+        const KBDTRF_EXTENDED: u8 = 0x02;
+        /// fsXlate bit 0: the translation is complete.
+        const XLATE_COMPLETE: u16 = 0x0001;
+        if !self.shared.console_mgr.lock_or_recover().kbd.valid(hkbd) { return ERROR_KBD_INVALID_HANDLE; }
+        let (Some(scan), Some(state)) = (self.guest_read::<u8>(p + KT_SCAN), self.guest_read::<u16>(p + KT_STATE)) else {
+            return ERROR_KBD_PARAMETER;
+        };
+        let translated = super::vio_text::translate_scan(scan, state);
+        debug!("  KbdXlate(scan=0x{scan:02X}, state=0x{state:04X}) -> {translated:?}");
+        let ch = translated.unwrap_or(0);
+        let status = match translated {
+            Some(0) => KBDTRF_FINAL_CHAR_IN | KBDTRF_EXTENDED,
+            Some(_) => KBDTRF_FINAL_CHAR_IN,
+            None => 0,
+        };
+        let xlate = if translated.is_some() { XLATE_COMPLETE } else { 0 };
+        let ok = self.guest_write::<u8>(p + KT_CHAR, ch).is_some()
+            && self.guest_write::<u8>(p + KT_STATUS, status).is_some()
+            && self.guest_write::<u16>(p + KT_XLATE, xlate).is_some();
+        if ok { NO_ERROR } else { ERROR_KBD_PARAMETER }
     }
 
     /// KbdOpen (ordinal 23): a new logical keyboard handle. Every handle

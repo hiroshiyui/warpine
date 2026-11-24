@@ -1334,7 +1334,7 @@ const STUB_ORDINALS: &[u32] = &[
 /// VIOCALLS ordinals of `viocalls.rs` (31 implemented, 2 stubs).
 const VIOCALLS_ORDINALS: u32 = 33;
 /// KBDCALLS ordinals of `kbdcalls.rs`.
-const KBDCALLS_ORDINALS: u32 = 14;
+const KBDCALLS_ORDINALS: u32 = 15;
 /// MOUCALLS ordinals of `moucalls.rs`.
 const MOUCALLS_ORDINALS: u32 = 27;
 /// PMWIN ordinals dispatched by `pm_win.rs` and `pm_winutil.rs` (checked
@@ -1398,8 +1398,8 @@ pub fn compat_report() -> String {
                   VioCheckCharType, VioWrtCharStr, VioWrtNChar, VioReadCharStr, VioScrollLf, VioScrollRt, \
                   VioGetCp, VioPopUp, VioEndPopUp, VioScrLock, VioScrUnLock, VioGetState, \
                   VioSetState, VioSetCp, VioGetBuf[stub], VioShowBuf[stub])\n");
-    out.push_str("  KBDCALLS   14 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus, KbdSetStatus, KbdPeek, \
-                  KbdFlushBuffer, KbdGetCp, KbdSetCp, KbdGetHWID, KbdOpen, KbdClose, KbdGetFocus, KbdFreeFocus, KbdSynch)\n");
+    out.push_str("  KBDCALLS   15 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus, KbdSetStatus, KbdPeek, \
+                  KbdFlushBuffer, KbdXlate, KbdGetCp, KbdSetCp, KbdGetHWID, KbdOpen, KbdClose, KbdGetFocus, KbdFreeFocus, KbdSynch)\n");
     out.push_str("  MOUCALLS   20 implemented  (MouOpen, MouClose, MouReadEventQue, MouFlushQue, \
                   MouGetNumQueEl, MouGet/SetPtrPos, MouGetNumButtons, MouGetNumMickeys, \
                   MouGet/SetDevStatus, MouGet/SetEventMask, MouGet/SetScaleFact, \

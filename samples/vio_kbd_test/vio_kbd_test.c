@@ -188,6 +188,13 @@ static void kbd_checks(void)
     check("KbdClose", KbdClose(h) == 0);
     check("a closed handle", KbdClose(h) == 439);
     check("KbdSynch", KbdSynch(IO_WAIT) == 0);
+    {
+        KBDTRANS t = { 0 };
+        t.chScan = 0x1E; /* A */
+        check("KbdXlate", KbdXlate(&t, 0) == 0 && t.chChar == 'a' && (t.fbStatus & KBDTRF_FINAL_CHAR_IN));
+        t.fsState = KBDSTF_LEFTSHIFT;
+        check("KbdXlate with Shift", KbdXlate(&t, 0) == 0 && t.chChar == 'A');
+    }
 
     /* The test pipes in "ab". */
     check("KbdPeek sees the first key", KbdPeek(&key, 0) == 0 && key.chChar == 'a' && (key.fbStatus & 0x40));

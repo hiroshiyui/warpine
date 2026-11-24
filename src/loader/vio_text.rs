@@ -127,6 +127,47 @@ impl Default for KbdState {
     }
 }
 
+/// `KBDSTF_*` shift-state bits (<bsesub.h>).
+const KBDSTF_RIGHTSHIFT: u16 = 0x0001;
+const KBDSTF_LEFTSHIFT: u16 = 0x0002;
+const KBDSTF_CONTROL: u16 = 0x0004;
+const KBDSTF_ALT: u16 = 0x0008;
+const KBDSTF_CAPSLOCK_ON: u16 = 0x0040;
+
+/// The US layout's scan codes (set 1) with their unshifted and shifted
+/// characters: what `KbdXlate` translates (Warpine has no keyboard
+/// layouts; the US one is its choice).
+const US_KEYS: &[(u8, u8, u8)] = &[
+    (0x01, 0x1B, 0x1B), (0x0E, 0x08, 0x08), (0x0F, b'\t', 0), (0x1C, b'\r', b'\r'), (0x39, b' ', b' '),
+    (0x02, b'1', b'!'), (0x03, b'2', b'@'), (0x04, b'3', b'#'), (0x05, b'4', b'$'), (0x06, b'5', b'%'),
+    (0x07, b'6', b'^'), (0x08, b'7', b'&'), (0x09, b'8', b'*'), (0x0A, b'9', b'('), (0x0B, b'0', b')'),
+    (0x0C, b'-', b'_'), (0x0D, b'=', b'+'),
+    (0x10, b'q', b'Q'), (0x11, b'w', b'W'), (0x12, b'e', b'E'), (0x13, b'r', b'R'), (0x14, b't', b'T'),
+    (0x15, b'y', b'Y'), (0x16, b'u', b'U'), (0x17, b'i', b'I'), (0x18, b'o', b'O'), (0x19, b'p', b'P'),
+    (0x1A, b'[', b'{'), (0x1B, b']', b'}'),
+    (0x1E, b'a', b'A'), (0x1F, b's', b'S'), (0x20, b'd', b'D'), (0x21, b'f', b'F'), (0x22, b'g', b'G'),
+    (0x23, b'h', b'H'), (0x24, b'j', b'J'), (0x25, b'k', b'K'), (0x26, b'l', b'L'), (0x27, b';', b':'),
+    (0x28, b'\'', b'"'), (0x29, b'`', b'~'), (0x2B, b'\\', b'|'),
+    (0x2C, b'z', b'Z'), (0x2D, b'x', b'X'), (0x2E, b'c', b'C'), (0x2F, b'v', b'V'), (0x30, b'b', b'B'),
+    (0x31, b'n', b'N'), (0x32, b'm', b'M'), (0x33, b',', b'<'), (0x34, b'.', b'>'), (0x35, b'/', b'?'),
+];
+
+/// `KbdXlate`: the character of scan code `scan` in shift state `state`
+/// (US layout): Shift, Caps Lock (letters only) and Ctrl (letters become
+/// 1–26) apply; Alt and keys without a character give 0, the extended-key
+/// form. `None` for a scan code the table does not know.
+pub fn translate_scan(scan: u8, state: u16) -> Option<u8> {
+    let &(_, plain, shifted) = US_KEYS.iter().find(|k| k.0 == scan)?;
+    if state & KBDSTF_ALT != 0 { return Some(0); }
+    let shift = state & (KBDSTF_LEFTSHIFT | KBDSTF_RIGHTSHIFT) != 0;
+    let letter = plain.is_ascii_lowercase();
+    let upper = shift ^ (letter && state & KBDSTF_CAPSLOCK_ON != 0);
+    if state & KBDSTF_CONTROL != 0 {
+        return Some(if letter { plain - b'a' + 1 } else { 0 });
+    }
+    Some(if upper { shifted } else { plain })
+}
+
 impl VioManager {
     /// The index of cell (row, col), or `None` off the screen.
     pub fn cell_index(&self, row: u16, col: u16) -> Option<usize> {
@@ -335,6 +376,19 @@ mod tests {
         assert_eq!(k.mask, KEYBOARD_ECHO_OFF | KEYBOARD_BINARY_MODE);
         assert_eq!(k.turnaround, 0x0D);
         assert_eq!(k.peeked, None);
+    }
+
+    #[test]
+    fn scan_codes_translate_with_the_shift_state() {
+        assert_eq!(translate_scan(0x1E, 0), Some(b'a'));
+        assert_eq!(translate_scan(0x1E, KBDSTF_LEFTSHIFT), Some(b'A'));
+        assert_eq!(translate_scan(0x1E, KBDSTF_CAPSLOCK_ON), Some(b'A'));
+        assert_eq!(translate_scan(0x1E, KBDSTF_CAPSLOCK_ON | KBDSTF_RIGHTSHIFT), Some(b'a'));
+        assert_eq!(translate_scan(0x02, KBDSTF_CAPSLOCK_ON), Some(b'1'), "Caps Lock only changes letters");
+        assert_eq!(translate_scan(0x02, KBDSTF_LEFTSHIFT), Some(b'!'));
+        assert_eq!(translate_scan(0x2E, KBDSTF_CONTROL), Some(3), "Ctrl+C");
+        assert_eq!(translate_scan(0x1E, KBDSTF_ALT), Some(0), "Alt: an extended key");
+        assert_eq!(translate_scan(0x3B, 0), None, "F1 is not in the table");
     }
 
     #[test]

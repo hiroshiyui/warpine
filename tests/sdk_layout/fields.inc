@@ -990,6 +990,17 @@
     P("VIOINTENSITY.cb", offsetof(VIOINTENSITY, cb));
     P("VIOINTENSITY.type", offsetof(VIOINTENSITY, type));
     P("VIOINTENSITY.fs", offsetof(VIOINTENSITY, fs));
+    P("KBDTRANS", sizeof(KBDTRANS));
+    P("KBDTRANS.chChar", offsetof(KBDTRANS, chChar));
+    P("KBDTRANS.chScan", offsetof(KBDTRANS, chScan));
+    P("KBDTRANS.fbStatus", offsetof(KBDTRANS, fbStatus));
+    P("KBDTRANS.bNlsShift", offsetof(KBDTRANS, bNlsShift));
+    P("KBDTRANS.fsState", offsetof(KBDTRANS, fsState));
+    P("KBDTRANS.time", offsetof(KBDTRANS, time));
+    P("KBDTRANS.fsDD", offsetof(KBDTRANS, fsDD));
+    P("KBDTRANS.fsXlate", offsetof(KBDTRANS, fsXlate));
+    P("KBDTRANS.fsShift", offsetof(KBDTRANS, fsShift));
+    P("KBDTRANS.sZero", offsetof(KBDTRANS, sZero));
     P("KBDINFO", sizeof(KBDINFO));
     P("KBDINFO.cb", offsetof(KBDINFO, cb));
     P("KBDINFO.fsMask", offsetof(KBDINFO, fsMask));

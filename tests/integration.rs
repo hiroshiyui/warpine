@@ -1157,7 +1157,7 @@ fn test_vio_text_and_keyboard_calls() {
     let (out, code) = run_sample_with_input("samples/vio_kbd_test/vio_kbd_test.exe", &[], 20, &[], b"ab");
     let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAILED")).collect();
     assert!(failures.is_empty(), "failures {failures:?} (exit {code}):\n{out}");
-    assert!(out.contains("Passed: 50"), "vio_kbd_test did not run every check (exit {code}):\n{out}");
+    assert!(out.contains("Passed: 52"), "vio_kbd_test did not run every check (exit {code}):\n{out}");
 }
 
 /// uconv_test: UCONV loaded at run time, its calls resolved at the ordinals

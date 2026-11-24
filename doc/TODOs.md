@@ -30,7 +30,7 @@ Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, A
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
   - seccomp filters per process role (guest processes, the desktop server);
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps and the dialog / menu / accelerator / string / `PRESPARAMS` resources, a minute per target on each push and ten minutes weekly): the pointer and icon decoder (`decode_pointer_resource` in `pm_pointer.rs`) and the WAV parser (`parse_wav` in `mmpm.rs`, files a guest names), once taken out into modules of their own.
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps, pointers, WAV files and the dialog / menu / accelerator / string / `PRESPARAMS` resources, a minute per target on each push and ten minutes weekly): the font and help-file readers when Warpine reads guest-supplied ones.
 - [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---
@@ -249,12 +249,12 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **TCP/IP calls still missing** (the chart's TCP/IP row; Warpine's own ordinals per ADR-0123):
-  - the host, network and service databases (`sethostent` / `gethostent` / `endhostent`, `getnetbyname` / `getnetbyaddr` / `getnetent` …, `getservent` …) and `%ETC%` files to read them from;
+  - the host and network databases (`sethostent` / `gethostent` / `endhostent`, `getnetbyname` / `getnetbyaddr` / `getnetent` …) and `%ETC%` files to read them from (the services database is the host's);
   - the resolver (`res_init`, `res_mkquery`, `res_send`, `res_query`, `res_search`, `res_querydomain`), `dn_find`, compression in `dn_comp`;
-  - `sendmsg` / `recvmsg`, `so_cancel`, `addsockettolist` / `removesocketfromlist`, `rexec`, the SOCKS calls (`Raccept`, `Rbind`, `Rconnect`, `Rlisten`, `Rgetsockname`, `Rgethostbyname`), `tcp_h_errno`.
+  - `sendmsg` / `recvmsg`, `so_cancel`, `addsockettolist` / `removesocketfromlist`, `rexec`, the SOCKS calls (`Raccept`, `Rbind`, `Rconnect`, `Rlisten`, `Rgetsockname`, `Rgethostbyname`).
 - [ ] **VIO and KBD calls still missing** (the chart's VIO / KBD row):
   - `KbdSetStatus`'s modes acted on by the reads (echo, ASCII line editing, the turnaround character);
-  - `KbdXlate`, `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`;
+  - `KbdSetCustXt`, `KbdRegister` / `KbdDeRegister`, `KbdSetFgnd`, `KbdSetHWID`, keyboard layouts other than the US one (`KbdXlate`);
   - `VioGetFont` / `VioSetFont`, `VioGetBuf` / `VioShowBuf` (stubs), `VioSetState` / `VioSetCp` acted on by the renderer, `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`.
 - [ ] **VIO window**:
   - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);

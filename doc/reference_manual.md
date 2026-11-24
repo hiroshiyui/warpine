@@ -699,7 +699,7 @@ DosQueryCtryInfo (NLS 5), DosQueryDBCSEnv (NLS 6), DosMapCase (NLS 7), DosQueryC
 - `DosQueryCollate` returns 256 sort weights. IBM's tables (COUNTRY.SYS) are not published: Warpine weighs each byte as its uppercase form, so letters sort without regard to case.
 - The 16-bit `DOS16*` calls (NLS 1–4) are not implemented.
 
-### Sockets (SO32DLL 30, TCP32DLL 46 APIs)
+### Sockets (SO32DLL 30, TCP32DLL 50 APIs)
 
 BSD socket calls on Linux sockets. `sock_errno` returns `SOCBASEERR` (10000) plus the BSD error number, as `<nerrno.h>` defines the `SOCE*` codes (`SOCEWOULDBLOCK` 10035). C programs built with the SDK declare the calls through its TCP/IP headers (`<sys/socket.h>` …; TCP/IP 4.0 layouts). Socket options use OS/2's BSD numbering (`SOL_SOCKET` 0xFFFF, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_SNDBUF` / `SO_RCVBUF`, `SO_ERROR`, `SO_TYPE`, …, and `TCP_NODELAY`) and are translated; `SO_SNDTIMEO` / `SO_RCVTIMEO` and IP-level options fail with `SOCENOPROTOOPT`.
 
@@ -707,7 +707,7 @@ BSD socket calls on Linux sockets. `sock_errno` returns `SOCBASEERR` (10000) plu
 
 **Utility routines** (`tcpip_util.rs`; at Warpine's own ordinals, linked by name — ADR-0123):
 - SO32DLL: ioctl (50; `FIONBIO`, `FIONREAD`, `SIOCATMARK`, others `SOCEINVAL`), readv (51), writev (52) (at most 1024 vectors and 64 KB, one receive or send).
-- TCP32DLL: inet_addr (50; `a`, `a.b`, `a.b.c`, `a.b.c.d`, decimal / octal / hex parts, `INADDR_NONE` for a bad string), inet_network (51), inet_ntoa (52; one buffer per process, overwritten by the next call), inet_makeaddr (53), inet_lnaof (54), inet_netof (55), bswap (56), lswap (57), htonl (58), htons (59), ntohl (60), ntohs (61), dn_comp (62; no compression, the name is written in full and added to `dnptrs`), dn_expand (63; pointers must point backwards), dn_skipname (64), _getshort (65), _getlong (66), putshort (67), putlong (68), setprotoent (69), getprotoent (70), endprotoent (71).
+- TCP32DLL: inet_addr (50; `a`, `a.b`, `a.b.c`, `a.b.c.d`, decimal / octal / hex parts, `INADDR_NONE` for a bad string), inet_network (51), inet_ntoa (52; one buffer per process, overwritten by the next call), inet_makeaddr (53), inet_lnaof (54), inet_netof (55), bswap (56), lswap (57), htonl (58), htons (59), ntohl (60), ntohs (61), dn_comp (62; no compression, the name is written in full and added to `dnptrs`), dn_expand (63; pointers must point backwards), dn_skipname (64), _getshort (65), _getlong (66), putshort (67), putlong (68), setprotoent (69), getprotoent (70), endprotoent (71), setservent (72), getservent (73; the host's services database, read once), endservent (74), tcp_h_errno (75; `HOST_NOT_FOUND` after a failed `gethostbyname` / `gethostbyaddr`, the `h_errno` macro of the SDK's `<netdb.h>`).
 - The protocol database (`getprotobyname`, `getprotobynumber`, `getprotoent`) is Warpine's own — ip 0, icmp 1, tcp 6, udp 17, each with its upper-case alias — as there is no `%ETC%\PROTOCOL` file.
 
 ### MSG (4 APIs)
@@ -778,13 +778,14 @@ The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which p
 **Stubs:**
 VioGetBuf (31), VioShowBuf (43)
 
-### KBDCALLS (14 APIs)
+### KBDCALLS (15 APIs)
 
-KbdGetCp (3), KbdCharIn (4), KbdSetCp (5), KbdSynch (7), KbdStringIn (9), KbdGetStatus (10), KbdSetStatus (11), KbdGetFocus (12), KbdFlushBuffer (13), KbdClose (17), KbdFreeFocus (18), KbdPeek (22), KbdOpen (23), KbdGetHWID (24)
+KbdGetCp (3), KbdCharIn (4), KbdSetCp (5), KbdSynch (7), KbdStringIn (9), KbdGetStatus (10), KbdSetStatus (11), KbdGetFocus (12), KbdFlushBuffer (13), KbdXlate (14), KbdClose (17), KbdFreeFocus (18), KbdPeek (22), KbdOpen (23), KbdGetHWID (24)
 
 - **`KbdPeek`** returns the next key without taking it (fbStatus 0x40), or a record of zeros; `KbdFlushBuffer` drops what is typed ahead.
 - **`KbdSetStatus`** checks `KBDINFO.cb` (10, `ERROR_KBD_INVALID_LENGTH`), echo on with off (`ERROR_KBD_INVALID_ECHO_MASK`) and binary with ASCII (`ERROR_KBD_INVALID_INPUT_MASK`), and keeps the modes, turnaround character, interim and shift states for `KbdGetStatus`; the reads do not act on them yet.
 - **`KbdSetCp` / `KbdGetCp`:** the keyboard codepage, 0 (the default table) or one Warpine knows (`ERROR_KBD_INVALID_CODEPAGE`); it does not change the process or display codepage.
+- **`KbdXlate`:** a `KBDTRANS`'s `chScan` and `fsState` into `chChar` (US layout, set-1 scan codes; Shift, Caps Lock for letters, Ctrl for letters 1–26; Alt and keys without a character give 0 with the extended-key status), `fbStatus` `KBDTRF_FINAL_CHAR_IN` and `fsXlate` bit 0; an unknown scan code gives 0, not final.
 - **`KbdGetHWID`:** an enhanced keyboard, ID 0xAB41, in as much of `KBDHWID` as `cb` gives (at least 4).
 - **Handles:** `KbdOpen` gives logical keyboard handles from 1, `KbdClose` closes them (`ERROR_KBD_INVALID_HANDLE` for others); `KbdGetFocus` / `KbdFreeFocus` check the handle, as every handle reads the one keyboard; `KbdSynch` does nothing.
 
@@ -1200,7 +1201,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 547 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 437 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 551 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1211,9 +1212,9 @@ Counts are taken from the static registry (`api_registry.rs`, 547 entries) and t
 | MDM (MMPM/2) | registry | 6 | 0 | 6 |
 | UCONV | registry | 9 | 0 | 9 |
 | SO32DLL (sockets) | registry | 30 | 0 | 30 |
-| TCP32DLL (sockets, resolver, utilities) | registry | 46 | 0 | 46 |
+| TCP32DLL (sockets, resolver, utilities) | registry | 50 | 0 | 50 |
 | VIOCALLS | sub-dispatcher | 31 | 2 | 33 |
-| KBDCALLS | sub-dispatcher | 14 | 0 | 14 |
+| KBDCALLS | sub-dispatcher | 15 | 0 | 15 |
 | MOUCALLS | sub-dispatcher | 27 | 0 | 27 |
 | PMSHAPI (profiles, applications, switch list) | registry | 18 | 0 | 18 |
 | HELPMGR (no viewer) | registry | 6 | 0 | 6 |
@@ -1227,7 +1228,7 @@ Counts are taken from the static registry (`api_registry.rs`, 547 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **965** | **19** | **984** |
+| **Total** | | **970** | **19** | **989** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

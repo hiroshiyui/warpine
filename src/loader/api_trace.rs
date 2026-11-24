@@ -215,6 +215,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             11 => "KbdSetStatus",
             12 => "KbdGetFocus",
             13 => "KbdFlushBuffer",
+            14 => "KbdXlate",
             17 => "KbdClose",
             18 => "KbdFreeFocus",
             22 => "KbdPeek",

@@ -286,6 +286,29 @@ OS2_PASCAL_API(APIRET16, KbdGetFocus, (USHORT fWait, HKBD hkbd),
 OS2_PASCAL_API(APIRET16, KbdFreeFocus, (HKBD hkbd),
                (ULONG hkbd), (hkbd))
 
+typedef struct _KBDTRANS {
+    UCHAR  chChar;
+    UCHAR  chScan;
+    UCHAR  fbStatus;
+    UCHAR  bNlsShift;
+    USHORT fsState;
+    ULONG  time;
+    USHORT fsDD;
+    USHORT fsXlate;
+    USHORT fsShift;
+    USHORT sZero;
+} KBDTRANS, *PKBDTRANS;
+
+#define KBDSTF_RIGHTSHIFT     0x0001
+#define KBDSTF_LEFTSHIFT      0x0002
+#define KBDSTF_CONTROL        0x0004
+#define KBDSTF_ALT            0x0008
+#define KBDSTF_CAPSLOCK_ON    0x0040
+#define KBDTRF_FINAL_CHAR_IN  0x40
+
+OS2_PASCAL_API(APIRET16, KbdXlate, (PKBDTRANS pkbdtrans, HKBD hkbd),
+               (ULONG hkbd, PKBDTRANS pkbdtrans), (hkbd, pkbdtrans))
+
 OS2_PASCAL_API(APIRET16, KbdSynch, (USHORT fWait),
                (ULONG fWait), (fWait))
 

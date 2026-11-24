@@ -343,6 +343,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 ## Other
 
+- **`KbdXlate` and the services database** (2026-11-24): the US layout as the only one, Ctrl on non-letters giving 0, `fsXlate` bit 0 as "complete", an unknown scan code left not final; `getservent` walking the host's services database (read once, at most 4096 entries) and its ordinals TCP32DLL 72–75; `tcp_h_errno` set to `HOST_NOT_FOUND` for every failed lookup.
 - **UCONV attributes and strings** (2026-11-24): the `esid`s and lengths reported (SBCS PC, mixed DBCS PC, UTF-8 1–3 bytes), the `first` / `other` tables (DBCS trail bytes 0x40–0xFE, UTF-8 lead bytes by length, 0 for bytes that cannot start one), the default attributes (`?` and U+FFFD, substitution from Unicode, `DSPMASK_DATA`), `ULS_INVALID` for a short `UniQueryUconvObject` size and an unknown codepage name, and `UniStrToUcs`'s `size` counted in UniChars.
 - **MCI system values** (2026-11-24): their defaults (master volume 100, speakers on, headphones off, work path `C:\`), `mciQuerySysValue` returning `MCIERR_SUCCESS` / `MCIERR_INVALID_FLAG` and `mciSetSysValue` TRUE / FALSE (the reference's page names BOOL for both), and `mciGetDeviceID` matching aliases only.
 - **`VioSetCp` / `VioSetState`** (2026-11-24): 0 as the process's codepage, VIO text decoded with the screen's codepage, intensity values other than 0 and 1 refused.
