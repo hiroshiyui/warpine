@@ -1692,6 +1692,23 @@ fn the_sandbox_keeps_the_home_directory_out_of_reach() {
     assert_eq!(check(&home, Some("off")).trim(), "Ok(Disabled): readable");
 }
 
+/// The system-call filter (ADR-0124): the kernel holds one seccomp filter
+/// for each role; threads still start (`clone3` answers ENOSYS, the C
+/// library falls back to `clone`); a program may start processes, the
+/// desktop server may not. Every other integration test runs filtered too.
+#[test]
+fn the_syscall_filter_is_installed_per_role() {
+    let check = |role: &str| {
+        let out = Command::new(warpine()).arg("--syscall-check").arg(role).env("RUST_LOG", "error")
+            .output().expect("run warpine");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let guest = check("guest");
+    if guest.starts_with("Ok(Unsupported)") { return; }
+    assert_eq!(guest, "Ok(Filtered)\nseccomp: 2\nfilters: 1\nthread: ok\nexec: ok\n");
+    assert_eq!(check("desktop-server"), "Ok(Filtered)\nseccomp: 2\nfilters: 1\nthread: ok\nexec: EPERM\n");
+}
+
 /// xcpt_unwind_test (ADR-0110): DosUnwindException calls the handlers
 /// above its target with EH_UNWINDING, newest first, and unlinks them
 /// (to a record, END_OF_CHAIN, UNWIND_ALL; a stray target refused);

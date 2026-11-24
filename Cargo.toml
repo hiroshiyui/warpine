@@ -11,6 +11,8 @@ kvm-ioctls = "0.24.0"
 libc = "0.2.183"
 # Landlock: the process confines its own file access (src/sandbox.rs).
 landlock = "=0.4.7"
+# Seccomp: installs the per-role system-call filter (src/syscall_filter.rs).
+seccompiler = "=0.5.0"
 log = "0.4"
 # SDL3 via the system library (pkg-config). Only the safe sdl3-rs API is
 # used: no `unsafe_textures`, no direct sdl3-sys calls.

@@ -6,6 +6,7 @@ pub mod api;
 pub mod gui;
 pub mod desktop;
 pub mod sandbox;
+pub mod syscall_filter;
 pub mod cgroup;
 
 use std::env;
@@ -127,6 +128,7 @@ fn main() {
         eprintln!("       {} --compat         Print API compatibility report", args[0]);
         eprintln!("       {} {LICENSES_SWITCH}       Print the licences of Warpine and its built-in fonts", args[0]);
         eprintln!("       {} {} <path>  Confine as a program would, then try to read <path>", args[0], sandbox::CHECK_SWITCH);
+        eprintln!("       {} {} guest|desktop-server  Filter system calls as that role would, then report", args[0], syscall_filter::CHECK_SWITCH);
         std::process::exit(1);
     }
 
@@ -138,7 +140,7 @@ fn main() {
             std::process::exit(1);
         };
         // The server reaches the session and the display only (ADR-0111).
-        sandbox::confine_process(&[], None);
+        sandbox::confine_process(&[], None, syscall_filter::Role::DesktopServer);
         std::process::exit(gui::desktop_server::run(std::path::Path::new(dir)));
     }
 
@@ -153,6 +155,22 @@ fn main() {
         let outcome = sandbox::confine(&sandbox::policy(&[], None, &env));
         let readable = std::fs::read_dir(path).is_ok() || std::fs::File::open(path).is_ok();
         println!("{:?}: {}", outcome, if readable { "readable" } else { "denied" });
+        return;
+    }
+
+    // Whether the system-call filter works here (ADR-0124): install the
+    // role's filter, then report the kernel's view and what still runs.
+    if args[1] == syscall_filter::CHECK_SWITCH {
+        let role = match args.get(2).map(String::as_str) {
+            Some("guest") => syscall_filter::Role::Guest,
+            Some("desktop-server") => syscall_filter::Role::DesktopServer,
+            _ => {
+                eprintln!("{} needs a role: guest or desktop-server", syscall_filter::CHECK_SWITCH);
+                std::process::exit(1);
+            }
+        };
+        println!("{:?}", syscall_filter::apply(role));
+        print!("{}", syscall_filter::check_report());
         return;
     }
 
@@ -270,7 +288,7 @@ fn confine(loader: &loader::Loader, program: Option<&std::path::Path>) {
         let dm = loader.shared.drive_mgr.lock_or_recover();
         (0..26).filter_map(|d| dm.drive_config(d).map(|c| (c.host_path.clone(), c.read_only))).collect()
     };
-    sandbox::confine_process(&drives, program);
+    sandbox::confine_process(&drives, program, syscall_filter::Role::Guest);
 }
 
 /// Enter the session's `THREADS=` accounting with thread 1, or end with

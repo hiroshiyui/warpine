@@ -150,16 +150,33 @@ pub fn confine(policy: &Policy) -> Result<Outcome, String> {
     })
 }
 
-/// [`policy`] and [`confine`] for this process, reporting what happened:
-/// a failure or a kernel without Landlock is a warning, not an error.
-pub fn confine_process(drives: &[Drive], program: Option<&Path>) {
+/// [`policy`] and [`confine`] for this process, then the system-call
+/// filter for `role` (ADR-0124), reporting what happened: a failure or a
+/// kernel without Landlock is a warning, not an error.
+pub fn confine_process(drives: &[Drive], program: Option<&Path>, role: crate::syscall_filter::Role) {
     let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
     match confine(&policy(drives, program, &env)) {
         Ok(Outcome::Confined { fully }) => log::debug!("sandbox: Landlock confines this process{}",
                                                        if fully { "" } else { " (partly: an older kernel)" }),
-        Ok(Outcome::Disabled) => log::debug!("sandbox: off ({SANDBOX_ENV})"),
+        Ok(Outcome::Disabled) => {
+            log::debug!("sandbox: off ({SANDBOX_ENV})");
+            return;
+        }
         Ok(Outcome::Unsupported) => log::warn!("sandbox: this kernel has no Landlock; the process runs unconfined"),
         Err(e) => log::warn!("sandbox: Landlock failed ({e}); the process runs unconfined"),
+    }
+    filter_syscalls(role);
+}
+
+/// Install the system-call filter for `role` (ADR-0124), unless
+/// `WARPINE_SANDBOX=off`; a failure is a warning.
+pub fn filter_syscalls(role: crate::syscall_filter::Role) {
+    if disabled_by(std::env::var_os(SANDBOX_ENV).as_deref()) {
+        return;
+    }
+    match crate::syscall_filter::apply(role) {
+        Ok(outcome) => log::debug!("sandbox: system-call filter for {role:?}: {outcome:?}"),
+        Err(e) => log::warn!("sandbox: the system-call filter failed ({e}); system calls are not filtered"),
     }
 }
 

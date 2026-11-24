@@ -61,8 +61,8 @@ label = "API stub area at MAGIC_API_BASE: INT 3 per ordinal (ADR-0005)"
 [[layer]]
 id = "entry"
 zone = "host"
-label = "Start-up: PM, VIO window, full screen or headless; the Landlock sandbox (ADR-0111); the session's cgroup (ADR-0116)"
-modules = ["main.rs", "api.rs", "sandbox.rs", "cgroup.rs"]
+label = "Start-up: PM, VIO window, full screen or headless; the Landlock sandbox (ADR-0111) and system-call filter (ADR-0124); the session's cgroup (ADR-0116)"
+modules = ["main.rs", "api.rs", "sandbox.rs", "syscall_filter.rs", "cgroup.rs"]
 
 [[layer]]
 id = "formats"
