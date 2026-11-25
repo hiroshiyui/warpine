@@ -147,6 +147,7 @@ pub mod som_dispatch;
 pub mod som_typecode;
 pub mod pmwp_objects;
 pub mod wps_setup;
+pub mod ea_list;
 mod critsec;
 pub mod dostimer;
 pub mod suballoc;

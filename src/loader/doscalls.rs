@@ -638,6 +638,26 @@ impl super::Loader {
                 // FEA2: oNextEntryOffset(4) + fEA(1) + cbName(1) + cbValue(2) + szName(cbName+1) + value(cbValue)
                 self.dos_query_eas_from_list(&dm, &name, buf_ptr, buf_len)
             }
+            // Level 5: FIL_QUERYFULLNAME — the fully qualified name, as the
+            // drive's current directory makes it (the file need not exist;
+            // the case is the caller's, unverified).
+            FIL_QUERYFULLNAME => {
+                let (drive, rel) = match dm.resolve_path(&name) {
+                    Ok(r) => r,
+                    Err(e) => return e.0,
+                };
+                // `.` and `..` resolved; above the root is no path.
+                let Some(rel) = super::vfs::normalize_rel_path(&rel) else { return ERROR_PATH_NOT_FOUND };
+                let full = format!("{}:\\{}", (b'A' + drive) as char, rel.replace('/', "\\"));
+                let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                let mut bytes = super::codepage::cp_encode(&full, cp);
+                bytes.push(0);
+                if (buf_len as usize) < bytes.len() { return ERROR_BUFFER_OVERFLOW; }
+                match self.guest_write_bytes(buf_ptr, &bytes) {
+                    Some(()) => NO_ERROR,
+                    None => ERROR_INVALID_PARAMETER,
+                }
+            }
             _ => 124, // ERROR_INVALID_LEVEL
         }
     }

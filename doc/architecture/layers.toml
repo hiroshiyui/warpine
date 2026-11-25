@@ -125,7 +125,7 @@ modules = ["loader/codepage.rs", "loader/locale.rs", "loader/uconv.rs"]
 id = "vfs"
 zone = "host"
 label = "Virtual file system: drives on host directories (ADR-0009)"
-modules = ["loader/vfs.rs", "loader/vfs_hostdir.rs", "loader/file_attrs.rs"]
+modules = ["loader/vfs.rs", "loader/vfs_hostdir.rs", "loader/file_attrs.rs", "loader/ea_list.rs"]
 
 [[layer]]
 id = "net_mm"

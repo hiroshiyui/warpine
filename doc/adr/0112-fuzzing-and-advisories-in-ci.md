@@ -69,6 +69,10 @@ Two parsers read files on drives a program can write, and had no target: `C:\CON
 
 Warpine reads no font or help file a program supplies (its fonts are built in, `GpiLoadFonts` is a stub, the Help Manager records a library's name only), so there is no such reader to fuzz yet.
 
+## Addendum (2026-11-26): EA lists
+
+`DosSetPathInfo` level 2 now sets extended attributes, so a program's `FEA2LIST` is parsed (`src/loader/ea_list.rs`, which builds alone). The `fea2_list` target checks that parsing never panics, that every entry it gives fits inside `cbList` with a non-empty name without NULs, and that an error names an offset inside the list. It ran 32 million inputs in 90 seconds without finding anything. `seed.sh` writes one list.
+
 ## Addendum (2026-11-26): Workplace setup strings
 
 `WinCreateObject` and `WinSetObjectData` (ADR-0130) bring a parser of setup strings from the program (`KEY=value;…`, `^;` a semicolon) and the joining of queued strings, in `src/loader/wps_setup.rs`, which builds alone. The `wps_setup` target's first byte splits the input into a key and a string. It checks that scanning never panics, that an escaped value scans back, that the next queued item is still found and that a later occurrence wins, and that a title is always followed safely. Within its first minute it found two problems:

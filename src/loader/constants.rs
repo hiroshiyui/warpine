@@ -976,6 +976,10 @@ pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub const ERROR_INVALID_DRIVE: u32 = 15;
 pub const ERROR_INVALID_FUNCTION: u32 = 1;
 pub const ERROR_BUFFER_OVERFLOW: u32 = 111;
+/// An EA name or list a program passed is not well formed (Open Watcom's
+/// bseerr.h).
+pub const ERROR_INVALID_EA_NAME: u32 = 254;
+pub const ERROR_EA_LIST_INCONSISTENT: u32 = 255;
 pub const ERROR_INVALID_LEVEL: u32 = 124;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
@@ -991,6 +995,7 @@ pub const DATETIME_SIZE:              u32 = 12;
 /// `DosQueryFileInfo` / `DosSetFileInfo` levels (`<bsedos.h>`).
 pub const FIL_STANDARD:               u32 = 1;
 pub const FIL_QUERYEASIZE:            u32 = 2;
+pub const FIL_QUERYFULLNAME:          u32 = 5;
 /// Size of the OS/2 `FILESTATUS3` structure (`<bsedos.h>`).
 pub const FILESTATUS3_SIZE:           u32 = 24;
 pub const ERROR_INVALID_CODE_PAGE:    u32 = 472;

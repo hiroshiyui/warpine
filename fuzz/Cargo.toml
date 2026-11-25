@@ -119,3 +119,9 @@ name = "wps_setup"
 path = "fuzz_targets/wps_setup.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fea2_list"
+path = "fuzz_targets/fea2_list.rs"
+test = false
+doc = false

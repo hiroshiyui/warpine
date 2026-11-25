@@ -325,7 +325,7 @@
 <title>vfs</title>
 <path fill="#bbdefb" stroke="black" d="M4999.68,-610.1C4999.68,-610.1 4704.32,-610.1 4704.32,-610.1 4698.32,-610.1 4692.32,-604.1 4692.32,-598.1 4692.32,-598.1 4692.32,-586.1 4692.32,-586.1 4692.32,-580.1 4698.32,-574.1 4704.32,-574.1 4704.32,-574.1 4999.68,-574.1 4999.68,-574.1 5005.68,-574.1 5011.68,-580.1 5011.68,-586.1 5011.68,-586.1 5011.68,-598.1 5011.68,-598.1 5011.68,-604.1 5005.68,-610.1 4999.68,-610.1"/>
 <text xml:space="preserve" text-anchor="start" x="4703.12" y="-592.15" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Virtual file system: drives on host directories (ADR&#45;0009)</text>
-<text xml:space="preserve" text-anchor="start" x="4758.25" y="-584" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/vfs.rs, loader/vfs_hostdir.rs, loader/file_attrs.rs</text>
+<text xml:space="preserve" text-anchor="start" x="4727.88" y="-584" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/vfs.rs, loader/vfs_hostdir.rs, loader/file_attrs.rs, loader/ea_list.rs</text>
 </g>
 <!-- kernel&#45;&gt;vfs -->
 <g id="edge16" class="edge">

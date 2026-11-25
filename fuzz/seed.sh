@@ -9,12 +9,12 @@
 # resource files behind each of res_templates' five kinds, pointer and
 # icon files for pointer, WAV files for wav, and a CONFIG.SYS and a
 # profile written here for config_sys and profile, the resolver's
-# inputs, and setup strings for wps_setup.
+# inputs, setup strings for wps_setup, and an EA list for fea2_list.
 # desktop_proto starts from nothing;
 # libFuzzer finds its tags quickly.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav corpus/config_sys corpus/profile corpus/resolver corpus/wps_setup
+mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav corpus/config_sys corpus/profile corpus/resolver corpus/wps_setup corpus/fea2_list
 n=0
 while IFS= read -r -d '' f; do
     case $(head -c 2 "$f" | od -An -c | tr -d ' ') in
@@ -78,4 +78,5 @@ printf '\x02loopback 127\nlink-local 169.254.0.0\n' > corpus/resolver/networks
 printf '\x03nameserver 192.0.2.53\nsearch example.com lan\ndomain example.org\n' > corpus/resolver/resolv_conf
 printf '\x04www.example.com.' > corpus/resolver/name
 printf '\x08OBJECTIDTITLE=Lunch^;today;TEXT=soup;OBJECTID=<WP_C>;NODELETE=YES' > corpus/wps_setup/create
+printf '\x1c\x00\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00MINE\x00abc\x00\x00\x00\x00\x00\x00\x00' > corpus/fea2_list/one
 echo "fuzz/seed.sh: $n programs and DLLs, $m lx-link inputs as seeds"

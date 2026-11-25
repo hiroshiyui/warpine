@@ -726,11 +726,14 @@ impl super::Loader {
     }
 
     /// DosSetPathInfo (ordinal 219): set a file's or directory's times by
-    /// name, as `DosSetFileInfo` does. `flOptions` (`DSPI_WRTTHRU`) needs
+    /// name, as `DosSetFileInfo` does; at level 2 (`FIL_QUERYEASIZE`) its
+    /// extended attributes, from the `EAOP2`'s `FEA2LIST`
+    /// ([`Self::dos_set_path_eas`]). `flOptions` (`DSPI_WRTTHRU`) needs
     /// nothing on the host.
     pub fn dos_set_path_info(&self, psz_name: u32, level: u32, p_info: u32, cb_info: u32, _flag: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         debug!("  DosSetPathInfo('{}', level={})", name, level);
+        if level == FIL_QUERYEASIZE { return self.dos_set_path_eas(&name, p_info, cb_info); }
         let status = match self.read_set_status(level, p_info, cb_info) {
             Ok(Some(status)) => status,
             Ok(None) => return NO_ERROR,
@@ -740,6 +743,51 @@ impl super::Loader {
             Ok(()) => NO_ERROR,
             Err(e) => e.0,
         }
+    }
+
+    /// The extended attributes of the `EAOP2` at `p_info` set on `name`:
+    /// each entry of its `FEA2LIST` (an empty value deletes the EA), in
+    /// order. A list that is not well formed sets nothing: its bad entry's
+    /// offset goes to `oError` and the result is
+    /// `ERROR_EA_LIST_INCONSISTENT` (Control Program Reference; the offset's
+    /// base, the list's start, is Warpine's reading). EA names are kept as
+    /// given (unverified: OS/2 may upper-case them).
+    fn dos_set_path_eas(&self, name: &str, p_info: u32, cb_info: u32) -> u32 {
+        const EAOP2_SIZE: u32 = 12;
+        const EAOP2_FEA2LIST: u32 = 4;
+        const EAOP2_ERROR: u32 = 8;
+        if cb_info < EAOP2_SIZE { return ERROR_BUFFER_OVERFLOW; }
+        let Some(p_fea) = self.guest_read::<u32>(p_info.wrapping_add(EAOP2_FEA2LIST)).filter(|&p| p != 0) else {
+            return ERROR_INVALID_PARAMETER;
+        };
+        // cbList first, then that many bytes (never from protected memory).
+        let Some(head) = self.guest_read_buffer(p_fea, 4) else { return ERROR_INVALID_PARAMETER };
+        let cb_list = (u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize).min(super::ea_list::MAX_FEA2_LIST);
+        let Some(list) = self.guest_read_buffer(p_fea, cb_list.max(4)) else { return ERROR_INVALID_PARAMETER };
+        let eas = match super::ea_list::parse_fea2_list(&list) {
+            Ok(eas) => eas,
+            Err(offset) => {
+                let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), offset);
+                return ERROR_EA_LIST_INCONSISTENT;
+            }
+        };
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        let (drive, rel) = match dm.resolve_path(name) {
+            Ok(r) => r,
+            Err(e) => return e.0,
+        };
+        let backend = match dm.backend(drive) {
+            Ok(b) => b,
+            Err(e) => return e.0,
+        };
+        for ea in eas {
+            let flags = if ea.value.is_empty() { 0 } else { ea.flags };
+            let entry = super::vfs::EaEntry { name: super::codepage::cp_decode(&ea.name, cp), value: ea.value, flags };
+            if let Err(e) = backend.set_ea(&rel, &entry) { return e.0; }
+        }
+        let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), 0);
+        NO_ERROR
     }
 
     /// The `FILESTATUS3` a set call at `level` passes, checked: `Ok(None)`
@@ -1307,6 +1355,87 @@ mod tests {
         l.guest_write_bytes(at, s.as_bytes()).unwrap();
         l.guest_write::<u8>(at + s.len() as u32, 0).unwrap();
         at
+    }
+
+    /// DosSetPathInfo level 2: an EAOP2's FEA2LIST sets the file's EAs (an
+    /// empty value deletes one); a list that is not well formed sets
+    /// nothing and names its bad entry in oError.
+    #[test]
+    fn set_path_info_level_2_sets_extended_attributes() {
+        use super::super::vfs::DriveConfig;
+        use super::super::vfs_hostdir::HostDirBackend;
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("note.txt"), b"x").unwrap();
+        let l = Loader::new_mock();
+        {
+            let mut dm = l.shared.drive_mgr.lock_or_recover();
+            dm.set_drive_config(2, DriveConfig { host_path: tmp.path().to_path_buf(), label: "T".into(), read_only: false });
+            dm.mount(2, Box::new(HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
+        }
+        let path = put(&l, 0x0030_0000, "C:\\NOTE.TXT");
+        let (eaop, fea) = (0x0031_0000u32, 0x0031_0100u32);
+        // One entry: oNext 0, fEA 0, cbName 4, cbValue 3, "MINE\0", "abc".
+        let entry = |name: &[u8], value: &[u8]| {
+            let mut e = vec![0, 0, 0, 0, 0, name.len() as u8];
+            e.extend((value.len() as u16).to_le_bytes());
+            e.extend_from_slice(name);
+            e.push(0);
+            e.extend_from_slice(value);
+            let mut list = ((e.len() + 4) as u32).to_le_bytes().to_vec();
+            list.extend(e);
+            list
+        };
+        let set = |list: &[u8]| {
+            l.guest_write_bytes(fea, list).unwrap();
+            l.guest_write::<u32>(eaop, 0).unwrap();
+            l.guest_write::<u32>(eaop + 4, fea).unwrap();
+            l.guest_write::<u32>(eaop + 8, 0xFFFF).unwrap();
+            l.dos_set_path_info(path, FIL_QUERYEASIZE, eaop, 12, 0)
+        };
+        let get = |name: &str| l.shared.drive_mgr.lock_or_recover().backend(2).unwrap().get_ea("note.txt", name).ok().map(|e| e.value);
+        assert_eq!(set(&entry(b"MINE", b"abc")), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(eaop + 8), Some(0), "oError cleared");
+        assert_eq!(get("MINE").as_deref(), Some(&b"abc"[..]));
+        assert_eq!(set(&entry(b"MINE", b"")), NO_ERROR);
+        assert_eq!(get("MINE").filter(|v| !v.is_empty()), None, "an empty value deletes");
+        // Not well formed: no NUL after the name.
+        let mut bad = entry(b"MINE", b"abc");
+        bad[4 + 8 + 4] = b'x';
+        assert_eq!(set(&bad), ERROR_EA_LIST_INCONSISTENT);
+        assert_eq!(l.guest_read::<u32>(eaop + 8), Some(4), "oError names the entry");
+        assert_eq!(get("MINE").filter(|v| !v.is_empty()), None, "nothing set");
+        assert_eq!(l.dos_set_path_info(path, FIL_QUERYEASIZE, eaop, 8, 0), ERROR_BUFFER_OVERFLOW, "a short EAOP2");
+        l.guest_write::<u32>(eaop + 4, 0).unwrap();
+        assert_eq!(l.dos_set_path_info(path, FIL_QUERYEASIZE, eaop, 12, 0), ERROR_INVALID_PARAMETER, "no FEA2LIST");
+    }
+
+    /// DosQueryPathInfo level 5 (FIL_QUERYFULLNAME): the name qualified by
+    /// the drive and its current directory, whether or not it exists.
+    #[test]
+    fn query_path_info_level_5_qualifies_names() {
+        use super::super::vfs::DriveConfig;
+        use super::super::vfs_hostdir::HostDirBackend;
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("work")).unwrap();
+        let l = Loader::new_mock();
+        {
+            let mut dm = l.shared.drive_mgr.lock_or_recover();
+            dm.set_drive_config(2, DriveConfig { host_path: tmp.path().to_path_buf(), label: "T".into(), read_only: false });
+            dm.mount(2, Box::new(HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
+            dm.set_current_disk(3).unwrap();
+            dm.set_current_dir("WORK").unwrap();
+        }
+        let buf = 0x0031_0000;
+        let full = |name: &str, len: u32| {
+            let p = put(&l, 0x0030_0000, name);
+            let rc = l.dos_query_path_info(p, FIL_QUERYFULLNAME, buf, len);
+            (rc, l.read_guest_string(buf))
+        };
+        assert_eq!(full("notes.txt", 260), (NO_ERROR, "C:\\WORK\\notes.txt".into()), "relative, not there");
+        assert_eq!(full("C:\\work\\..\\a.txt", 260).1, "C:\\a.txt");
+        assert_eq!(full("\\x", 260).1, "C:\\x");
+        assert_eq!(full("notes.txt", 8).0, ERROR_BUFFER_OVERFLOW);
+        assert_eq!(full("Q:\\x", 260).0, 15, "ERROR_INVALID_DRIVE");
     }
 
     /// Named shared memory: \SHAREMEM\ names only, one block per name (any

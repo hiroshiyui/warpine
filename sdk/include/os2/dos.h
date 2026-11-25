@@ -98,6 +98,13 @@ typedef struct _DATETIME {
 #define FIL_QUERYEASFROMLIST  3
 #define FIL_QUERYFULLNAME     5
 
+/* Extended attribute value types: a value starts with its type word, then
+ * (for these) a length word and the data. */
+#define EAT_BINARY    0xFFFE
+#define EAT_ASCII     0xFFFD
+#define EAT_MVMT      0xFFDF
+#define EAT_MVST      0xFFDE
+
 /* DosFindFirst. */
 #define HDIR_SYSTEM  ((HDIR)1)
 #define HDIR_CREATE  ((HDIR)-1)
