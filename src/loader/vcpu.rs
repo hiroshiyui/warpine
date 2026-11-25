@@ -570,7 +570,12 @@ impl super::Loader {
             match self.signal_action(&*vcpu, vcpu_id) {
                 SignalAction::None => {}
                 SignalAction::Dispatch(dispatch) => {
-                    setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, dispatch);
+                    if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, dispatch) {
+    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+        Some(end) => return end,
+        None => continue,
+    }
+}
                     continue;
                 }
                 SignalAction::EndProcess => {
@@ -970,7 +975,12 @@ impl super::Loader {
                                         self.chain_dispatch(vcpu_id, fault_ctx.clone(), XCPT_GUARD_PAGE_VIOLATION, 0, &[access, addr])
                                     } else { None };
                                     if let Some(exc_dispatch) = dispatch {
-                                        setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch);
+                                        if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch) {
+    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+        Some(end) => return end,
+        None => continue,
+    }
+}
                                     } else {
                                         let mut r = vcpu.get_regs().unwrap();
                                         resume_at(&mut r, &fault_ctx);
@@ -985,7 +995,12 @@ impl super::Loader {
                                         self.chain_dispatch(vcpu_id, fault_ctx.clone(), XCPT_UNABLE_TO_GROW_STACK, 0, &[])
                                     } else { None };
                                     if let Some(exc_dispatch) = dispatch {
-                                        setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch);
+                                        if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch) {
+    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+        Some(end) => return end,
+        None => continue,
+    }
+}
                                         continue;
                                     }
                                     let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::GuestException {
@@ -1022,9 +1037,12 @@ impl super::Loader {
                                 // We reuse the IDT-stub frame area; the pre-fault ESP
                                 // is carried in saved.esp and will be used on
                                 // XCPT_CONTINUE_EXECUTION.
-                                setup_exception_dispatch(
-                                    &mut *vcpu, self, &mut callback_stack, exc_dispatch,
-                                );
+                                if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch) {
+    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+        Some(end) => return end,
+        None => continue,
+    }
+}
                                 continue;
                             }
                             None => {
@@ -1314,9 +1332,12 @@ impl super::Loader {
                                                 next_handler: next_next,
                                                 guest_allocs,
                                             };
-                                            setup_exception_dispatch(
-                                                &mut *vcpu, self, &mut callback_stack, exc_dispatch,
-                                            );
+                                            if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch) {
+    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+        Some(end) => return end,
+        None => continue,
+    }
+}
                                             continue;
                                         }
                                     }
@@ -1341,7 +1362,14 @@ impl super::Loader {
                         // one too low, or outside guest memory, ends the
                         // process as a fault would, never the host.
                         let esp = vcpu.get_regs().unwrap().rsp;
-                        if !guest_stack_ok(esp) {
+                        // Also the return address must be readable, and the
+                        // largest frame the host builds below the stack
+                        // writable (security audit 2026-11-25: a stack
+                        // pointer next to Warpine's protected memory, or in a
+                        // shared block not held, made the host panic).
+                        let room = guest_stack_ok(esp) && self.guest_read::<u32>(esp as u32).is_some()
+                            && frame_fits(self, esp, MAX_HOST_FRAME_BYTES).is_some();
+                        if !room {
                             log::warn!("[VCPU {}] API call {} with ESP 0x{:08X} outside the usable stack: ending the process",
                                        vcpu_id, ordinal, esp);
                             match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
@@ -1384,7 +1412,7 @@ impl super::Loader {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 regs.rax = res as u64;
                                 regs.rip = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for return address") as u64;
+                                    .unwrap_or(0) as u64;
                                 regs.rsp += 4;
                                 // VIO/KBD use Pascal calling convention (callee cleanup).
                                 // Pop the arguments from the stack after the return address.
@@ -1411,7 +1439,7 @@ impl super::Loader {
                             ApiResult::Callback { wnd_proc, hwnd, msg, mp1, mp2 } => {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for callback return address");
+                                    .unwrap_or(0);
                                 // Save current state; saved_rsp is past the return address.
                                 // The caller will clean up its own args (_System is caller-cleanup).
                                 callback_stack.push(CallbackFrame {
@@ -1422,11 +1450,11 @@ impl super::Loader {
                                 // Set up guest stack for callback: push ret addr + 4 args = 20 bytes
                                 regs.rsp -= 20;
                                 let sp = regs.rsp as u32;
-                                self.guest_write::<u32>(sp, CALLBACK_RET_TRAP).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp + 4, hwnd).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp + 8, msg).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp + 12, mp1).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp + 16, mp2).expect("Callback stack write OOB");
+                                let _ = self.guest_write::<u32>(sp, CALLBACK_RET_TRAP);
+                                let _ = self.guest_write::<u32>(sp + 4, hwnd);
+                                let _ = self.guest_write::<u32>(sp + 8, msg);
+                                let _ = self.guest_write::<u32>(sp + 12, mp1);
+                                let _ = self.guest_write::<u32>(sp + 16, mp2);
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
@@ -1435,7 +1463,7 @@ impl super::Loader {
                                 // FrameKind::MinMaxFrame finishes the change.
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for WM_MINMAXFRAME return address");
+                                    .unwrap_or(0);
                                 callback_stack.push(CallbackFrame {
                                     saved_rip: return_addr as u64,
                                     saved_rsp: regs.rsp + 4,
@@ -1447,10 +1475,10 @@ impl super::Loader {
                                 let sp = regs.rsp as u32;
                                 let pswp = sp + 20;
                                 for (i, v) in pm_minmax::minmax_swp(frame, op, target).into_iter().enumerate() {
-                                    self.guest_write::<u32>(pswp + 4 * i as u32, v).expect("Callback stack write OOB");
+                                    let _ = self.guest_write::<u32>(pswp + 4 * i as u32, v);
                                 }
                                 for (o, v) in [(0, CALLBACK_RET_TRAP), (4, client), (8, WM_MINMAXFRAME), (12, pswp), (16, 0)] {
-                                    self.guest_write::<u32>(sp + o, v).expect("Callback stack write OOB");
+                                    let _ = self.guest_write::<u32>(sp + o, v);
                                 }
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
@@ -1461,7 +1489,7 @@ impl super::Loader {
                                 // h_frame into EAX as WinCreateStdWindow's return value.
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for WM_CREATE return address");
+                                    .unwrap_or(0);
                                 callback_stack.push(CallbackFrame {
                                     saved_rip: return_addr as u64,
                                     saved_rsp: regs.rsp + 4,
@@ -1469,18 +1497,18 @@ impl super::Loader {
                                 });
                                 regs.rsp -= 20;
                                 let sp = regs.rsp as u32;
-                                self.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp +  4, hwnd).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp +  8, WM_CREATE).expect("Callback stack write OOB");
-                                self.guest_write::<u32>(sp + 12, 0).expect("Callback stack write OOB"); // mp1 (CREATESTRUCT*)
-                                self.guest_write::<u32>(sp + 16, 0).expect("Callback stack write OOB"); // mp2 (CTLDATA*)
+                                let _ = self.guest_write::<u32>(sp,      CALLBACK_RET_TRAP);
+                                let _ = self.guest_write::<u32>(sp +  4, hwnd);
+                                let _ = self.guest_write::<u32>(sp +  8, WM_CREATE);
+                                let _ = self.guest_write::<u32>(sp + 12, 0); // mp1 (CREATESTRUCT*)
+                                let _ = self.guest_write::<u32>(sp + 16, 0); // mp2 (CTLDATA*)
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
                             ApiResult::DlgRunLoop { dlg_proc, hwnd_dlg, hmq } => {
                                 let regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for DlgRunLoop return address");
+                                    .unwrap_or(0);
                                 let saved_rip = return_addr as u64;
                                 let saved_rsp = regs.rsp + 4; // past return addr; caller cleans args
                                 // Restore regs so setup_dlg_dispatch sees a clean state.
@@ -1498,7 +1526,7 @@ impl super::Loader {
                             ApiResult::DestroyWindows { chain, hwnd, wnd_proc } => {
                                 let regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for WinDestroyWindow return address");
+                                    .unwrap_or(0);
                                 continue_destroy(
                                     &mut *vcpu, self, &mut callback_stack,
                                     chain, Some((hwnd, wnd_proc)),
@@ -1508,7 +1536,7 @@ impl super::Loader {
                             ApiResult::CallChain(chain) => {
                                 let regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for call-chain return address");
+                                    .unwrap_or(0);
                                 continue_call_chain(
                                     &mut *vcpu, self, &mut callback_stack,
                                     chain, return_addr as u64, regs.rsp + 4,
@@ -1519,7 +1547,7 @@ impl super::Loader {
                                 // Pop the API return address from the guest stack
                                 // (the standard API dispatch leaves this on top).
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for ExceptionDispatch return address");
+                                    .unwrap_or(0);
                                 regs.rsp += 4;
                                 // Rebuild the FaultContext so XCPT_CONTINUE_EXECUTION returns
                                 // to the DosRaiseException caller (i.e. normal API return).
@@ -1546,13 +1574,16 @@ impl super::Loader {
                                     // Write the context into the CONTEXTRECORD so the
                                     // handler sees (and may change) it.
                                     self.write_context_record(ctx_record, &saved);
-                                    setup_exception_dispatch(
-                                        &mut *vcpu, self, &mut callback_stack,
-                                        ApiResult::ExceptionDispatch {
-                                            handler_addr, exc_report, reg_rec, ctx_record,
-                                            saved, next_handler, guest_allocs,
-                                        },
-                                    );
+                                    let dispatch = ApiResult::ExceptionDispatch {
+                                        handler_addr, exc_report, reg_rec, ctx_record,
+                                        saved, next_handler, guest_allocs,
+                                    };
+                                    if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, dispatch) {
+                                        match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+                                            Some(end) => return end,
+                                            None => continue,
+                                        }
+                                    }
                                 }
                             }
                             ApiResult::Unwind(mut unwind) => {
@@ -1562,7 +1593,7 @@ impl super::Loader {
                                 let regs = vcpu.get_regs().unwrap();
                                 let sregs = vcpu.get_sregs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for DosUnwindException return address");
+                                    .unwrap_or(0);
                                 let caller = FaultContext {
                                     eax: NO_ERROR, ebx: regs.rbx as u32, ecx: regs.rcx as u32, edx: regs.rdx as u32,
                                     esi: regs.rsi as u32, edi: regs.rdi as u32, ebp: regs.rbp as u32,
@@ -1581,7 +1612,7 @@ impl super::Loader {
                             ApiResult::CallGuest { addr, hmod, phmod, object_bases } => {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
-                                    .expect("Stack read OOB for INITTERM return address");
+                                    .unwrap_or(0);
                                 // Distinguish load-time (flag=0, object_bases empty) from
                                 // unload-time (flag=1, object_bases carries pages to free).
                                 let (kind, flag) = if object_bases.is_empty() {
@@ -1598,9 +1629,9 @@ impl super::Loader {
                                 // Push: [CALLBACK_RET_TRAP][hmod][flag] = 12 bytes.
                                 regs.rsp -= 12;
                                 let sp = regs.rsp as u32;
-                                self.guest_write::<u32>(sp,     CALLBACK_RET_TRAP).expect("INITTERM stack write OOB");
-                                self.guest_write::<u32>(sp + 4, hmod).expect("INITTERM stack write OOB");
-                                self.guest_write::<u32>(sp + 8, flag).expect("INITTERM stack write OOB");
+                                let _ = self.guest_write::<u32>(sp,     CALLBACK_RET_TRAP);
+                                let _ = self.guest_write::<u32>(sp + 4, hmod);
+                                let _ = self.guest_write::<u32>(sp + 8, flag);
                                 regs.rip = addr as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
@@ -1627,7 +1658,12 @@ impl super::Loader {
                         } else { None };
                         if let Some(exc_dispatch) = dispatch {
                             debug!("  [VCPU {}] INT3 at 0x{:08X}: XCPT_BREAKPOINT", vcpu_id, rip);
-                            setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch);
+                            if !setup_exception_dispatch(&mut *vcpu, self, &mut callback_stack, exc_dispatch) {
+    match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+        Some(end) => return end,
+        None => continue,
+    }
+}
                             continue;
                         }
                         let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::UnexpectedBreakpoint);
@@ -1725,18 +1761,26 @@ impl super::Loader {
 /// [ESP+12] pContextRecord
 /// [ESP+16] pDispatcherContext (0)
 /// ```
+#[must_use = "false: no handler can run, and the process must end"]
 fn setup_exception_dispatch(
     vcpu: &mut dyn super::vm_backend::VcpuBackend,
     loader: &super::Loader,
     callback_stack: &mut Vec<CallbackFrame>,
     exc_dispatch: ApiResult,
-) {
+) -> bool {
     let ApiResult::ExceptionDispatch {
         handler_addr, exc_report, reg_rec, ctx_record,
         saved, next_handler, guest_allocs,
-    } = exc_dispatch else { return };
+    } = exc_dispatch else { return true };
 
     let mut regs = vcpu.get_regs().unwrap();
+    // The handler's five arguments go on the guest's stack: with no room
+    // there no handler can run (as on OS/2), and the caller ends the
+    // process.
+    let Some(sp) = frame_fits(loader, regs.rsp, 20) else {
+        warn!("the guest's stack at {:#x} has no room for an exception handler's call", regs.rsp);
+        return false;
+    };
 
     // Push the callback frame so we know what to do when the handler returns.
     callback_stack.push(CallbackFrame {
@@ -1752,15 +1796,13 @@ fn setup_exception_dispatch(
     });
 
     // Build the handler call on the guest stack: 5 × u32 = 20 bytes.
-    regs.rsp -= 20;
-    let sp = regs.rsp as u32;
-    loader.guest_write::<u32>(sp,      XCPT_RET_TRAP).expect("SEH stack write OOB");
-    loader.guest_write::<u32>(sp +  4, exc_report).expect("SEH stack write OOB");
-    loader.guest_write::<u32>(sp +  8, reg_rec).expect("SEH stack write OOB");
-    loader.guest_write::<u32>(sp + 12, ctx_record).expect("SEH stack write OOB");
-    loader.guest_write::<u32>(sp + 16, 0).expect("SEH stack write OOB"); // pDispCtx
+    regs.rsp = u64::from(sp);
+    for (i, w) in [XCPT_RET_TRAP, exc_report, reg_rec, ctx_record, 0].into_iter().enumerate() {
+        let _ = loader.guest_write::<u32>(sp + 4 * i as u32, w); // the last: pDispCtx
+    }
     regs.rip = handler_addr as u64;
     vcpu.set_regs(&regs).unwrap();
+    true
 }
 
 /// Go on with `unwind` (ADR-0110): call its next handler with the
@@ -1776,7 +1818,15 @@ fn drive_unwind(
 ) {
     let mut regs = vcpu.get_regs().unwrap();
     let r = unwind.resume.clone();
-    match loader.unwind_step(vcpu_id, &mut unwind) {
+    // The next handler's call goes below the stack the unwind resumes
+    // with, which the guest gave: without room there, the unwind stops and
+    // the guest resumes (security audit 2026-11-25).
+    let step = loader.unwind_step(vcpu_id, &mut unwind)
+        .filter(|_| frame_fits(loader, u64::from(r.esp), 20).is_some() || {
+            warn!("no room below {:#x} for an unwind handler's call: the unwind stops", r.esp);
+            false
+        });
+    match step {
         Some((handler, rec)) => {
             let (report, ctx) = (unwind.report, unwind.ctx);
             callback_stack.push(CallbackFrame {
@@ -1786,7 +1836,7 @@ fn drive_unwind(
             });
             let sp = r.esp.wrapping_sub(20);
             for (i, v) in [XCPT_RET_TRAP, report, rec, ctx, 0].into_iter().enumerate() {
-                loader.guest_write::<u32>(sp + 4 * i as u32, v).expect("unwind stack write OOB");
+                let _ = loader.guest_write::<u32>(sp + 4 * i as u32, v);
             }
             regs.rsp = sp as u64;
             regs.rip = handler as u64;
@@ -1883,8 +1933,25 @@ fn resume_at(regs: &mut super::vm_backend::GuestRegs, ctx: &FaultContext) {
     regs.rflags = super::ring::guest_eflags(ctx.eflags);
 }
 
+/// The most bytes the host builds below a guest's stack pointer for one
+/// API call: an owner-drawing call's structure (`MAX_OWNER_BLOCK_BYTES`)
+/// with its five-word call, more than a call chain's or a dialog's.
+const MAX_HOST_FRAME_BYTES: u32 = super::pm_owner::MAX_OWNER_BLOCK_BYTES + 32;
+const _: () = assert!(MAX_HOST_FRAME_BYTES >= super::pm_hook::CHAIN_BLOCK_BYTES + 4 * (super::pm_hook::MAX_CHAIN_ARGS as u32 + 2));
+
 pub(crate) fn guest_stack_ok(esp: u64) -> bool {
     (MIN_GUEST_ESP..=u64::from(GUEST_MEM_SIZE) - 16).contains(&esp)
+}
+
+/// Where a frame of `bytes` Warpine builds on the guest's stack goes, just
+/// below `top`: its lowest address, when all of it may be written there
+/// (`guest_slice_mut`: inside guest memory, not Warpine's protected memory,
+/// not a shared block the process may not write). The guest chose its
+/// stack pointer, so a frame need not fit (security audit 2026-11-25).
+pub(crate) fn frame_fits(loader: &super::Loader, top: u64, bytes: u32) -> Option<u32> {
+    let top = u32::try_from(top).ok()?;
+    let sp = top.checked_sub(bytes)?;
+    loader.guest_slice_mut(sp, bytes as usize).map(|_| sp)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2013,7 +2080,7 @@ fn leave_dlg_loop_for_signal(
     });
     let mut regs = vcpu.get_regs().unwrap();
     regs.rsp = saved_rsp - 4 - DLG_CALL_FRAME_BYTES;
-    loader.guest_write::<u32>(regs.rsp as u32, CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
+    let _ = loader.guest_write::<u32>(regs.rsp as u32, CALLBACK_RET_TRAP);
     regs.rip = CALLBACK_RET_TRAP as u64;
     vcpu.set_regs(&regs).unwrap();
 }
@@ -2071,11 +2138,11 @@ fn dispatch_dlg_message(
     let mut regs = vcpu.get_regs().unwrap();
     regs.rsp = saved_rsp - 4 - DLG_CALL_FRAME_BYTES;
     let sp = regs.rsp as u32;
-    loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
-    loader.guest_write::<u32>(sp +  4, msg.hwnd).expect("DlgRunLoop stack OOB");
-    loader.guest_write::<u32>(sp +  8, msg.msg).expect("DlgRunLoop stack OOB");
-    loader.guest_write::<u32>(sp + 12, msg.mp1).expect("DlgRunLoop stack OOB");
-    loader.guest_write::<u32>(sp + 16, msg.mp2).expect("DlgRunLoop stack OOB");
+    let _ = loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP);
+    let _ = loader.guest_write::<u32>(sp +  4, msg.hwnd);
+    let _ = loader.guest_write::<u32>(sp +  8, msg.msg);
+    let _ = loader.guest_write::<u32>(sp + 12, msg.mp1);
+    let _ = loader.guest_write::<u32>(sp + 16, msg.mp2);
     regs.rip = wnd_proc as u64;
     vcpu.set_regs(&regs).unwrap();
     true
@@ -2140,11 +2207,11 @@ fn continue_destroy(
             // _System window procedure: return address + 4 arguments.
             regs.rsp = saved_rsp - 20;
             let sp = regs.rsp as u32;
-            loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("WM_DESTROY stack OOB");
-            loader.guest_write::<u32>(sp +  4, hwnd).expect("WM_DESTROY stack OOB");
-            loader.guest_write::<u32>(sp +  8, WM_DESTROY).expect("WM_DESTROY stack OOB");
-            loader.guest_write::<u32>(sp + 12, 0).expect("WM_DESTROY stack OOB");
-            loader.guest_write::<u32>(sp + 16, 0).expect("WM_DESTROY stack OOB");
+            let _ = loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP);
+            let _ = loader.guest_write::<u32>(sp +  4, hwnd);
+            let _ = loader.guest_write::<u32>(sp +  8, WM_DESTROY);
+            let _ = loader.guest_write::<u32>(sp + 12, 0);
+            let _ = loader.guest_write::<u32>(sp + 16, 0);
             regs.rip = wnd_proc as u64;
         }
         None => {
@@ -2201,7 +2268,7 @@ fn continue_owner_draw(
                 let block_at = (saved_rsp - 4) as u32 - room;
                 let block_len = block.len().min((room / 4) as usize) as u32;
                 for (i, w) in block.iter().take(block_len as usize).enumerate() {
-                    loader.guest_write::<u32>(block_at + 4 * i as u32, *w).expect("owner-draw stack OOB");
+                    let _ = loader.guest_write::<u32>(block_at + 4 * i as u32, *w);
                 }
                 let mp2 = if block_len > 0 { block_at } else { mp2 };
                 // WM_FORMATFRAME: mp2 → the client RECTL at the block's
@@ -2214,7 +2281,7 @@ fn continue_owner_draw(
                 // after it (block words 12 and 13).
                 if let OwnerCallKind::ContainerDrawItem { .. } = call.kind
                     && block_len >= 14 {
-                    loader.guest_write::<u32>(block_at + 44, block_at + 48).expect("owner-draw stack OOB");
+                    let _ = loader.guest_write::<u32>(block_at + 44, block_at + 48);
                 }
                 callback_stack.push(CallbackFrame {
                     saved_rip,
@@ -2225,7 +2292,7 @@ fn continue_owner_draw(
                 regs.rsp = (block_at - 20) as u64;
                 let sp = regs.rsp as u32;
                 for (o, v) in [(0, CALLBACK_RET_TRAP), (4, owner), (8, msg), (12, mp1), (16, mp2)] {
-                    loader.guest_write::<u32>(sp + o, v).expect("owner-draw stack OOB");
+                    let _ = loader.guest_write::<u32>(sp + o, v);
                 }
                 regs.rip = wnd_proc as u64;
                 vcpu.set_regs(&regs).unwrap();
@@ -2322,7 +2389,7 @@ fn continue_call_chain(
             // called it from where the chain began.
             let sp = saved_rsp as u32 - 12;
             for (i, v) in [saved_rip as u32, super::threads::EXIT_PROCESS, result].into_iter().enumerate() {
-                loader.guest_write::<u32>(sp + 4 * i as u32, v).expect("exit stack OOB");
+                let _ = loader.guest_write::<u32>(sp + 4 * i as u32, v);
             }
             regs.rip = MAGIC_API_BASE + super::pm_hook::ORD_DOS_EXIT as u64;
             regs.rsp = sp as u64;
@@ -2805,6 +2872,29 @@ mod tests {
             loader.guest_write::<u32>(STACK_TOP + 4 * i as u32, v).unwrap();
         }
         vcpu_at(MAGIC_API_BASE as u32 + DOS_EXIT, 0)
+    }
+
+    /// An API called with a stack pointer next to Warpine's protected
+    /// memory, where the host could not build its frames, ends the process
+    /// as a fault does, before the API runs, and never panics the host
+    /// (security audit 2026-11-25); frame_fits says so.
+    #[test]
+    fn an_api_call_without_room_below_the_stack_ends_the_process() {
+        use super::super::constants::DYNAMIC_ALLOC_BASE;
+        const DOS_EXIT: u32 = 234;
+        let loader = super::super::Loader::new_mock();
+        let esp = DYNAMIC_ALLOC_BASE + 8; // the paging arena ends just below
+        for (i, v) in [0x1234u32, 1, 42].into_iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 * i as u32, v).unwrap();
+        }
+        assert_eq!(frame_fits(&loader, u64::from(esp), MAX_HOST_FRAME_BYTES), None);
+        assert_eq!(frame_fits(&loader, u64::from(STACK_TOP), 20), Some(STACK_TOP - 20));
+        assert_eq!(frame_fits(&loader, 8, 20), None, "below address 0");
+        let mut vcpu = vcpu_at(MAGIC_API_BASE as u32 + DOS_EXIT, 0);
+        vcpu.regs.rsp = u64::from(esp);
+        loader.run_vcpu(vcpu, MAIN_VCPU_ID, 0);
+        assert!(loader.shutting_down());
+        assert_ne!(loader.shared.exit_code.load(Ordering::Relaxed), 42, "DosExit did not run");
     }
 
     fn start_thread(loader: &super::super::Loader, tid: u32) {

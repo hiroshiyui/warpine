@@ -408,9 +408,12 @@ impl super::Loader {
         self.shared.guest_mem.read_bytes(offset, len)
     }
 
-    /// Copy `len` bytes out of guest memory; `None` if out of bounds.
+    /// Copy `len` bytes out of guest memory; `None` if out of bounds, or in
+    /// Warpine's protected memory: API calls copy what they read back where
+    /// the guest can see it, and the guest cannot read that memory itself
+    /// (security audit 2026-11-25; the same as [`Self::guest_read_buffer`]).
     pub fn guest_read_bytes(&self, offset: u32, len: usize) -> Option<Vec<u8>> {
-        self.shared.guest_mem.read_bytes(offset, len)
+        self.guest_read_buffer(offset, len)
     }
 
     /// Write into Warpine's protected memory (descriptor tables, page
@@ -463,6 +466,9 @@ impl super::Loader {
         let max_len = MAX_GUEST_STRING_LEN.min(mem_size - base);
         let mut bytes = Vec::with_capacity(64);
         for i in 0..max_len {
+            // A string ends where Warpine's protected memory begins: the
+            // guest cannot read past it itself (security audit 2026-11-25).
+            if protected((base + i) as u32, 1) { break; }
             let byte = self.shared.guest_mem.read::<u8>((base + i) as u32).unwrap_or(0);
             if byte == 0 { break; }
             bytes.push(byte);
@@ -497,6 +503,23 @@ mod tests {
         assert!(!gm.arena_allows(A + 0x1FFE, 4, false), "straddling into a gap");
         gm.set_arena_holds(Vec::new());
         assert!(!gm.arena_allows(A + 4, 4, false), "let go");
+    }
+
+    /// Copies of guest-named memory do not reach Warpine's protected memory
+    /// (security audit 2026-11-25): a byte buffer there is refused, and a
+    /// string running into it ends there, while Warpine's own scalar reads
+    /// of it still work.
+    #[test]
+    fn copies_of_guest_memory_stop_at_protected_memory() {
+        use super::super::constants::SYSTEM_AREA_BASE;
+        use super::super::paging::PAGING_EXTRA_BASE as P; // protected from here up
+        let l = Loader::new_mock();
+        assert_eq!(l.guest_read_bytes(SYSTEM_AREA_BASE, 8), None, "the GDT");
+        assert_eq!(l.guest_read_bytes(P - 4, 8), None, "straddling into it");
+        assert!(l.guest_read_bytes(P - 8, 8).is_some(), "just below");
+        l.guest_write_bytes(P - 2, b"xy").unwrap();
+        assert_eq!(l.read_guest_string(P - 2), "xy", "ends where protected memory begins");
+        assert!(l.guest_read::<u64>(SYSTEM_AREA_BASE).is_some(), "Warpine's own reads");
     }
 
     /// A refresh that read the table before a change made under its lock

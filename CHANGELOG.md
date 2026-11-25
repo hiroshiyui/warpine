@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Changed
 - **A confined process runs with the GPU drivers' shader disk caches off** (ADR-0111 addendum): `ci/check_desktop.sh` with `strace` on a Wayland / PipeWire / NVIDIA desktop showed the driver trying its cache in the home directory, which the sandbox keeps out of reach on purpose. Warpine now runs itself again at its start with `__GL_SHADER_DISK_CACHE=0` and `MESA_SHADER_CACHE_DISABLE=true` when they are missing (unless `WARPINE_SANDBOX=off`), so the drivers stop trying. The script reports that cache and `/proc` thread naming as expected refusals.
 
+### Security
+- **The audit's remaining findings**: an API called with a stack pointer where the host cannot build its frames (next to Warpine's protected memory, in a shared block not held, or with an unreadable return address) now ends the process as a fault does, before the API runs, instead of a host panic at one of about a dozen places that built a frame there; exception dispatch with no room for the handler's call ends the process as an unhandled exception, and an unwind with no room for its next handler stops there. Byte copies of guest-named memory (`guest_read_bytes`, used by about a hundred calls) and guest strings no longer read Warpine's protected memory.
+
 ## [0.0.19] - 2026-11-25
 
 ### Added
