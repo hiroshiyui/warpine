@@ -1385,6 +1385,49 @@ fn test_sigterm_runs_the_exit_list() {
     assert_eq!(drive_c_file(data_home.path(), "KT_EXITLIST.OUT").as_deref(), Some("tc=3;"));
 }
 
+/// SIGTERM ends a process that waits for standard input nobody feeds
+/// (found by `ci/check_desktop.sh`): DosRead of a pipe left open polls in
+/// steps and sees the end, where a blocking read() kept the process alive
+/// past its forced end.
+#[test]
+fn test_sigterm_ends_a_process_waiting_for_standard_input() {
+    let sample = "samples/audio_test/audio_test.exe";
+    if !kvm_available() || !sample_exists(sample) { return; }
+    let data_home = tempfile::tempdir().expect("tempdir");
+    let out_path = data_home.path().join("out.txt");
+    let out = std::fs::File::create(&out_path).unwrap();
+    let mut child = Command::new(warpine())
+        .arg(sample_path(sample))
+        .env("WARPINE_HEADLESS", "1")
+        .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_STATE_HOME", data_home.path())
+        .env("XDG_RUNTIME_DIR", data_home.path())
+        .envs(PINNED_ENV.iter().copied())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::piped()).stdout(out).stderr(Stdio::null())
+        .spawn().expect("spawn warpine");
+    let _stdin_kept_open = child.stdin.take();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_to_string(&out_path).unwrap_or_default().contains("Press ENTER") {
+        if std::time::Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            panic!("audio_test never waited for input:\n{}", std::fs::read_to_string(&out_path).unwrap_or_default());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let sent = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap();
+    assert!(sent.success());
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if child.try_wait().unwrap().is_some() { break; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("SIGTERM did not end a process waiting for standard input");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Ctrl+\\ in piped keyboard input, a terminal's stand-in for Ctrl+Break,
 /// is XCPT_SIGNAL_BREAK for KbdCharIn, which returns the next key (ADR-0093).
 #[test]

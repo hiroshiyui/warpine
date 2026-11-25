@@ -316,6 +316,7 @@ impl super::Loader {
         }
         loop {
             if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
+            if !self.wait_fd_readable(libc::STDIN_FILENO) { return ERROR_INTERRUPT; }
             let mut buf = [0u8; 1];
             let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
             // Ctrl+C typed at a terminal is a signal, not input (piped
@@ -370,6 +371,10 @@ impl super::Loader {
         if self.guest_slice_mut(buf_ptr, buf.len()).is_none() { return ERROR_INVALID_PARAMETER; }
         loop {
             if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
+            // Wait in steps, so the end of the process (SIGTERM, a kill)
+            // interrupts a read nobody feeds: a blocking read() would keep
+            // the process alive past its end.
+            if !self.wait_fd_readable(libc::STDIN_FILENO) { return ERROR_INTERRUPT; }
             // SAFETY: reads at most `buf.len()` bytes into a buffer of that
             // size owned here; no guest memory is involved.
             let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
@@ -1118,9 +1123,14 @@ impl super::Loader {
     /// false when the wait gave up (the process ends, or `interrupt_restart`).
     pub(crate) fn wait_host_readable(&self, file: &std::fs::File) -> bool {
         use std::os::fd::AsRawFd;
+        self.wait_fd_readable(file.as_raw_fd())
+    }
+
+    /// [`Self::wait_host_readable`] for descriptor `fd` (standard input).
+    pub(crate) fn wait_fd_readable(&self, fd: std::os::fd::RawFd) -> bool {
         const READ_POLL_MS: i32 = 100;
         loop {
-            let mut p = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
             // SAFETY: `p` is one valid pollfd for the duration of the call.
             let n = unsafe { libc::poll(&mut p, 1, READ_POLL_MS) };
             let interrupted = n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
