@@ -81,6 +81,14 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 
 Features for people using Warpine day to day. Each PM program keeps drawing on Warpine's own desktop (ADR-0011); one host window per PM window is not planned.
 
+**Input methods** (the host's fcitx5 / IBus through SDL3: committed text already reaches `WM_CHAR` in each program's codepage, DBCS ones included, and the caret's area goes to `SDL_SetTextInputArea`)
+- [ ] **Inline preedit**: draw the text being composed (SDL's `TextEditing`, ignored today) at the caret, underlined with the input method's cursor, in entry fields, MLEs, combo boxes and VIO windows, through the desktop server too; a GUI-script test simulating composition.
+- [ ] **Per-control switching**: the input method on in text controls, off in password fields, other controls and programs reading raw keys (start and stop on focus changes).
+- [ ] **Candidate placement everywhere**: VIO windows, the out-of-process desktop server, scrolled controls, HiDPI, several monitors.
+- [ ] 🚧 **An input method API for programs**: query and switch the input mode, as OS/2's DBCS editions offered; public documentation first, otherwise Warpine's own calls in `WARPINE.DLL` (an ADR).
+- [ ] **Input methods as OS/2 programs** (optional, after the above): a framework for guest-side input method engines.
+
+**Host and session**
 - [ ] **Launching from the host**: a MIME type for LX executables, so the file manager starts them; optionally a `binfmt_misc` registration; `.desktop` menu entries with the program's icon taken from its LX resources.
 - [ ] **A configuration program**: a PM program for drive mappings, codepage and country, theme, sound, the desktop window size and per-application permissions, in place of environment variables and text files; needs an ADR for where the settings live.
 - [ ] **A crash dialog**: when a program traps, a dialog naming the program and the exception, with *Close*, *Show details* and the crash dump's path (`$XDG_STATE_HOME/warpine`).
