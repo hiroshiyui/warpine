@@ -50,24 +50,27 @@ $(OS2_LIBCXX): $(CXX_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-# The Workplace Shell classes: bindings from the IDL, then the library.
-WPS_IDL     = include/wpobject.idl
-WPS_HEADERS = $(OS2_BUILD)/include/wpobject.h
+# The Workplace Shell classes: each one's IDL in include/, its C in wps/;
+# usage bindings into $(OS2_BUILD)/include, implementation bindings into
+# $(OS2_BUILD)/wps, then the library.
+WPS_CLASSES = wpobject wpabstract
+WPS_IDLS    = $(WPS_CLASSES:%=include/%.idl) include/wptypes.idl $(wildcard include/som*.idl)
+WPS_HEADERS = $(WPS_CLASSES:%=$(OS2_BUILD)/include/%.h)
 WPS_CFLAGS  = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -Werror -I$(OS2_BUILD)/wps
 ifneq ($(wildcard $(SOMIDL)),)
 all: $(OS2_LIBWPS)
 endif
 wps: $(OS2_LIBWPS)
 
-$(WPS_HEADERS) $(OS2_BUILD)/wps/wpobject.ih &: $(WPS_IDL) include/wptypes.idl $(wildcard include/som*.idl) $(SOMIDL)
+$(OS2_BUILD)/include/%.h $(OS2_BUILD)/wps/%.ih &: include/%.idl $(WPS_IDLS) $(SOMIDL)
 	mkdir -p $(OS2_BUILD)/include $(OS2_BUILD)/wps
-	$(SOMIDL) -I include -s h -o $(OS2_BUILD)/include $(WPS_IDL)
-	$(SOMIDL) -I include -s ih -o $(OS2_BUILD)/wps $(WPS_IDL)
+	$(SOMIDL) -I include -s h -o $(OS2_BUILD)/include $<
+	$(SOMIDL) -I include -s ih -o $(OS2_BUILD)/wps $<
 
-$(OS2_BUILD)/wps/%.o: wps/%.c $(OS2_BUILD)/wps/%.ih $(WPS_HEADERS) $(HEADERS)
+$(OS2_BUILD)/wps/%.o: wps/%.c $(OS2_BUILD)/wps/%.ih $(WPS_HEADERS) wps/wpsint.h $(HEADERS)
 	$(CC) $(WPS_CFLAGS) -c $< -o $@
 
-$(OS2_LIBWPS): $(OS2_BUILD)/wps/wpobject.o
+$(OS2_LIBWPS): $(WPS_CLASSES:%=$(OS2_BUILD)/wps/%.o)
 	rm -f $@
 	$(AR) rcs $@ $^
 

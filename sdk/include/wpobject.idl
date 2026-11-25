@@ -7,7 +7,7 @@
 // Programming Reference* documents, with its signatures (OIDL call style:
 // no Environment); this is the first part of the class: setup, title,
 // style, default view, object ID, errors, memory, the save / restore
-// calls, deletion and locking. The release order, the constants' values
+// calls, deletion, locking, and handles (wpQueryHandle, wpclsQueryObject). The release order, the constants' values
 // and the instance data are Warpine's own (the Toolkit's wpobject.idl is
 // not used). The class is built into the SDK's libwps.a (sdk/wps/).
 //
@@ -117,6 +117,9 @@ interface WPObject : SOMObject
     BOOL wpUnlockObject();
     BOOL wpIsLocked();
     WPFolder wpQueryFolder();
+    HOBJECT wpQueryHandle();
+    // The object's persistent handle: NULLHANDLE for a class without
+    // storage; WPAbstract gives its own.
 
 #ifdef __SOMIDL__
     implementation {
@@ -128,7 +131,7 @@ interface WPObject : SOMObject
                       wpSaveLong, wpRestoreLong, wpSaveData, wpRestoreData,
                       wpSaveImmediate, wpSaveDeferred, wpFree, wpDelete, wpConfirmDelete,
                       wpIsObjectInitialized, wpLockObject, wpUnlockObject, wpIsLocked,
-                      wpQueryFolder;
+                      wpQueryFolder, wpQueryHandle;
         callstyle = oidl;
         filestem = wpobject;
         functionprefix = wpobj_;
@@ -167,11 +170,15 @@ interface M_WPObject : SOMClass
     // Called when the class object is made; an override calls its parent
     // first.
     void wpclsUnInitData();
+    WPObject wpclsQueryObject(in HOBJECT hObject);
+    // The object a handle names: an awake one, else a stored one (a
+    // WPAbstract's) awakened from the user profile; NULL when there is
+    // none or its class is not registered.
 
 #ifdef __SOMIDL__
     implementation {
         releaseorder: wpclsNew, wpclsQueryTitle, wpclsQueryStyle, wpclsQueryDefaultView,
-                      wpclsInitData, wpclsUnInitData;
+                      wpclsInitData, wpclsUnInitData, wpclsQueryObject;
         callstyle = oidl;
         filestem = wpobject;
         functionprefix = wpobjM_;

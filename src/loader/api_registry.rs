@@ -1401,11 +1401,13 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: REXXAPI_BASE + 28, module: "REXXAPI", name: "RexxSaveMacroSpace", argc: 3,
                handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxSaveMacroSpace")) },
 
-    // ── PMWP — the Workplace Shell (window positions only; pm_winutil.rs) ──
+    // ── PMWP — the Workplace Shell (window positions, object IDs; pm_winutil.rs) ──
     ApiEntry { ordinal: PMWP_BASE + 207, module: "PMWP", name: "WinStoreWindowPos", argc: 3,
                handler: |l,_v,i,a| ApiResult::Normal(l.win_store_window_pos(i,a[0],a[1],a[2])) },
     ApiEntry { ordinal: PMWP_BASE + 208, module: "PMWP", name: "WinRestoreWindowPos", argc: 3,
                handler: |l,_v,i,a| ApiResult::Normal(l.win_restore_window_pos(i,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: PMWP_BASE + 252, module: "PMWP", name: "WinQueryObject", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.win_query_object(a[0])) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────

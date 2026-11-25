@@ -2607,7 +2607,9 @@ fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
 /// wps_object_test (ADR-0129): the SDK's WPObject (libwps, built with
 /// somidl) under a class of the program's own, built by GCC and clang:
 /// wpclsNew with a setup string, class and object initialization, titles,
-/// styles, object IDs, save / restore, wpAllocMem, wpDelete.
+/// styles, object IDs, save / restore, wpAllocMem, wpDelete; WPAbstract in
+/// the user profile (handles, WinQueryObject, awakening), and an object
+/// stored by one process ("save") and found by the next ("load").
 #[test]
 fn wps_object_classes_built_by_gcc_and_clang_run() {
     if !kvm_available() || Command::new("make").arg("--version").output().is_err() { return; }
@@ -2635,8 +2637,23 @@ fn wps_object_classes_built_by_gcc_and_clang_run() {
             .output().expect("run warpine");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
-        assert!(text.contains("wps_object_test: done 31/31"), "{compiler}:\n{text}");
+        assert!(text.contains("wps_object_test: done 41/41"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
+        // One process stores an object, the next finds it by its ID.
+        for (mode, want) in [("save", "done 1/1"), ("load", "done 3/3")] {
+            let out = Command::new("timeout").arg("30").arg(warpine()).arg(dir.path().join("wps_object_test.exe")).arg(mode)
+                .env("WARPINE_HEADLESS", "1")
+                .env("XDG_DATA_HOME", dir.path())
+                .env("XDG_STATE_HOME", dir.path())
+                .env("XDG_RUNTIME_DIR", dir.path())
+                .envs(PINNED_ENV.iter().copied())
+                .env("RUST_LOG", "error")
+                .stdin(Stdio::null())
+                .output().expect("run warpine");
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(!text.contains("FAIL") && text.contains(want), "{compiler} {mode}:\n{text}");
+            assert_eq!(out.status.code(), Some(0), "{compiler} {mode}:\n{text}");
+        }
     }
 }
 

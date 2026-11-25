@@ -949,7 +949,9 @@ Not yet available: SOM objects on the stack in C++, the initializer control bloc
 
 **Others.** `RexxSetHalt(pid, tid)` halts the programs a thread of this process runs (HALT). `RexxSetTrace` / `RexxResetTrace` turn tracing to `?R` / `O`.
 
-### PMWP — the Workplace Shell (2 APIs, ADR-0086)
+### PMWP — the Workplace Shell (3 APIs, ADR-0086, ADR-0129)
+
+WinQueryObject (252): the handle of the stored Workplace object an object ID (`"<NAME>"`) names, from the user profile where the SDK's `WPAbstract` maps it; NULLHANDLE when it names none or the object is no longer stored (a file-system path names no object yet).
 
 WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size and state (and a frame's normal and icon positions) are kept in the user profile under an application and key name, in Warpine's own record. Restoring a minimized or maximized frame sets its normal position, then the state. Presentation parameters are not kept. The rest of PMWP (Workplace Shell objects) is not built in.
 
@@ -960,6 +962,9 @@ WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size an
 - `wpAllocMem` / `wpFreeMem`: blocks freed with the object at the latest.
 - `wpSaveString` / `wpSaveLong` / `wpSaveData` keep a value with the object by class name and key; `wpRestoreString` / `Long` / `Data` give it back (a NULL buffer the size; a buffer too small FALSE). `wpSaveImmediate` and `wpSaveDeferred` call `wpSaveState`; `WPObject`'s own `wpSaveState` / `wpRestoreState` keep nothing yet. Nothing reaches OS2.INI yet.
 - `wpDelete(obj, flags)`: `wpConfirmDelete` (`NO_DELETE` for `OBJSTYLE_NODELETE`; no dialog), then `wpFree`, which frees the object.
+- `WPObject`'s `wpSaveState` keeps its title, style, default view and object ID; its setters call `wpSaveDeferred` once the object is initialized.
+- **`WPAbstract`** (`<wpabstract.h>`, `wpabstract.idl`): its objects are kept in the user profile — written when `wpclsNew` has made them and at every `wpSaveImmediate` / `wpSaveDeferred`, removed by `wpFree` (`somFree` makes one dormant and keeps it). `wpQueryHandle` gives the handle (NULLHANDLE for an object without storage); an object ID names one object (`wpSetObjectID` refuses one another stored object has). `wpclsQueryObject(cls, handle)` gives the awake object, or awakens the stored one (its class must be registered: make it first) with `wpRestoreState`.
+- Make a class (`<Class>NewClass`, or `_Class` alone) before calling its class methods: `_wpclsNew( _Card, … )` may read the method's token before `_Card` makes the class.
 
 ### WARPINE — Warpine's own extensions (9 APIs)
 
@@ -1216,7 +1221,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 596 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 597 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1240,10 +1245,10 @@ Counts are taken from the static registry (`api_registry.rs`, 596 entries) and t
 | SOM (the SOM runtime kernel) | registry | 179 | 3 | 182 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
-| PMWP (window positions) | registry | 2 | 0 | 2 |
+| PMWP (window positions, object IDs) | registry | 3 | 0 | 3 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **1015** | **19** | **1034** |
+| **Total** | | **1016** | **19** | **1035** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

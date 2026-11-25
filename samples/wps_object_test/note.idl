@@ -4,8 +4,9 @@
 // Note, derived from WPObject, with its own metaclass M_Note. It adds a
 // TEXT setup key, saves and restores its text, counts its
 // initializations, and gives its class a title, a style and a class
-// initializer of its own.
-#include <wpobject.idl>
+// initializer of its own; and Card, kept in the user profile by
+// WPAbstract, with a TEXT key and its text saved and restored.
+#include <wpabstract.idl>
 
 interface M_Note;
 
@@ -38,6 +39,23 @@ interface M_Note : M_WPObject
         wpclsQueryTitle: override;
         wpclsQueryStyle: override;
         wpclsInitData: override;
+    };
+#endif
+};
+
+interface Card : WPAbstract
+{
+    PSZ cardText();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: cardText;
+        callstyle = oidl;
+        functionprefix = card_;
+        PSZ text;
+        wpSetup: override;
+        wpSaveState: override;
+        wpRestoreState: override;
     };
 #endif
 };

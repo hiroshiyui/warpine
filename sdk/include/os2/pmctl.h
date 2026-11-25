@@ -1347,6 +1347,12 @@ ULONG   APIENTRY WinCpTranslateChar(HAB hab, ULONG cpSrc, UCHAR chSrc, ULONG cpD
 BOOL    APIENTRY WinStoreWindowPos(PCSZ pszAppName, PCSZ pszKeyName, HWND hwnd);
 BOOL    APIENTRY WinRestoreWindowPos(PCSZ pszAppName, PCSZ pszKeyName, HWND hwnd);
 
+/* Workplace Shell objects (PMWP; ADR-0129): a handle names a stored
+ * object; WinQueryObject finds the one an object ID ("<NAME>") names,
+ * NULLHANDLE when none does. */
+typedef LHANDLE HOBJECT;
+HOBJECT APIENTRY WinQueryObject(PCSZ pszObjectID);
+
 #pragma pack(pop)
 
 #endif /* WARPINE_OS2_PMCTL_H */

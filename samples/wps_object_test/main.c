@@ -13,7 +13,13 @@
  *   - wpAllocMem / wpFreeMem;
  *   - wpDelete refused for OBJSTYLE_NODELETE, then done (wpUnInitData);
  *   - an object made by somNew: initialized the same way, the class's
- *     default view.
+ *     default view;
+ *   - WPAbstract (Card): stored at once with a handle WinQueryObject finds
+ *     by its object ID, which no second object may take; a change saved
+ *     by itself; made dormant (somFree) and awakened by wpclsQueryObject
+ *     with its title, text and ID; wpFree removes it.
+ * "save" stores a Card and ends; a later "load" (another process) finds it
+ * by its ID, awakens it, checks it and frees it.
  * Each check is written as "wps_object_test: <name>: ok" or "... FAIL",
  * then "wps_object_test: done <passed>/<total>".
  */
@@ -25,6 +31,9 @@
 
 extern int note_inits, note_uninits, note_class_inits;
 
+#define CARD_ID   "<WP_CARD_T>"
+#define STORED_ID "<WP_CARD_P>"
+
 static int passed, total;
 
 static void check( const char *name, int ok )
@@ -34,13 +43,77 @@ static void check( const char *name, int ok )
     printf( "wps_object_test: %s: %s\n", name, ok ? "ok" : "FAIL" );
 }
 
-int main( void )
+/* WPAbstract within this process. */
+static void abstract_checks( void )
+{
+    Card    *card, *again;
+    HOBJECT  h;
+
+    card = (Card *)_wpclsNew( _Card, "Recipe", "OBJECTID=" CARD_ID ";TEXT=flour", NULL, FALSE );
+    h = card ? _wpQueryHandle( card ) : NULLHANDLE;
+    check( "WPAbstract: stored at once, with a handle", card && h != NULLHANDLE );
+    if( !card ) return;
+    check( "WinQueryObject: the handle by the object ID", WinQueryObject( CARD_ID ) == h );
+    check( "wpQueryHandle: none for an object without storage", _wpQueryHandle( NoteNew() ) == NULLHANDLE );
+    check( "WPAbstract: a second object may not take the ID",
+           _wpclsNew( _Card, "Copy", "OBJECTID=" CARD_ID, NULL, FALSE ) == NULL );
+    check( "wpclsQueryObject: the awake object", _wpclsQueryObject( _WPObject, h ) == card );
+    /* A change is saved by itself; a dormant object comes back from the
+     * user profile. */
+    _wpSetTitle( card, "Pancakes" );
+    _somFree( card );
+    again = (Card *)_wpclsQueryObject( _WPObject, h );
+    check( "wpclsQueryObject: awakened from the user profile",
+           again && _somIsA( again, _Card ) && _wpQueryHandle( again ) == h && _wpIsObjectInitialized( again ) );
+    if( !again ) return;
+    check( "wpRestoreState: the title changed before", strcmp( _wpQueryTitle( again ), "Pancakes" ) == 0 );
+    check( "wpRestoreState: the class's own text", strcmp( _cardText( again ), "flour" ) == 0 );
+    check( "wpRestoreState: the object ID",
+           _wpQueryObjectID( again ) && strcmp( _wpQueryObjectID( again ), CARD_ID ) == 0 );
+    _wpFree( again );
+    check( "wpFree: no longer stored",
+           WinQueryObject( CARD_ID ) == NULLHANDLE && _wpclsQueryObject( _WPObject, h ) == NULL );
+}
+
+/* "save": a Card stored for a later process. */
+static int save_mode( void )
+{
+    Card *card = (Card *)_wpclsNew( _Card, "Kept", "OBJECTID=" STORED_ID ";TEXT=from another process", NULL, FALSE );
+    check( "save: stored", card && WinQueryObject( STORED_ID ) == _wpQueryHandle( card ) );
+    printf( "wps_object_test: done %d/%d\n", passed, total );
+    return( passed == total ? 0 : 1 );
+}
+
+/* "load": the Card another process stored. */
+static int load_mode( void )
+{
+    HOBJECT h;
+    Card   *card;
+    h = WinQueryObject( STORED_ID );
+    check( "load: WinQueryObject finds the stored object", h != NULLHANDLE );
+    card = (Card *)_wpclsQueryObject( _WPObject, h );
+    check( "load: awakened, its title and text", card && strcmp( _wpQueryTitle( card ), "Kept" ) == 0
+           && strcmp( _cardText( card ), "from another process" ) == 0 );
+    if( card ) _wpFree( card );
+    check( "load: wpFree removed it", WinQueryObject( STORED_ID ) == NULLHANDLE );
+    printf( "wps_object_test: done %d/%d\n", passed, total );
+    return( passed == total ? 0 : 1 );
+}
+
+int main( int argc, char **argv )
 {
     Note  *note, *plain;
     char   buf[300];
     ULONG  cb, value, rc;
     PBYTE  mem;
 
+    /* The classes first: a class method's token is read from its
+     * introducer's ClassData, which the class's making fills (C leaves the
+     * order of _wpclsNew( _Card, ... )'s parts open). */
+    NoteNewClass( Note_MajorVersion, Note_MinorVersion );
+    CardNewClass( Card_MajorVersion, Card_MinorVersion );
+    if( argc > 1 && strcmp( argv[1], "save" ) == 0 ) return( save_mode() );
+    if( argc > 1 && strcmp( argv[1], "load" ) == 0 ) return( load_mode() );
     check( "wpclsNew: no object of WPObject itself",
            _wpclsNew( _WPObject, "x", "", NULL, FALSE ) == NULL );
 
@@ -105,6 +178,8 @@ int main( void )
     check( "wpQueryStyle: the class's style", _wpQueryStyle( plain ) == OBJSTYLE_NOPRINT );
     check( "wpQueryTitle: empty before a title is set", strcmp( _wpQueryTitle( plain ), "" ) == 0 );
     check( "wpFree: wpUnInitData ran", _wpFree( plain ) && note_uninits == 2 );
+
+    abstract_checks();
 
     printf( "wps_object_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );

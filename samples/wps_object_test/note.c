@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * note.c - Note and M_Note (note.idl): a WPObject subclass as a program
- * writes one, through somidl's bindings and the SDK's libwps (ADR-0129).
+ * writes one, through somidl's bindings and the SDK's libwps (ADR-0129);
+ * and Card, a WPAbstract kept in the user profile.
  */
 #define INCL_WINWORKPLACE
 #include <os2.h>
@@ -84,4 +85,47 @@ SOM_Scope void SOMLINK noteM_wpclsInitData( M_Note *somSelf )
 {
     M_Note_parent_M_WPObject_wpclsInitData( somSelf );
     note_class_inits++;
+}
+
+/* ---- Card: its text in the user profile with the object ---- */
+
+#define CARD_KEY_TEXT 1
+
+static void card_set_text( Card *somSelf, const char *text )
+{
+    CardData *somThis = CardGetData( somSelf );
+    if( _text ) _wpFreeMem( somSelf, (PBYTE)_text );
+    _text = (PSZ)_wpAllocMem( somSelf, strlen( text ) + 1, NULL );
+    if( _text ) strcpy( _text, text );
+}
+
+SOM_Scope PSZ SOMLINK card_cardText( Card *somSelf )
+{
+    CardData *somThis = CardGetData( somSelf );
+    return( _text ? _text : (PSZ)"" );
+}
+
+SOM_Scope BOOL SOMLINK card_wpSetup( Card *somSelf, PSZ pszSetupString )
+{
+    char  text[128];
+    ULONG cb = sizeof( text );
+    if( !Card_parent_WPAbstract_wpSetup( somSelf, pszSetupString ) ) return( FALSE );
+    if( _wpScanSetupString( somSelf, pszSetupString, "TEXT", text, &cb ) ) card_set_text( somSelf, text );
+    return( TRUE );
+}
+
+SOM_Scope BOOL SOMLINK card_wpSaveState( Card *somSelf )
+{
+    CardData *somThis = CardGetData( somSelf );
+    return( Card_parent_WPAbstract_wpSaveState( somSelf )
+            && _wpSaveString( somSelf, "Card", CARD_KEY_TEXT, _text ? _text : (PSZ)"" ) );
+}
+
+SOM_Scope BOOL SOMLINK card_wpRestoreState( Card *somSelf, ULONG ulReserved )
+{
+    char  text[128];
+    ULONG cb = sizeof( text );
+    if( !Card_parent_WPAbstract_wpRestoreState( somSelf, ulReserved ) ) return( FALSE );
+    if( _wpRestoreString( somSelf, "Card", CARD_KEY_TEXT, text, &cb ) ) card_set_text( somSelf, text );
+    return( TRUE );
 }

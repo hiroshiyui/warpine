@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wpabstract.idl - WPAbstract, the storage class of objects kept in the
+// user profile (OS2.INI), and its metaclass M_WPAbstract (ADR-0129)
+//
+// The Workplace Shell Programming Reference describes WPAbstract as the
+// storage class of objects that live in OS2.INI rather than in files;
+// the record format is Warpine's own (sdk/wps/wpsint.h). A new object is
+// written when wpclsNew has made it, and again whenever wpSaveImmediate
+// or wpSaveDeferred runs (WPObject's setters call it); wpFree removes it,
+// while an object only freed (somFree, made dormant) stays stored and
+// wpclsQueryObject awakens it by its handle. An object ID names one
+// object: WinQueryObject finds its handle.
+#ifndef wpabstract_idl
+#define wpabstract_idl
+
+#include <wpobject.idl>
+
+interface M_WPAbstract;
+
+interface WPAbstract : WPObject
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        filestem = wpabstract;
+        functionprefix = wpab_;
+        metaclass = M_WPAbstract;
+        majorversion = 1;
+        minorversion = 2;
+        HOBJECT handle;
+        PSZ storedID;
+        wpUnInitData: override;
+        wpSaveImmediate: override;
+        wpFree: override;
+        wpQueryHandle: override;
+        wpSetObjectID: override;
+    };
+#endif
+};
+
+interface M_WPAbstract : M_WPObject
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        filestem = wpabstract;
+        functionprefix = wpabM_;
+        majorversion = 1;
+        minorversion = 2;
+        wpclsNew: override;
+    };
+#endif
+};
+
+#endif

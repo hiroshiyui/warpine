@@ -15,5 +15,6 @@ typedef unsigned long PSZ;
 typedef unsigned long PULONG;
 typedef unsigned long PBYTE;
 typedef unsigned long PVOID;
+typedef unsigned long HOBJECT;
 
 #endif

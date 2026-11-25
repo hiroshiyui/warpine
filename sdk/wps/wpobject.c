@@ -9,8 +9,12 @@
  *   initializer protocol, so each runs once whichever class's somNew made
  *   it.
  * - wpSaveString / Long / Data keep what they are given with the object,
- *   by class name and key, for wpRestoreString / Long / Data; writing it
- *   to OS2.INI belongs to the storage classes (WPAbstract), still to come.
+ *   by class name and key, for wpRestoreString / Long / Data; a storage
+ *   class (WPAbstract) writes them to the user profile. WPObject's own
+ *   wpSaveState saves its title, style, default view and object ID; its
+ *   setters call wpSaveDeferred once the object is initialized.
+ * - The awake objects with a handle are listed (wpsint.h), for
+ *   wpclsQueryObject.
  * - wpAllocMem's blocks are listed with the object and freed with it.
  * - wpDelete asks wpConfirmDelete, which refuses for OBJSTYLE_NODELETE;
  *   there is no confirmation dialog yet.
@@ -19,6 +23,7 @@
 #include <os2.h>
 #include <string.h>
 #include "wpobject.ih"
+#include "wpsint.h"
 
 /* What wpSave* kept: a list per object. */
 typedef struct WrpWpSaved {
@@ -40,6 +45,18 @@ typedef struct WrpWpMem {
 
 /* The longest value wpSetup reads for one of WPObject's keys. */
 #define SETUP_VALUE_MAX 260
+
+/* WPObject's own saved values (wpSaveState): class "WPObject", these keys. */
+#define WPOBJ_CLASS        "WPObject"
+#define WPOBJ_KEY_TITLE    1
+#define WPOBJ_KEY_STYLE    2
+#define WPOBJ_KEY_VIEW     3
+#define WPOBJ_KEY_OBJECTID 4
+
+/* A change worth saving: once the object is initialized (not while it is
+ * set up or restored). */
+#define CHANGED( somSelf ) \
+    do { if( WPObjectGetData( somSelf )->initialized ) _wpSaveDeferred( somSelf ); } while( 0 )
 
 static int same_key( const char *a, const char *b, size_t n )
 {
@@ -163,6 +180,7 @@ SOM_Scope void SOMLINK wpobj_wpUnInitData( WPObject *somSelf )
     while( s ) { WrpWpSaved *next = s->next; SOMFree( s->cls ); SOMFree( s ); s = next; }
     while( m ) { WrpWpMem *next = m->next; SOMFree( m ); m = next; }
     _saved = _memory = 0;
+    wrp_wps_unregister( somSelf );
     if( _title ) SOMFree( _title );
     if( _objectID ) SOMFree( _objectID );
     _title = _objectID = 0;
@@ -176,6 +194,7 @@ SOM_Scope BOOL SOMLINK wpobj_wpSetTitle( WPObject *somSelf, PSZ pszNewTitle )
     if( !( copy = copy_string( pszNewTitle ) ) ) return( FALSE );
     if( _title ) SOMFree( _title );
     _title = copy;
+    CHANGED( somSelf );
     return( TRUE );
 }
 
@@ -189,6 +208,7 @@ SOM_Scope BOOL SOMLINK wpobj_wpSetStyle( WPObject *somSelf, ULONG ulNewStyle )
 {
     WPObjectData *somThis = WPObjectGetData( somSelf );
     _style = ulNewStyle;
+    CHANGED( somSelf );
     return( TRUE );
 }
 
@@ -201,6 +221,7 @@ SOM_Scope BOOL SOMLINK wpobj_wpSetDefaultView( WPObject *somSelf, ULONG ulView )
 {
     WPObjectData *somThis = WPObjectGetData( somSelf );
     _defaultView = ulView;
+    CHANGED( somSelf );
     return( TRUE );
 }
 
@@ -222,6 +243,7 @@ SOM_Scope BOOL SOMLINK wpobj_wpSetObjectID( WPObject *somSelf, PSZ pszObjectID )
     if( !( copy = copy_string( pszObjectID ) ) ) return( FALSE );
     if( _objectID ) SOMFree( _objectID );
     _objectID = copy;
+    CHANGED( somSelf );
     return( TRUE );
 }
 
@@ -357,18 +379,93 @@ SOM_Scope BOOL SOMLINK wpobj_wpRestoreData( WPObject *somSelf, PSZ pszClass, ULO
     return( restore( saved( somSelf, pszClass, ulKey, SAVED_DATA ), pValue, pcbValue ) );
 }
 
-/* WPObject itself keeps nothing yet: a storage class saves its state. */
+/* WPObject's own state: title, style, default view and object ID. */
 SOM_Scope BOOL SOMLINK wpobj_wpSaveState( WPObject *somSelf )
 {
-    (void)somSelf;
+    WPObjectData *somThis = WPObjectGetData( somSelf );
+    BOOL          ok = _wpSaveString( somSelf, WPOBJ_CLASS, WPOBJ_KEY_TITLE, _title ? _title : (PSZ)"" )
+                       && _wpSaveLong( somSelf, WPOBJ_CLASS, WPOBJ_KEY_STYLE, _style )
+                       && _wpSaveLong( somSelf, WPOBJ_CLASS, WPOBJ_KEY_VIEW, _defaultView );
+    if( ok && _objectID ) ok = _wpSaveString( somSelf, WPOBJ_CLASS, WPOBJ_KEY_OBJECTID, _objectID );
+    return( ok );
+}
+
+/* What wpSaveState kept, back through the setters (which save nothing
+ * meanwhile: the values are the saved ones); a value not there is left as
+ * it is. */
+SOM_Scope BOOL SOMLINK wpobj_wpRestoreState( WPObject *somSelf, ULONG ulReserved )
+{
+    WPObjectData *somThis = WPObjectGetData( somSelf );
+    BOOL          was = _initialized;
+    char          text[WP_MAX_TITLE];
+    ULONG         cb, value;
+    (void)ulReserved;
+    _initialized = FALSE;
+    cb = sizeof( text );
+    if( _wpRestoreString( somSelf, WPOBJ_CLASS, WPOBJ_KEY_TITLE, text, &cb ) ) _wpSetTitle( somSelf, text );
+    if( _wpRestoreLong( somSelf, WPOBJ_CLASS, WPOBJ_KEY_STYLE, &value ) ) _wpSetStyle( somSelf, value );
+    if( _wpRestoreLong( somSelf, WPOBJ_CLASS, WPOBJ_KEY_VIEW, &value ) ) _wpSetDefaultView( somSelf, value );
+    cb = sizeof( text );
+    if( _wpRestoreString( somSelf, WPOBJ_CLASS, WPOBJ_KEY_OBJECTID, text, &cb ) ) _wpSetObjectID( somSelf, text );
+    _initialized = was;
     return( TRUE );
 }
 
-SOM_Scope BOOL SOMLINK wpobj_wpRestoreState( WPObject *somSelf, ULONG ulReserved )
+/* ---- The saved values as a record's part ----
+ * count, then for each: class name length, the name, key, kind, size,
+ * the data (every number four bytes, little-endian as the machine). */
+
+static unsigned char *put_word( unsigned char *p, ULONG v ) { memcpy( p, &v, 4 ); return( p + 4 ); }
+
+ULONG wrp_wps_store_write( WPObject *obj, unsigned char *buf, ULONG cap )
 {
-    (void)somSelf;
-    (void)ulReserved;
+    WrpWpSaved *s;
+    ULONG       need = 4, count = 0;
+    for( s = (WrpWpSaved *)WPObjectGetData( obj )->saved; s; s = s->next ) {
+        need += 4 + (ULONG)strlen( s->cls ) + 12 + s->size;
+        count++;
+    }
+    if( buf && cap >= need ) {
+        unsigned char *p = put_word( buf, count );
+        for( s = (WrpWpSaved *)WPObjectGetData( obj )->saved; s; s = s->next ) {
+            ULONG n = (ULONG)strlen( s->cls );
+            p = put_word( p, n );
+            memcpy( p, s->cls, n );
+            p = put_word( put_word( put_word( p + n, s->key ), s->kind ), s->size );
+            memcpy( p, s->data, s->size );
+            p += s->size;
+        }
+    }
+    return( need );
+}
+
+static BOOL get_word( const unsigned char **p, const unsigned char *end, ULONG *v )
+{
+    if( end - *p < 4 ) return( FALSE );
+    memcpy( v, *p, 4 );
+    *p += 4;
     return( TRUE );
+}
+
+BOOL wrp_wps_store_read( WPObject *obj, const unsigned char *buf, ULONG len )
+{
+    const unsigned char *p = buf, *end = buf + len;
+    ULONG                count, i;
+    char                 cls[WP_MAX_TITLE];
+    if( !get_word( &p, end, &count ) ) return( FALSE );
+    for( i = 0; i < count; i++ ) {
+        ULONG n, key, kind, size;
+        if( !get_word( &p, end, &n ) || n >= sizeof( cls ) || (ULONG)( end - p ) < n ) return( FALSE );
+        memcpy( cls, p, n );
+        cls[n] = '\0';
+        p += n;
+        if( !get_word( &p, end, &key ) || !get_word( &p, end, &kind ) || !get_word( &p, end, &size ) ) return( FALSE );
+        if( (ULONG)( end - p ) < size || kind < SAVED_STRING || kind > SAVED_DATA ) return( FALSE );
+        if( kind == SAVED_STRING && ( size == 0 || p[size - 1] != '\0' ) ) return( FALSE );
+        if( !save( obj, cls, key, kind, p, size ) ) return( FALSE );
+        p += size;
+    }
+    return( p == end );
 }
 
 SOM_Scope BOOL SOMLINK wpobj_wpSaveImmediate( WPObject *somSelf )
@@ -431,6 +528,63 @@ SOM_Scope WPFolder *SOMLINK wpobj_wpQueryFolder( WPObject *somSelf )
     return( WPObjectGetData( somSelf )->folder );
 }
 
+void wrp_wps_set_initialized( WPObject *obj )
+{
+    WPObjectGetData( obj )->initialized = TRUE;
+}
+
+/* No storage, no handle. */
+SOM_Scope HOBJECT SOMLINK wpobj_wpQueryHandle( WPObject *somSelf )
+{
+    (void)somSelf;
+    return( NULLHANDLE );
+}
+
+/* ---- The awake objects with a handle ----
+ * A list per process (Warpine's Workplace classes are not used from
+ * several threads at once yet). */
+
+typedef struct WrpWpAwake {
+    struct WrpWpAwake *next;
+    HOBJECT            handle;
+    WPObject          *obj;
+} WrpWpAwake;
+
+static WrpWpAwake *awake;
+
+BOOL wrp_wps_register( HOBJECT h, WPObject *obj )
+{
+    WrpWpAwake *a;
+    if( !h || wrp_wps_lookup( h ) ) return( FALSE );
+    if( !( a = (WrpWpAwake *)SOMMalloc( sizeof( *a ) ) ) ) return( FALSE );
+    a->handle = h;
+    a->obj = obj;
+    a->next = awake;
+    awake = a;
+    return( TRUE );
+}
+
+void wrp_wps_unregister( WPObject *obj )
+{
+    WrpWpAwake **link = &awake;
+    while( *link ) {
+        if( ( *link )->obj == obj ) {
+            WrpWpAwake *a = *link;
+            *link = a->next;
+            SOMFree( a );
+        } else {
+            link = &( *link )->next;
+        }
+    }
+}
+
+WPObject *wrp_wps_lookup( HOBJECT h )
+{
+    WrpWpAwake *a;
+    for( a = awake; a; a = a->next ) if( a->handle == h ) return( a->obj );
+    return( 0 );
+}
+
 SOM_Scope void SOMLINK wpobj_somDefaultInit( WPObject *somSelf, somInitCtrl *ctrl )
 {
     SOM_InitBegin( ctrl, _WPObject );
@@ -490,6 +644,15 @@ SOM_Scope void SOMLINK wpobjM_wpclsInitData( M_WPObject *somSelf )
 SOM_Scope void SOMLINK wpobjM_wpclsUnInitData( M_WPObject *somSelf )
 {
     (void)somSelf;
+}
+
+SOM_Scope WPObject *SOMLINK wpobjM_wpclsQueryObject( M_WPObject *somSelf, HOBJECT hObject )
+{
+    WPObject *obj;
+    (void)somSelf;
+    if( !hObject ) return( 0 );
+    obj = wrp_wps_lookup( hObject );
+    return( obj ? obj : wrp_wps_awaken( hObject ) );
 }
 
 SOM_Scope void SOMLINK wpobjM_somDefaultInit( M_WPObject *somSelf, somInitCtrl *ctrl )

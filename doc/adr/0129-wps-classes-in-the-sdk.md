@@ -82,3 +82,32 @@ The following are Warpine's own choices, not verified against IBM's Workplace Sh
 - `wpDelete` without a dialog;
 - `wpclsInitData` called from `M_WPObject`'s `somDefaultInit`;
 - `somBuildClass` initializing the class object after building it.
+
+## Addendum (2026-11-25): WPAbstract and the user profile
+
+- **`WPAbstract` / `M_WPAbstract`** (`sdk/include/wpabstract.idl`, `sdk/wps/wpabstract.c`) store their objects in the user profile (OS2.INI) through `PrfWriteProfileData`. The Reference describes `WPAbstract` as the storage class for such objects but does not give its format, so the format is Warpine's own:
+  - application `WrpWPS:Objects` holds the records, each under its handle as eight hex digits;
+  - a record is a magic number, a version, the class name and the object's saved values (`wpSaveString` / `Long` / `Data`), one class name, key, kind and data after another;
+  - application `WrpWPS:ObjectIDs` maps an object ID to its handle;
+  - `WrpWPS:Handles` / `Next` holds the next handle to give, from `0x00020001`;
+  - `sdk/wps/wpsint.h` and `pm_winutil.rs` name these the same.
+- **Lifetime of a stored object:**
+  - it is written when `wpclsNew` has made it, and again whenever `wpSaveImmediate` runs;
+  - `WPObject`'s setters (`wpSetTitle`, `wpSetStyle`, `wpSetDefaultView`, `wpSetObjectID`) call `wpSaveDeferred` once the object is initialized, as the Reference says;
+  - `wpFree` removes the record and its ID, while `somFree` only makes the object dormant.
+  - An object ID names one stored object: `wpSetObjectID` refuses an ID that another stored object has, so `wpclsNew` with such an ID returns NULL.
+- **`WPObject`'s own state:** its `wpSaveState` saves its title, style, default view and object ID (class `WPObject`, keys 1–4). Its `wpRestoreState` restores them through the setters, which save nothing while it does.
+- **Handles:**
+  - `wpQueryHandle` gives a stored object's handle; an object without storage has none.
+  - `M_WPObject::wpclsQueryObject(handle)` gives the awake object first (a list per process), else it wakes the stored one: it finds its class by name, which must be registered and descend from `WPAbstract`; makes the object; puts its saved values back; then calls `wpRestoreState`.
+  - `WinQueryObject(id)` (PMWP 252, Open Watcom's ordinal) is a host call. It reads the ID map and returns the handle while the record exists, else NULLHANDLE.
+- **Method order in C:** a program makes its classes (`<Class>NewClass`) before it calls a class method such as `_wpclsNew( _Card, … )`. C leaves open whether the method's token or the class object is read first, and the token is 0 until the class exists.
+
+The following are Warpine's own choices, not verified against IBM's Workplace Shell:
+- the record format, application names and handle numbering;
+- the ID rule;
+- saving on every change at once (there is no background saver);
+- the restore not saving;
+- awakening only registered classes;
+- the dormant/free split (`somFree` keeps the record, `wpFree` removes it);
+- `WinQueryObject` checking that the record exists.

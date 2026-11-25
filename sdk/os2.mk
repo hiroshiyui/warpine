@@ -81,6 +81,6 @@ OS2_CXXFLAGS = $(filter-out -ffreestanding,$(OS2_BASEFLAGS)) \
 ifndef WARPINE_SDK_BUILDING
 $(OS2_LIBC) $(OS2_CRT0) $(OS2_DLL0) $(OS2_LIBCXX):
 	$(MAKE) -C $(WARPINE_SDK) CC=$(CC) OS2_BUILD=$(OS2_BUILD)
-$(OS2_LIBWPS): $(SOMIDL)
+$(OS2_LIBWPS): $(SOMIDL) $(wildcard $(WARPINE_SDK)/wps/* $(WARPINE_SDK)/include/wp*.idl)
 	$(MAKE) -C $(WARPINE_SDK) CC=$(CC) OS2_BUILD=$(OS2_BUILD) SOMIDL=$(SOMIDL) wps
 endif

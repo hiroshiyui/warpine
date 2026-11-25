@@ -68,7 +68,7 @@ _The menu and circular-slider screenshots captured from commit `0f27fce` on 2026
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
 - **Dates after 2038:** a session clock that `DosSetDateTime` moves (the host clock is never touched) and `WARPINE_CLOCK=2040-03-01` starts anywhere; file times in local time up to the `FDATE` limit 2107, set by `DosSetFileInfo` / `DosSetPathInfo`; `WARPINE.DLL` offers 64-bit time calls (`WrpTime64` …) to programs that can be recompiled.
 - **SOM runtime kernel:** `SOM.DLL` is built in: `SOMObject`, `SOMClass` and `SOMClassMgr` with metaclasses, multiple inheritance and the C and C++ bindings; classes loaded from DLLs by name (`somFindClass`); IBM's SOM 1.0 ordinals (from osFree's export list), IBM's `ClassData`, method-table and `CClassData` layouts for the root classes, and `somBuildClass` for classes built from IBM's static class information; dynamic dispatch (`somDispatch`, `somApply`, `somVaBuf_*`) through the apply stubs `somidl` writes ([ADR-0126](doc/adr/0126-som-dynamic-dispatch.md)); TypeCodes (`TypeCodeNew`, `TypeCode_*`, the `TC_*` constants) in Warpine's own layout ([ADR-0128](doc/adr/0128-som-typecodes.md)). IBM's ordinals above 47 and the initializer control blocks are still missing ([ADR-0059](doc/adr/0059-som-runtime-kernel.md) to 0063, 0070 to 0073).
-- **Workplace Shell classes (started):** `WPObject` and `M_WPObject` as SOM classes in the SDK's `libwps.a`, built with `somidl`: setup strings, titles, styles, object IDs, save / restore, deletion; programs subclass them in IDL ([ADR-0129](doc/adr/0129-wps-classes-in-the-sdk.md)). Views, icons, menus, folders and OS2.INI persistence are still to come.
+- **Workplace Shell classes (started):** `WPObject` and `M_WPObject` as SOM classes in the SDK's `libwps.a`, built with `somidl`: setup strings, titles, styles, object IDs, save / restore, deletion; `WPAbstract` keeps objects in the user profile, found again by handle or by object ID (`WinQueryObject`); programs subclass them in IDL ([ADR-0129](doc/adr/0129-wps-classes-in-the-sdk.md)). Views, icons, menus, folders and `WinCreateObject` are still to come.
 - **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` play `waveaudio` WAV files (wait, notify, seek, volume, aliases) through SDL3 audio streams on the main thread.
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access. Programs built with `-g` by GCC or clang get a debug companion from `lx-link`, so GDB debugs them at the source level, DLLs included (ADR-0102, ADR-0104).
@@ -415,7 +415,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2488 unit tests (no KVM required)
+cargo test                        # 2489 unit tests (no KVM required)
 cargo test --test integration     # 239 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
