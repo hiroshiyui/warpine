@@ -144,6 +144,7 @@ mod interrupt;
 mod exitlist;
 pub mod som;
 pub mod som_dispatch;
+pub mod som_typecode;
 mod critsec;
 pub mod dostimer;
 pub mod suballoc;

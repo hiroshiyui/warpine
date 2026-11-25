@@ -43,9 +43,12 @@ pub const MAX_VA_BUF: u32 = 64 * 1024;
 /// lost).
 const MAX_ROOT_ARGS: u32 = super::pm_hook::MAX_CHAIN_ARGS as u32;
 
-/// The `TCKind`s `somVaBuf_add` takes, in the reference's order
-/// (`TypeCode_kind`; C numbers them from 0).
+/// The `TCKind`s, in the reference's order (`TypeCode_kind`; C numbers
+/// them from 0). `somVaBuf_add` takes the scalar ones; TypeCodes use all
+/// (ADR-0128).
 pub mod tk {
+    pub const NULL: u32 = 0;
+    pub const VOID: u32 = 1;
     pub const SHORT: u32 = 2;
     pub const LONG: u32 = 3;
     pub const USHORT: u32 = 4;
@@ -55,10 +58,26 @@ pub mod tk {
     pub const BOOLEAN: u32 = 8;
     pub const CHAR: u32 = 9;
     pub const OCTET: u32 = 10;
+    pub const ANY: u32 = 11;
     pub const TYPECODE: u32 = 12;
+    pub const PRINCIPAL: u32 = 13;
+    pub const OBJREF: u32 = 14;
+    pub const STRUCT: u32 = 15;
+    pub const UNION: u32 = 16;
     pub const ENUM: u32 = 17;
     pub const STRING: u32 = 18;
+    pub const SEQUENCE: u32 = 19;
+    pub const ARRAY: u32 = 20;
     pub const POINTER: u32 = 21;
+    pub const SELF: u32 = 22;
+    pub const FOREIGN: u32 = 23;
+    /// The names C gives them (`TypeCode_print`).
+    pub const NAMES: [&str; 24] = [
+        "tk_null", "tk_void", "tk_short", "tk_long", "tk_ushort", "tk_ulong", "tk_float", "tk_double",
+        "tk_boolean", "tk_char", "tk_octet", "tk_any", "tk_TypeCode", "tk_Principal", "tk_objref",
+        "tk_struct", "tk_union", "tk_enum", "tk_string", "tk_sequence", "tk_array", "tk_pointer",
+        "tk_self", "tk_foreign",
+    ];
 }
 
 /// The widened bytes `somVaBuf_add` appends for an argument of `kind`

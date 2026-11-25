@@ -2571,7 +2571,8 @@ fn dos_get_message_reads_bound_and_drive_message_files() {
 /// c_som_test (ADR-0122): SOM from GCC and clang with the SDK's som.h —
 /// the data exports through WrpSomDataExport, and Warpine's initializer
 /// protocol over a diamond, a class that inherits its initializer and a
-/// multiple-inheritance merge.
+/// multiple-inheritance merge; then TypeCodes (ADR-0128), sized against
+/// each compiler's own `sizeof` and `__alignof__`.
 #[test]
 fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
     if !kvm_available() || Command::new("make").arg("--version").output().is_err() { return; }
@@ -2598,7 +2599,7 @@ fn som_from_gcc_and_clang_runs_the_initializer_protocol() {
             .output().expect("run warpine");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(!text.contains("FAIL"), "{compiler}:\n{text}");
-        assert!(text.contains("c_som_test: done 24/24"), "{compiler}:\n{text}");
+        assert!(text.contains("c_som_test: done 36/36"), "{compiler}:\n{text}");
         assert_eq!(out.status.code(), Some(0), "{compiler}:\n{text}");
     }
 }

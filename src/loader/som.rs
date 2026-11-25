@@ -562,6 +562,8 @@ pub struct SomRuntime {
     /// `somSubstituteClass`: the class a lookup by an old class's name
     /// gives instead of it.
     pub substitutes: HashMap<String, u32>,
+    /// The TypeCodes (ADR-0128).
+    pub typecodes: super::som_typecode::TypeCodes,
 }
 
 impl SomRuntime {
@@ -1008,7 +1010,7 @@ fn float(v: f64, conv: u8, precision: usize, alt: bool) -> String {
 
 impl Loader {
     /// `SOMMalloc`: a zeroed block from the runtime's heap.
-    fn som_malloc(&self, size: u32) -> Option<u32> {
+    pub(super) fn som_malloc(&self, size: u32) -> Option<u32> {
         let rounded = SomHeap::rounded(size)?;
         let at = {
             let mut rt = self.shared.som.lock_or_recover();
@@ -1032,7 +1034,7 @@ impl Loader {
     }
 
     /// `SOMFree`: a block back to the heap (others are ignored).
-    fn som_free_mem(&self, at: u32) -> bool {
+    pub(super) fn som_free_mem(&self, at: u32) -> bool {
         let mut rt = self.shared.som.lock_or_recover();
         let Some(size) = rt.heap.blocks.remove(&at) else { return false };
         if rt.heap.big.remove(&at) {
@@ -1066,7 +1068,7 @@ impl Loader {
     /// The NUL-terminated bytes at `ptr` (at most `max`); `None` where
     /// they reach Warpine's protected memory, which the kernel never
     /// copies or prints.
-    fn som_bytes(&self, ptr: u32, max: usize) -> Option<Vec<u8>> {
+    pub(super) fn som_bytes(&self, ptr: u32, max: usize) -> Option<Vec<u8>> {
         if ptr == 0 { return None; }
         let mut out = Vec::new();
         for i in 0..=max as u32 {
@@ -1305,6 +1307,16 @@ impl Loader {
         if let Some(last) = flags.last_mut() { *last = 0; }
         let _ = self.guest_write_bytes(mask, &flags);
         ctrl
+    }
+
+    /// `somSetException(ev, major, name, params)` (nothing without an
+    /// `Environment`).
+    pub(super) fn som_set_exception(&self, ev: u32, major: u32, name: u32, params: u32) {
+        if ev == 0 { return; }
+        self.som_exception_free(ev);
+        for (field, v) in [(ENV_MAJOR, major), (ENV_EXCEPTION_NAME, name), (ENV_EXCEPTION_PARAMS, params)] {
+            let _ = self.guest_write::<u32>(ev + field, v);
+        }
     }
 
     /// Clear the exception in Environment `ev`: free its value (a block of
@@ -1978,7 +1990,7 @@ impl Loader {
     }
 
     /// Write `out` through `SOMOutCharRoutine`; the count of characters.
-    fn som_output(&self, vcpu: u32, out: Vec<u8>) -> ApiResult {
+    pub(super) fn som_output(&self, vcpu: u32, out: Vec<u8>) -> ApiResult {
         // A program's own SOMOutCharRoutine gets every character; the
         // thread's own (somSetOutChar) comes first.
         let routine = self.som_out_routine(vcpu);
@@ -2472,14 +2484,7 @@ impl Loader {
             // exception already there is freed first; the name is kept as
             // given, the params (from SOMMalloc, or 0) are the
             // Environment's until somExceptionFree.
-            SOM_SET_EXCEPTION => {
-                if a[0] == 0 { return ok(0); }
-                self.som_exception_free(a[0]);
-                for (field, v) in [(ENV_MAJOR, a[1]), (ENV_EXCEPTION_NAME, a[2]), (ENV_EXCEPTION_PARAMS, a[3])] {
-                    let _ = self.guest_write::<u32>(a[0] + field, v);
-                }
-                ok(0)
-            }
+            SOM_SET_EXCEPTION => { self.som_set_exception(a[0], a[1], a[2], a[3]); ok(0) }
             SOM_EXCEPTION_ID | SOM_EXCEPTION_VALUE => {
                 let major = if a[0] == 0 { 0 } else { self.guest_read::<u32>(a[0] + ENV_MAJOR).unwrap_or(0) };
                 if major == 0 { return ok(0); }

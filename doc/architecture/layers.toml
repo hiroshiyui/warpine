@@ -180,8 +180,8 @@ modules = [
 [[layer]]
 id = "pmshell"
 zone = "host"
-label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), the switch list (the session's, ADR-0056), HELPMGR, the SOM runtime kernel (ADR-0059 to ADR-0063, ADR-0070 to ADR-0073)"
-modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/profile_text.rs", "loader/helpmgr.rs", "loader/pm_switch.rs", "loader/som.rs", "loader/som_dispatch.rs"]
+label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), the switch list (the session's, ADR-0056), HELPMGR, the SOM runtime kernel (ADR-0059 to ADR-0063, ADR-0070 to ADR-0073) and its TypeCodes (ADR-0128)"
+modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/profile_text.rs", "loader/helpmgr.rs", "loader/pm_switch.rs", "loader/som.rs", "loader/som_dispatch.rs", "loader/som_typecode.rs"]
 
 [[layer]]
 id = "stddlg"

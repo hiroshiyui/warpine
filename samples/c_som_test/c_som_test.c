@@ -17,6 +17,9 @@
  * the caller's memory, somGetMethodIndex / somGetMethodData /
  * somGetMemberToken, somCastObj / somResetObj, somGetInitFunction,
  * somMainProgram and the SOM_Test / SOM_Assert macros.
+ * Last, TypeCodes (ADR-0128): sizes and alignments against this
+ * compiler's own, parameters as an any, the Bounds exception, copies,
+ * constants and TypeCode_print's text.
  * Each check is written as "c_som_test: <name>: ok" or "... FAIL", then
  * "c_som_test: done <passed>/<total>".
  */
@@ -63,6 +66,87 @@ CLASS_INIT( left, Left, 'L' )
 CLASS_INIT( right, Right, 'R' )
 CLASS_INIT( bottom, Bottom, 'M' )
 CLASS_INIT( mixin, Mixin, 'X' )
+
+/* TypeCode_print's text, caught through somSetOutChar. */
+static char printed[256];
+
+static int SOMLINK catch_char( char c )
+{
+    size_t n = strlen( printed );
+    if( n + 1 < sizeof( printed ) ) { printed[n] = c; printed[n + 1] = '\0'; }
+    return( 1 );
+}
+
+struct node { long count; struct node *next; };
+struct mixed { char a; double b; short c; };
+struct tagged { short _d; union { char a; double d; } _u; };
+
+static void typecode_checks( void )
+{
+    Environment *ev = somGetGlobalEnvironment();
+    TypeCode     node, mixed, tagged, color, copy, ptr;
+    any          p;
+
+    /* The Reference's example: nested calls, the outer one owns them. */
+    node = TypeCodeNew( tk_struct, "node", "count", TypeCodeNew( tk_long ),
+                        "next", TypeCodeNew( tk_pointer, TypeCodeNew( tk_self, "node" ) ), NULL );
+    check( "TypeCodeNew: a self-referential struct",
+           node && TypeCode_kind( node, ev ) == tk_struct && TypeCode_param_count( node, ev ) == 5 );
+    check( "TypeCode_size / _alignment: struct node as this compiler lays it out",
+           TypeCode_size( node, ev ) == (long)sizeof( struct node )
+           && TypeCode_alignment( node, ev ) == (short)__alignof__( struct node ) );
+    mixed = TypeCodeNew( tk_struct, "mixed", "a", TC_char, "b", TC_double, "c", TC_short, NULL );
+    check( "TypeCode_size: char, double, short with padding",
+           TypeCode_size( mixed, ev ) == (long)sizeof( struct mixed )
+           && TypeCode_alignment( mixed, ev ) == (short)__alignof__( struct mixed ) );
+    tagged = TypeCodeNew( tk_union, "tagged", TC_short,
+                          TCREGULAR_CASE, 1L, "a", TC_char,
+                          TCDEFAULT_CASE, 0L, "d", TC_double, NULL );
+    check( "TypeCode_size: a union with its discriminator",
+           TypeCode_param_count( tagged, ev ) == 8 && TypeCode_size( tagged, ev ) == (long)sizeof( struct tagged ) );
+    check( "TypeCode_size: any and a sequence",
+           TypeCode_size( TC_any, ev ) == (long)sizeof( any )
+           && TypeCode_size( TypeCodeNew( tk_sequence, TC_long, 0L ), ev ) == (long)sizeof( SOMClassSequence ) );
+
+    /* A parameter as an any: a string's address. */
+    color = TypeCodeNew( tk_enum, "color", "red", "green", NULL );
+    p = TypeCode_parameter( color, ev, 2 );
+    check( "TypeCode_parameter: TC_string and the enumerator's name",
+           ev->_major == NO_EXCEPTION && TypeCode_equal( p._type, ev, TC_string )
+           && strcmp( *(string *)p._value, "green" ) == 0 );
+    p = TypeCode_parameter( color, ev, 3 );
+    check( "TypeCode_parameter: out of range raises TypeCode::Bounds",
+           ev->_major == USER_EXCEPTION && strcmp( somExceptionId( ev ), ex_TypeCode_Bounds ) == 0
+           && p._type == NULL );
+    somExceptionFree( ev );
+
+    /* A copy equals its original until its alignment changes, and
+     * outlives it. */
+    copy = TypeCode_copy( node, ev );
+    check( "TypeCode_copy / _equal", copy && copy != node && TypeCode_equal( copy, ev, node ) );
+    TypeCode_setAlignment( copy, ev, 8 );
+    check( "TypeCode_setAlignment: the alignment counts in _equal",
+           TypeCode_alignment( copy, ev ) == 8 && !TypeCode_equal( copy, ev, node ) );
+    TypeCode_free( node, ev );
+    check( "TypeCode_free: the copy lives on", TypeCode_size( copy, ev ) == (long)sizeof( struct node ) );
+
+    /* Constants are shared and survive TypeCode_free. */
+    TypeCode_free( TC_long, ev );
+    check( "TC_ constants: shared, not freed", TC_long == TC_long && TypeCode_kind( TC_long, ev ) == tk_long );
+
+    /* TypeCode_print writes the TypeCodeNew call that makes it. */
+    ptr = TypeCodeNew( tk_pointer, TypeCodeNew( tk_string, 0L ) );
+    somSetOutChar( catch_char );
+    TypeCode_print( ptr, ev );
+    somSetOutChar( 0 );
+    check( "TypeCode_print: as a TypeCodeNew call",
+           strcmp( printed, "TypeCodeNew (tk_pointer, TypeCodeNew (tk_string, 0))\n" ) == 0 );
+    TypeCode_free( ptr, ev );
+    TypeCode_free( copy, ev );
+    TypeCode_free( mixed, ev );
+    TypeCode_free( tagged, ev );
+    TypeCode_free( color, ev );
+}
 
 /* A class of SOMClass named `name`, with `n` parents, and its own
  * initializer and destructor when given. */
@@ -169,6 +253,7 @@ int main( void )
         SOM_TestC( 0 );
         SOM_Assert( 1, 20012 );
         check( "SOM_Test / SOM_TestC / SOM_Assert: quiet at the default levels", 1 );
+        typecode_checks();
         somEnvironmentEnd();
     }
 

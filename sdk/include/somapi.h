@@ -132,8 +132,8 @@ SOMEXTERN void    SOMLINK somExceptionFree( Environment *ev );
     ( (ev)->_major = NO_EXCEPTION, (ev)->exception_id = 0, (ev)->params = 0 )
 #define SOM_UninitEnvironment( ev ) somExceptionFree( ev )
 
-/* CORBA's any: a TypeCode and the value. Warpine has no TypeCode
- * implementation: a TypeCode is an opaque pointer. */
+/* CORBA's any: a TypeCode and the value. A TypeCode's representation is
+ * hidden (SOM Programming Reference): use the TypeCode functions below. */
 typedef void *TypeCode;
 typedef struct any {
     TypeCode  _type;
@@ -334,6 +334,68 @@ typedef enum TCKind {
     tk_Principal, tk_objref, tk_struct, tk_union, tk_enum, tk_string,
     tk_sequence, tk_array, tk_pointer, tk_self, tk_foreign
 } TCKind;
+
+/* ---- TypeCodes (ADR-0128) ----
+ * TypeCodeNew's arguments depend on the kind:
+ *   TypeCodeNew( tk_objref, interfaceId )
+ *   TypeCodeNew( tk_string, maxLength )            0: unbounded
+ *   TypeCodeNew( tk_sequence, elementTC, maxLength )
+ *   TypeCodeNew( tk_array, elementTC, length )
+ *   TypeCodeNew( tk_pointer, referencedTC )
+ *   TypeCodeNew( tk_self, structOrUnionName )
+ *   TypeCodeNew( tk_foreign, typeName, implementationContext, size )
+ *   TypeCodeNew( tk_struct, name, memberName, memberTC, ..., NULL )
+ *   TypeCodeNew( tk_union, name, switchTC,
+ *                TCREGULAR_CASE, label, memberName, memberTC,
+ *                TCDEFAULT_CASE, 0, memberName, memberTC, ..., NULL )
+ *   TypeCodeNew( tk_enum, name, enumeratorName, ..., NULL )
+ *   TypeCodeNew( any other kind )
+ * The new TypeCode copies the strings and takes the TypeCodes it is given
+ * (one given twice, or held by another TypeCode, is copied); free it with
+ * TypeCode_free, which frees those too. Sizes are those of this SDK's C
+ * types. TypeCode_parameter raises ex_TypeCode_Bounds for an index out of
+ * range. The TC_ constants are shared: freeing one does nothing. */
+#define TCREGULAR_CASE 1
+#define TCDEFAULT_CASE 2
+#define ex_TypeCode_Bounds "::TypeCode::Bounds"
+SOMEXTERN TypeCode SOMLINK TypeCodeNew( TCKind tag, ... );
+SOMEXTERN short    SOMLINK TypeCode_alignment( TypeCode tc, Environment *ev );
+SOMEXTERN TypeCode SOMLINK TypeCode_copy( TypeCode tc, Environment *ev );
+SOMEXTERN boolean  SOMLINK TypeCode_equal( TypeCode tc, Environment *ev, TypeCode tc2 );
+SOMEXTERN void     SOMLINK TypeCode_free( TypeCode tc, Environment *ev );
+SOMEXTERN TCKind   SOMLINK TypeCode_kind( TypeCode tc, Environment *ev );
+SOMEXTERN long     SOMLINK TypeCode_param_count( TypeCode tc, Environment *ev );
+SOMEXTERN void     SOMLINK TypeCode_print( TypeCode tc, Environment *ev );
+SOMEXTERN void     SOMLINK TypeCode_setAlignment( TypeCode tc, Environment *ev, short alignment );
+SOMEXTERN long     SOMLINK TypeCode_size( TypeCode tc, Environment *ev );
+/* Warpine's: TypeCode_parameter with its result stored at result, so no
+ * compiler's convention for returning a struct is involved. */
+SOMEXTERN any    * SOMLINK WrpTypeCode_parameter( any *result, TypeCode tc, Environment *ev, long index );
+static __inline__ any TypeCode_parameter( TypeCode tc, Environment *ev, long index )
+{
+    any a;
+    WrpTypeCode_parameter( &a, tc, ev, index );
+    return a;
+}
+/* Warpine's: the TC_ constant of a kind (the basic kinds, tk_objref for
+ * TC_Object, tk_string for TC_string), NULL for another. */
+SOMEXTERN TypeCode SOMLINK WrpTypeCodeConstant( TCKind kind );
+#define TC_null      WrpTypeCodeConstant( tk_null )
+#define TC_void      WrpTypeCodeConstant( tk_void )
+#define TC_short     WrpTypeCodeConstant( tk_short )
+#define TC_long      WrpTypeCodeConstant( tk_long )
+#define TC_ushort    WrpTypeCodeConstant( tk_ushort )
+#define TC_ulong     WrpTypeCodeConstant( tk_ulong )
+#define TC_float     WrpTypeCodeConstant( tk_float )
+#define TC_double    WrpTypeCodeConstant( tk_double )
+#define TC_boolean   WrpTypeCodeConstant( tk_boolean )
+#define TC_char      WrpTypeCodeConstant( tk_char )
+#define TC_octet     WrpTypeCodeConstant( tk_octet )
+#define TC_any       WrpTypeCodeConstant( tk_any )
+#define TC_TypeCode  WrpTypeCodeConstant( tk_TypeCode )
+#define TC_Principal WrpTypeCodeConstant( tk_Principal )
+#define TC_Object    WrpTypeCodeConstant( tk_objref )
+#define TC_string    WrpTypeCodeConstant( tk_string )
 
 /* A buffer of arguments for a va_list (opaque). */
 typedef void *somVaBuf;

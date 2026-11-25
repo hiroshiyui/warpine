@@ -12,9 +12,9 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 
 The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to be a PM application on it. Sources: the Warp 4 Toolkit's SOM and WPS guides and references, IBM's OS/390 SOMobjects books and the SOMobjects 3.0 Toolkit books (`doc/references/`, never committed; URLs in the README). The object model is SOM (ADR-0127).
 
-- [ ] **Kernel calls missing**: `somDispatchD` (a `double` in the FPU), `somAddDynamicMethod` and dynamic methods; TypeCodes (`any` carries an opaque one); applying IBM-built classes (their apply-stub protocol is not public).
+- [ ] **Kernel calls missing**: `somDispatchD` (a `double` in the FPU), `somAddDynamicMethod` and dynamic methods; applying IBM-built classes (their apply-stub protocol is not public).
 - [ ] 🚧 **IBM's SOM.DLL ordinals 48+ and control blocks**: Warpine's own ordinals (3072+, ADR-0123) serve programs built from source; IBM-built binaries need IBM's ordinals and initializer / destructor / assignment control blocks. Unused by `somBuildClass` (ADR-0073): DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`. An interface repository (`somInterfaceRepository` is NULL).
-- [ ] **`somidl`**, if needed: OIDL `.csc` input, an `ir` emitter and interface repository, TypeCodes behind `any`, DSOM.
+- [ ] **`somidl`**, if needed: OIDL `.csc` input, an `ir` emitter and interface repository, `TC_<Name>` TypeCode constants for declared types (the kernel has TypeCodes, ADR-0128), DSOM.
 - [ ] **Smaller**: C++ SOM objects on the stack and in static storage; `dllname` for `somLocateClassFile`; `SOMU` classes, `SOMIR`, IDL metadata.
 - [ ] **WPS classes**: `WPObject`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`; persistence in OS2.INI; settings notebooks; `wpDragOver` / `wpDrop`.
 
