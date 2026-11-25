@@ -19,7 +19,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2: 32-bit (LX
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2476 unit tests (2360 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 19 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 236 integration tests
+cargo test                                 # 2476 unit tests (2360 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 19 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 237 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); then `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -103,7 +103,7 @@ PIB: `pib_ulpid` `+0x00`, `ulppid` `+0x04`, `hmte` `+0x08`, `pchcmd` `+0x0C`, `p
 ### Security rules
 
 - A session's first process puts it in a systemd scope (8 GB, 8192 tasks; `src/cgroup.rs`, ADR-0116), never leaving a tighter cgroup, so tests stay in the hook's scope; `WARPINE_CGROUP=off` disables it.
-- Every process confines itself with Landlock (`src/sandbox.rs`, ADR-0111): a new host path goes into `sandbox::policy`; `WARPINE_SANDBOX=off` disables it; crash dumps go to `$XDG_STATE_HOME/warpine`.
+- Every process confines itself with Landlock (`src/sandbox.rs`, ADR-0111): a new host path goes into `sandbox::policy`; `WARPINE_SANDBOX=off` disables it (and the seccomp filter); crash dumps go to `$XDG_STATE_HOME/warpine`. `ci/check_desktop.sh` compares confined and open runs on a real desktop (CI has only SDL's dummy drivers).
 - Then a seccomp deny list per role (`src/syscall_filter.rs`, ADR-0124: `Guest`, `DesktopServer`): a new system call nothing used before, if denied there, needs the ADR revisited; a new role gets its own list.
 - Parsers of untrusted input are fuzzed (`fuzz/`, ADR-0112: `fuzz/seed.sh`, `fuzz/run.sh <target> [seconds]`); a new parser of guest- or file-supplied data gets a target.
 - Guests never reach the host environment, host Unix sockets or host paths outside their drives (ADR-0066).

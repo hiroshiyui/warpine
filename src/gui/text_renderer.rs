@@ -453,6 +453,7 @@ impl SdlTextRenderer {
     pub fn open(sdl: &sdl3::Sdl, title: &str, audio: &super::audio::AudioService,
                 parked: &mut super::vio_switch::Parked) -> Self {
         let video = sdl.video().expect("SDL video subsystem");
+        log::info!("VIO window: SDL video driver {}", video.current_video_driver());
         let TextWindow { mut canvas, texture_creator, texture, cols, rows } = match parked.text.take() {
             Some(window) => window,
             None => {

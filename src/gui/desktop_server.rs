@@ -169,6 +169,7 @@ impl Server {
         let listener = Arc::new(Listener::bind(dir)?);
         let sdl = sdl3::init().map_err(std::io::Error::other)?;
         let video = sdl.video().map_err(std::io::Error::other)?;
+        info!("desktop server: SDL video driver {}", video.current_video_driver());
         let event = sdl.event().map_err(std::io::Error::other)?;
         let pump = sdl.event_pump().map_err(std::io::Error::other)?;
         let (w, h) = crate::loader::constants::desktop_size();

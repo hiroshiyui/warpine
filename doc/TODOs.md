@@ -4,7 +4,7 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 
 ## Security
 
-- [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): test the sandbox and deny lists on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers; only SDL's dummy drivers are tested); namespaces only if those leave gaps.
+- [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): run `ci/check_desktop.sh` on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers; CI has only SDL's dummy drivers) and widen the policy where it reports a difference; namespaces only if those leave gaps.
 - [ ] **Audit 2026-11-25, Medium, left**: the other host frames built on the guest's stack (window-procedure calls, `WM_CREATE`, `WM_DESTROY`, owner drawing, modal loops, exception dispatch, `INITTERM`, a chain's `DosExit`) still `expect` room there, as the call chain did; the arena's residual windows (check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU).
 - [ ] **Audit 2026-11-25, Low, left**: other calls that copy a guest-named buffer out with `guest_read` / `guest_read_bytes` rather than `guest_read_buffer` (they reach Warpine's protected memory, the process's own); a sweep of the API handlers for them.
 - [ ] **Fuzzing** (ADR-0112): font and help-file readers once Warpine reads guest-supplied ones (none today).

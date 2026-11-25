@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **`ci/check_desktop.sh`** checks the sandbox and the seccomp deny lists on a real desktop: four samples (PM and VIO windows, PM and VIO sound) run once confined and once with `WARPINE_SANDBOX=off`, and the runs are compared (end marker, the SDL drivers used, warnings only the confined run has, and with `strace` the calls only it had refused). Warpine now logs the SDL video and audio drivers it uses at `info`.
+
 ### Changed
 - **CI pulls a published image instead of building it in every job** (ADR-0106 addendum): the new `ci-image.yml` workflow publishes the pinned image to GitHub's registry when its inputs change, `ci/image.digest` pins it by digest, and the test and fuzz jobs pull it (building it as before when there is no pin or the pull fails). The image build retries its downloads and no longer asks rustup to check for its own update, the call behind two failed runs.
 
@@ -18,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **The resolver is fuzzed** (ADR-0112 addendum): the address and domain-name parsers move out of `tcpip_util.rs` into `inet_names.rs`, which builds alone, and the new `resolver` target feeds DNS messages, the hosts, networks and `resolv.conf` files, and names and address strings to them (a packed name must expand back to itself, `dn_skipname` must agree with `dn_expand`).
 
 ### Fixed
+- **SIGTERM left a process alive while it waited for standard input** (found by `ci/check_desktop.sh`): `DosRead` of redirected or terminal standard input made a blocking `read()`, which the process's end could not interrupt, so a program waiting for input nobody fed outlived its forced end. It now waits in 100 ms steps, as pipe reads do. New integration test `test_sigterm_ends_a_process_waiting_for_standard_input`.
 - **`dn_expand` overflowed on a name that pointed backwards** (found by the `resolver` target in its first minute): the length a name takes was worked out from the end of the pointed-to name as well, even when a pointer had already set it, and underflowed when that lay before the name's start; a debug build ended the calling process. Release builds wrapped and threw the value away.
 - **Memory just handed to a thread could lose its pages** (ADR-0114 addendum), which CI once showed as a thread created suspended that never ran after `DosResumeThread`: a thread's end and `DosFreeMem` freed memory before giving up its page states, so a block given to another thread at that address in between was written "not present"; two threads could write the allocator's pending page-table changes out of order; and a thread could look at the tables while another was still writing a batch. Page states now go first, pending changes are written in order under one lock, and a sync waits for a batch in progress.
 

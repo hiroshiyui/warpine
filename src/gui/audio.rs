@@ -195,6 +195,7 @@ impl SdlAudio {
         let audio = sdl.audio()
             .map_err(|e| warn!("[audio] SDL audio unavailable ({e}); MMPM/2 and DosBeep are silent"))
             .ok();
+        if let Some(a) = &audio { log::info!("[audio] SDL audio driver {}", a.current_audio_driver()); }
         SdlAudio { audio, streams: HashMap::new() }
     }
 

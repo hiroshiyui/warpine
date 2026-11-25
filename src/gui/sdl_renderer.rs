@@ -1443,6 +1443,7 @@ impl SdlRenderer {
         static WAKE_EVENT_REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let (dw, dh) = crate::loader::constants::desktop_size();
         let video      = sdl.video().expect("SDL video subsystem init failed");
+        log::info!("PM window: SDL video driver {}", video.current_video_driver());
         let event      = sdl.event().expect("SDL event subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL event pump init failed");
         let real_display = driver_can_wait(video.current_video_driver());
