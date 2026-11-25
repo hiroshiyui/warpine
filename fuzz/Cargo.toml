@@ -107,3 +107,9 @@ name = "profile"
 path = "fuzz_targets/profile.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "resolver"
+path = "fuzz_targets/resolver.rs"
+test = false
+doc = false

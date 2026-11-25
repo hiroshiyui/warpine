@@ -23,7 +23,7 @@
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
-use super::tcpip_util::{pack_name, parse_inet_network};
+use super::inet_names::{pack_name, parse_inet_network};
 
 /// Most bytes of a host database file read.
 pub const MAX_DB_FILE: usize = 256 * 1024;

@@ -8,12 +8,13 @@
 # its kind (fuzz_targets/lx_link.rs), bitmap files for bitmap, and the
 # resource files behind each of res_templates' five kinds, pointer and
 # icon files for pointer, WAV files for wav, and a CONFIG.SYS and a
-# profile written here for config_sys and profile.
+# profile written here for config_sys and profile, and the resolver's
+# inputs.
 # desktop_proto starts from nothing;
 # libFuzzer finds its tags quickly.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav corpus/config_sys corpus/profile
+mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav corpus/config_sys corpus/profile corpus/resolver
 n=0
 while IFS= read -r -d '' f; do
     case $(head -c 2 "$f" | od -An -c | tr -d ' ') in
@@ -69,4 +70,11 @@ printf 'RIFF\x2c\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00
 # and a profile with escapes.
 printf 'REM seed\r\nTHREADS=512\r\nLIBPATH=.;C:\\OS2\\DLL;C:\\LIB\r\nSET PATH=C:\\BIN;C:\\\r\nSET TMP=\r\n' > corpus/config_sys/seed
 printf '; warpine-profile 1\n["App"]\n"Key" = "value\\0"\n"Blob" = "\\x01\\xff\\"\\\\"\n' > corpus/profile/seed
+# resolver: a DNS answer with a compression pointer (kind 0), hosts,
+# networks and resolv.conf lines (1-3), and a name (4).
+printf '\x00\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x03www\x07example\x03com\x00\x00\x01\x00\x01\xc0\x0c\x00\x01\x00\x01\x00\x00\x0e\x10\x00\x04\x5d\xb8\xd8\x22' > corpus/resolver/answer
+printf '\x01127.0.0.1 localhost lh # c\n::1 ip6-localhost\n10.0.0.2\tbox\n' > corpus/resolver/hosts
+printf '\x02loopback 127\nlink-local 169.254.0.0\n' > corpus/resolver/networks
+printf '\x03nameserver 192.0.2.53\nsearch example.com lan\ndomain example.org\n' > corpus/resolver/resolv_conf
+printf '\x04www.example.com.' > corpus/resolver/name
 echo "fuzz/seed.sh: $n programs and DLLs, $m lx-link inputs as seeds"

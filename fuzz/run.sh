@@ -8,7 +8,7 @@
 # from the built samples. A crash leaves its input in fuzz/artifacts/.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-target=${1:?usage: fuzz/run.sh desktop_proto|lx_parse|ne_parse|msgfile|os2rc|somidl|lx_link|bitmap|res_templates|pointer|wav|config_sys|profile [seconds] [corpus]}
+target=${1:?usage: fuzz/run.sh desktop_proto|lx_parse|ne_parse|msgfile|os2rc|somidl|lx_link|bitmap|res_templates|pointer|wav|config_sys|profile|resolver [seconds] [corpus]}
 seconds=${2:-60}
 corpus=${3:-corpus/$target}
 mkdir -p "$corpus" "artifacts/$target"

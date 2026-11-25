@@ -112,6 +112,7 @@ pub mod api_ring;
 pub mod gdb_stub;
 pub mod uconv;
 pub mod tcpip;
+pub mod inet_names;
 pub mod tcpip_util;
 pub mod resolver;
 pub mod npipe;
