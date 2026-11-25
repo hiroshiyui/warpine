@@ -26,7 +26,7 @@
 #   SOM       base 22528    (MAGIC_API_BASE + 22528 + ordinal) — the SOM kernel, Warpine's ordinals
 #   REXX      base 26624    (MAGIC_API_BASE + 26624 + ordinal)
 #   REXXAPI   base 27648    (MAGIC_API_BASE + 27648 + ordinal)
-#   PMWP      base 28672    (MAGIC_API_BASE + 28672 + ordinal) — window positions and object IDs so far
+#   PMWP      base 28672    (MAGIC_API_BASE + 28672 + ordinal) — window positions and Workplace objects so far
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -1114,4 +1114,7 @@ REXXAPI.28  RexxSaveMacroSpace
 # ── PMWP ─────────────────────────────────────────────────────────────────────
 PMWP.207    WinStoreWindowPos
 PMWP.208    WinRestoreWindowPos
+PMWP.250    WinSetObjectData
+PMWP.251    WinDestroyObject
 PMWP.252    WinQueryObject
+PMWP.281    WinCreateObject

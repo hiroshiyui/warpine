@@ -1347,11 +1347,19 @@ ULONG   APIENTRY WinCpTranslateChar(HAB hab, ULONG cpSrc, UCHAR chSrc, ULONG cpD
 BOOL    APIENTRY WinStoreWindowPos(PCSZ pszAppName, PCSZ pszKeyName, HWND hwnd);
 BOOL    APIENTRY WinRestoreWindowPos(PCSZ pszAppName, PCSZ pszKeyName, HWND hwnd);
 
-/* Workplace Shell objects (PMWP; ADR-0129): a handle names a stored
- * object; WinQueryObject finds the one an object ID ("<NAME>") names,
- * NULLHANDLE when none does. */
+/* Workplace Shell objects (PMWP; ADR-0129, ADR-0130): a handle names a
+ * stored object; WinQueryObject finds the one an object ID ("<NAME>")
+ * names, NULLHANDLE when none does. WinCreateObject and WinSetObjectData
+ * queue the object's setup until a program that has its class asks for it
+ * (wpclsQueryObject). The CO_ values are Warpine's. */
 typedef LHANDLE HOBJECT;
+#define CO_FAILIFEXISTS    0
+#define CO_REPLACEIFEXISTS 1
+#define CO_UPDATEIFEXISTS  2
 HOBJECT APIENTRY WinQueryObject(PCSZ pszObjectID);
+HOBJECT APIENTRY WinCreateObject(PCSZ pszClassName, PCSZ pszTitle, PCSZ pszSetupString, PCSZ pszLocation, ULONG ulFlags);
+BOOL    APIENTRY WinDestroyObject(HOBJECT hObject);
+BOOL    APIENTRY WinSetObjectData(HOBJECT hObject, PCSZ pszSetupString);
 
 #pragma pack(pop)
 

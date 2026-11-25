@@ -275,16 +275,17 @@
 <!-- pmshell -->
 <g id="node17" class="node">
 <title>pmshell</title>
-<path fill="#bbdefb" stroke="black" d="M5701.55,-748.38C5701.55,-748.38 4640.45,-748.38 4640.45,-748.38 4634.45,-748.38 4628.45,-742.38 4628.45,-736.38 4628.45,-736.38 4628.45,-721.86 4628.45,-721.86 4628.45,-715.86 4634.45,-709.86 4640.45,-709.86 4640.45,-709.86 5701.55,-709.86 5701.55,-709.86 5707.55,-709.86 5713.55,-715.86 5713.55,-721.86 5713.55,-721.86 5713.55,-736.38 5713.55,-736.38 5713.55,-742.38 5707.55,-748.38 5701.55,-748.38"/>
-<text xml:space="preserve" text-anchor="start" x="4639.25" y="-733.17" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM shell DLLs: PMSHAPI profiles (ADR&#45;0017), the switch list (the session&#39;s, ADR&#45;0056), HELPMGR, the SOM runtime kernel (ADR&#45;0059 to ADR&#45;0063, ADR&#45;0070 to ADR&#45;0073) and its TypeCodes (ADR&#45;0128)</text>
-<text xml:space="preserve" text-anchor="start" x="5037.12" y="-725.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/profile_text.rs, loader/helpmgr.rs</text>
-<text xml:space="preserve" text-anchor="start" x="5020.25" y="-717.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_switch.rs, loader/som.rs, loader/som_dispatch.rs, loader/som_typecode.rs</text>
+<path fill="#bbdefb" stroke="black" d="M5701.55,-752.38C5701.55,-752.38 4640.45,-752.38 4640.45,-752.38 4634.45,-752.38 4628.45,-746.38 4628.45,-740.38 4628.45,-740.38 4628.45,-717.86 4628.45,-717.86 4628.45,-711.86 4634.45,-705.86 4640.45,-705.86 4640.45,-705.86 5701.55,-705.86 5701.55,-705.86 5707.55,-705.86 5713.55,-711.86 5713.55,-717.86 5713.55,-717.86 5713.55,-740.38 5713.55,-740.38 5713.55,-746.38 5707.55,-752.38 5701.55,-752.38"/>
+<text xml:space="preserve" text-anchor="start" x="4639.25" y="-737.17" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM shell DLLs: PMSHAPI profiles (ADR&#45;0017), the switch list (the session&#39;s, ADR&#45;0056), HELPMGR, the SOM runtime kernel (ADR&#45;0059 to ADR&#45;0063, ADR&#45;0070 to ADR&#45;0073) and its TypeCodes (ADR&#45;0128)</text>
+<text xml:space="preserve" text-anchor="start" x="5037.12" y="-729.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/profile_text.rs, loader/helpmgr.rs</text>
+<text xml:space="preserve" text-anchor="start" x="5025.88" y="-721.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_switch.rs, loader/pmwp_objects.rs, loader/wps_setup.rs, loader/som.rs</text>
+<text xml:space="preserve" text-anchor="start" x="5084.75" y="-713.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/som_dispatch.rs, loader/som_typecode.rs</text>
 </g>
 <!-- dispatch&#45;&gt;pmshell -->
 <g id="edge14" class="edge">
 <title>dispatch&#45;&gt;pmshell</title>
-<path fill="none" stroke="#455a64" d="M1639.88,-845.63C2192.34,-842.72 4027.96,-830.34 4616,-792.38 4755.15,-783.4 4913.1,-764.86 5024.83,-750.34"/>
-<polygon fill="#455a64" stroke="#455a64" points="5025.21,-753.82 5034.67,-749.05 5024.3,-746.87 5025.21,-753.82"/>
+<path fill="none" stroke="#455a64" d="M1639.88,-845.63C2192.34,-842.72 4027.96,-830.34 4616,-792.38 4742.87,-784.19 4885.38,-768.06 4994.22,-754.26"/>
+<polygon fill="#455a64" stroke="#455a64" points="4994.33,-757.78 5003.81,-753.04 4993.45,-750.83 4994.33,-757.78"/>
 </g>
 <!-- stddlg -->
 <g id="node18" class="node">
@@ -462,8 +463,8 @@
 <!-- pmshell&#45;&gt;vfs -->
 <g id="edge20" class="edge">
 <title>pmshell&#45;&gt;vfs</title>
-<path fill="none" stroke="#455a64" d="M5126.98,-709.49C5068.57,-684.77 4965.63,-641.2 4903.63,-614.95"/>
-<polygon fill="#455a64" stroke="#455a64" points="4905.26,-611.84 4894.69,-611.17 4902.53,-618.29 4905.26,-611.84"/>
+<path fill="none" stroke="#455a64" d="M5117.25,-705.37C5057.74,-680.18 4962.49,-639.86 4903.78,-615.02"/>
+<polygon fill="#455a64" stroke="#455a64" points="4905.23,-611.83 4894.66,-611.15 4902.5,-618.28 4905.23,-611.83"/>
 <text xml:space="preserve" text-anchor="middle" x="4988.55" y="-639.31" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">profiles</text>
 </g>
 <!-- stddlg&#45;&gt;vfs -->

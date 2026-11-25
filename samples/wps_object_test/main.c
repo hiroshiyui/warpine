@@ -17,9 +17,14 @@
  *   - WPAbstract (Card): stored at once with a handle WinQueryObject finds
  *     by its object ID, which no second object may take; a change saved
  *     by itself; made dormant (somFree) and awakened by wpclsQueryObject
- *     with its title, text and ID; wpFree removes it.
- * "save" stores a Card and ends; a later "load" (another process) finds it
- * by its ID, awakens it, checks it and frees it.
+ *     with its title, text and ID; wpFree removes it;
+ *   - WinCreateObject (ADR-0130): a Card made when it is first asked for,
+ *     its title and setup applied; an ID taken (CO_FAILIFEXISTS,
+ *     CO_UPDATEIFEXISTS, CO_REPLACEIFEXISTS); WinSetObjectData, applied
+ *     also to an awake object; WinDestroyObject.
+ * "save" stores a Card and has another created by WinCreateObject without
+ * making it, and ends; a later "load" (another process) finds both by
+ * their IDs, makes or awakens them, checks them and frees them.
  * Each check is written as "wps_object_test: <name>: ok" or "... FAIL",
  * then "wps_object_test: done <passed>/<total>".
  */
@@ -31,8 +36,10 @@
 
 extern int note_inits, note_uninits, note_class_inits;
 
-#define CARD_ID   "<WP_CARD_T>"
-#define STORED_ID "<WP_CARD_P>"
+#define CARD_ID    "<WP_CARD_T>"
+#define STORED_ID  "<WP_CARD_P>"
+#define CREATED_ID "<WP_CARD_C>"
+#define QUEUED_ID  "<WP_CARD_Q>"
 
 static int passed, total;
 
@@ -75,11 +82,45 @@ static void abstract_checks( void )
            WinQueryObject( CARD_ID ) == NULLHANDLE && _wpclsQueryObject( _WPObject, h ) == NULL );
 }
 
+/* WinCreateObject, WinSetObjectData and WinDestroyObject. */
+static void create_checks( void )
+{
+    HOBJECT h, h2;
+    Card   *card;
+
+    h = WinCreateObject( "Card", "Lunch", "TEXT=soup;OBJECTID=" CREATED_ID, "<WP_DESKTOP>", CO_FAILIFEXISTS );
+    check( "WinCreateObject: a handle, found by the ID", h != NULLHANDLE && WinQueryObject( CREATED_ID ) == h );
+    check( "WinCreateObject: refused for a taken ID (fail if exists)",
+           WinCreateObject( "Card", "Other", "OBJECTID=" CREATED_ID, "<WP_DESKTOP>", CO_FAILIFEXISTS ) == NULLHANDLE );
+    check( "WinCreateObject: CO_UPDATEIFEXISTS gives the object",
+           WinCreateObject( "Card", "", "TEXT=bread;OBJECTID=" CREATED_ID, "<WP_DESKTOP>", CO_UPDATEIFEXISTS ) == h );
+    check( "WinSetObjectData: before the object is made", WinSetObjectData( h, "TEXT=stew" ) );
+    card = (Card *)_wpclsQueryObject( _WPObject, h );
+    check( "wpclsQueryObject: made from what was queued, in order",
+           card && _somIsA( card, _Card ) && strcmp( _wpQueryTitle( card ), "Lunch" ) == 0
+           && strcmp( _cardText( card ), "stew" ) == 0 && _wpQueryHandle( card ) == h );
+    if( !card ) return;
+    check( "WinSetObjectData: an awake object, applied when asked for again",
+           WinSetObjectData( h, "TEXT=pie;TITLE=Dinner" ) && _wpclsQueryObject( _WPObject, h ) == card
+           && strcmp( _cardText( card ), "pie" ) == 0 && strcmp( _wpQueryTitle( card ), "Dinner" ) == 0 );
+    h2 = WinCreateObject( "Card", "New", "OBJECTID=" CREATED_ID, "<WP_DESKTOP>", CO_REPLACEIFEXISTS );
+    check( "WinCreateObject: CO_REPLACEIFEXISTS, a new object for the ID",
+           h2 != NULLHANDLE && h2 != h && WinQueryObject( CREATED_ID ) == h2 && !WinSetObjectData( h, "TEXT=x" ) );
+    _somFree( card );
+    check( "WinDestroyObject", WinDestroyObject( h2 ) && WinQueryObject( CREATED_ID ) == NULLHANDLE
+           && !WinDestroyObject( h2 ) && _wpclsQueryObject( _WPObject, h2 ) == NULL );
+    check( "WinCreateObject: a class no program has made is created all the same, and not made",
+           ( h = WinCreateObject( "NoSuchClass", "x", "", "<WP_DESKTOP>", 0 ) ) != NULLHANDLE
+           && _wpclsQueryObject( _WPObject, h ) == NULL && WinDestroyObject( h ) );
+}
+
 /* "save": a Card stored for a later process. */
 static int save_mode( void )
 {
     Card *card = (Card *)_wpclsNew( _Card, "Kept", "OBJECTID=" STORED_ID ";TEXT=from another process", NULL, FALSE );
     check( "save: stored", card && WinQueryObject( STORED_ID ) == _wpQueryHandle( card ) );
+    check( "save: one queued by WinCreateObject",
+           WinCreateObject( "Card", "Queued", "OBJECTID=" QUEUED_ID ";TEXT=made later", "<WP_DESKTOP>", 0 ) != NULLHANDLE );
     printf( "wps_object_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );
 }
@@ -96,6 +137,10 @@ static int load_mode( void )
            && strcmp( _cardText( card ), "from another process" ) == 0 );
     if( card ) _wpFree( card );
     check( "load: wpFree removed it", WinQueryObject( STORED_ID ) == NULLHANDLE );
+    card = (Card *)_wpclsQueryObject( _WPObject, WinQueryObject( QUEUED_ID ) );
+    check( "load: WinCreateObject's object made here", card && strcmp( _wpQueryTitle( card ), "Queued" ) == 0
+           && strcmp( _cardText( card ), "made later" ) == 0 );
+    if( card ) _wpFree( card );
     printf( "wps_object_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );
 }
@@ -180,6 +225,7 @@ int main( int argc, char **argv )
     check( "wpFree: wpUnInitData ran", _wpFree( plain ) && note_uninits == 2 );
 
     abstract_checks();
+    create_checks();
 
     printf( "wps_object_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );

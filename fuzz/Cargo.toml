@@ -113,3 +113,9 @@ name = "resolver"
 path = "fuzz_targets/resolver.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wps_setup"
+path = "fuzz_targets/wps_setup.rs"
+test = false
+doc = false

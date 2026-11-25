@@ -86,7 +86,7 @@ interface WPObject : SOMObject
     BOOL wpSetupOnce(in PSZ pszSetupString);
     // Called once, when the object is created (wpclsNew); calls wpSetup.
     BOOL wpScanSetupString(in PSZ pszSetupString, in PSZ pszKey, in PSZ pszValue, in PULONG pcbValue);
-    // The value of pszKey in pszSetupString.
+    // The value of pszKey in pszSetupString (its last occurrence).
     BOOL wpSetTitle(in PSZ pszNewTitle);
     PSZ wpQueryTitle();
     BOOL wpSetStyle(in ULONG ulNewStyle);

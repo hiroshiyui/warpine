@@ -949,15 +949,17 @@ Not yet available: SOM objects on the stack in C++, the initializer control bloc
 
 **Others.** `RexxSetHalt(pid, tid)` halts the programs a thread of this process runs (HALT). `RexxSetTrace` / `RexxResetTrace` turn tracing to `?R` / `O`.
 
-### PMWP — the Workplace Shell (3 APIs, ADR-0086, ADR-0129)
+### PMWP — the Workplace Shell (6 APIs, ADR-0086, ADR-0129, ADR-0130)
 
 WinQueryObject (252): the handle of the stored Workplace object an object ID (`"<NAME>"`) names, from the user profile where the SDK's `WPAbstract` maps it; NULLHANDLE when it names none or the object is no longer stored (a file-system path names no object yet).
+
+WinCreateObject (281), WinSetObjectData (250), WinDestroyObject (251): the host keeps no Workplace objects (their classes are the programs' own, `libwps`), so `WinCreateObject(class, title, setup, location, flags)` gives a handle at once and records the class with the title and setup string queued; a program that has the class makes the object when it asks for it (`wpclsQueryObject`: `wpSetupOnce` with what was queued), in that process or a later one. An object ID in the setup string that a stored object has already: `CO_FAILIFEXISTS` (0, and any unknown flag) gives NULLHANDLE, `CO_UPDATEIFEXISTS` (2) queues for that object and gives its handle, `CO_REPLACEIFEXISTS` (1) destroys it first. The class name must be 1–255 characters; the location is not used yet; a title's trailing carets are dropped. `WinSetObjectData(h, setup)` queues the string for a stored object (FALSE for none), applied with `wpSetup` when the object is next asked for. `WinDestroyObject(h)` removes the object's record, queue and IDs (FALSE when there is none); a process holding it awake keeps its copy until it frees it.
 
 WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size and state (and a frame's normal and icon positions) are kept in the user profile under an application and key name, in Warpine's own record. Restoring a minimized or maximized frame sets its normal position, then the state. Presentation parameters are not kept. The rest of PMWP (Workplace Shell objects) is not built in.
 
 **Workplace Shell classes** (ADR-0129) are not part of PMWP: they are SOM classes in the SDK's `libwps.a`, linked into a program built with GCC or clang (`$(OS2_LIBWPS)` before `$(OS2_LIBC)`; `#include <os2.h>` before `<wpobject.h>`; a class derived from them includes `<wpobject.idl>`). `WPObject` and `M_WPObject` have their first part, with the Reference's signatures (OIDL: no `Environment`):
 - `wpclsNew(cls, title, setup, folder, lock)` makes an object of a class derived from `WPObject` (NULL for `WPObject` itself): `somNew` (which calls `wpInitData`), the title (the class's `wpclsQueryTitle`, by default its name, when none is given), the class's `wpclsQueryStyle` as its style, a lock when asked, `wpSetupOnce` (by default `wpSetup`; NULL and the object freed when it fails). `wpclsQueryDefaultView` is `OPEN_SETTINGS` by default; `wpclsInitData` runs when the class object is made, `wpInitData` / `wpUnInitData` when an object is made and freed, however it is.
-- `wpSetup` reads `TITLE`, `OBJECTID` (`<NAME>`), `DEFAULTVIEW` (`SETTINGS`, `DEFAULT` or a digit, `OPEN_USER` + it) and `YES` / `NO` for `NOCOPY`, `NODELETE`, `NODRAG`, `NODROP`, `NOLINK`, `NOSHADOW`, `NOMOVE`, `NOPRINT`, `NORENAME`, `NOSETTINGS`, `NOTVISIBLE`, `TEMPLATE` and `LOCKEDINPLACE`; other keys are accepted and not used yet. `wpScanSetupString(obj, setup, key, value, &cb)` finds a key (any case; `^;` a semicolon): NULL `value` gives the size, a buffer too small FALSE and the size.
+- `wpSetup` reads `TITLE`, `OBJECTID` (`<NAME>`), `DEFAULTVIEW` (`SETTINGS`, `DEFAULT` or a digit, `OPEN_USER` + it) and `YES` / `NO` for `NOCOPY`, `NODELETE`, `NODRAG`, `NODROP`, `NOLINK`, `NOSHADOW`, `NOMOVE`, `NOPRINT`, `NORENAME`, `NOSETTINGS`, `NOTVISIBLE`, `TEMPLATE` and `LOCKEDINPLACE`; other keys are accepted and not used yet. `wpScanSetupString(obj, setup, key, value, &cb)` finds a key (any case; `^;` a semicolon; its last occurrence): NULL `value` gives the size, a buffer too small FALSE and the size.
 - `wpSetTitle` (under 256 characters) / `wpQueryTitle`, `wpSetStyle` / `wpQueryStyle`, `wpSetDefaultView` / `wpQueryDefaultView` (the class's while it is `OPEN_DEFAULT`), `wpSetObjectID` / `wpQueryObjectID`, `wpSetError` / `wpQueryError`, `wpLockObject` / `wpUnlockObject` / `wpIsLocked`, `wpIsObjectInitialized`, `wpQueryFolder`.
 - `wpAllocMem` / `wpFreeMem`: blocks freed with the object at the latest.
 - `wpSaveString` / `wpSaveLong` / `wpSaveData` keep a value with the object by class name and key; `wpRestoreString` / `Long` / `Data` give it back (a NULL buffer the size; a buffer too small FALSE). `wpSaveImmediate` and `wpSaveDeferred` call `wpSaveState`; `WPObject`'s own `wpSaveState` / `wpRestoreState` keep nothing yet. Nothing reaches OS2.INI yet.
@@ -1221,7 +1223,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 597 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 600 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1245,10 +1247,10 @@ Counts are taken from the static registry (`api_registry.rs`, 597 entries) and t
 | SOM (the SOM runtime kernel) | registry | 179 | 3 | 182 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
-| PMWP (window positions, object IDs) | registry | 3 | 0 | 3 |
+| PMWP (window positions, Workplace objects) | registry | 6 | 0 | 6 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **1016** | **19** | **1035** |
+| **Total** | | **1019** | **19** | **1038** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

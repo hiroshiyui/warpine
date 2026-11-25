@@ -34,12 +34,6 @@ const DTYP_USER: i32 = 16384;
 /// The start of WinStoreWindowPos's record (Warpine's own layout).
 const WINPOS_MAGIC: &[u8; 8] = b"WRPWPOS1";
 
-/// The user profile's applications where the SDK's `WPAbstract` keeps its
-/// objects (ADR-0129, Warpine's own format; `sdk/wps/wpsint.h` names the
-/// same): records by handle (eight hex digits), and object IDs mapped to
-/// handles (four bytes, little-endian).
-pub const WPS_APP_OBJECTS: &[u8] = b"WrpWPS:Objects";
-pub const WPS_APP_OBJECT_IDS: &[u8] = b"WrpWPS:ObjectIDs";
 /// The ULONGs of the record after its start.
 const WINPOS_FIELDS: usize = 11;
 /// `<pmerr.h>`: a bitmap handle that is no bitmap.
@@ -660,25 +654,6 @@ impl super::Loader {
         1
     }
 
-    /// WinQueryObject(PCSZ pszObjectID) -> HOBJECT: the handle of the
-    /// stored Workplace object an object ID names, from the user profile
-    /// where the SDK's `WPAbstract` maps it (ADR-0129); NULLHANDLE when it
-    /// names none, or the object is no longer stored. A file-system path
-    /// names no object yet (there is no `WPFileSystem`).
-    pub fn win_query_object(&self, psz_id: u32) -> u32 {
-        let id = self.helper_bytes(psz_id);
-        if id.is_empty() { return 0; }
-        let profiles = self.shared.profiles.lock_or_recover();
-        let dm = self.shared.drive_mgr.lock_or_recover();
-        let Ok(mapped) = profiles.query_value(&dm, HINI_USERPROFILE, WPS_APP_OBJECT_IDS, &id) else { return 0 };
-        let Ok(bytes) = <[u8; 4]>::try_from(mapped.as_slice()) else { return 0 };
-        let handle = u32::from_le_bytes(bytes);
-        let key = format!("{handle:08X}");
-        let stored = profiles.query_value(&dm, HINI_USERPROFILE, WPS_APP_OBJECTS, key.as_bytes())
-            .is_ok_and(|r| !r.is_empty());
-        if stored { handle } else { 0 }
-    }
-
     /// The codepage of a string helper: `idcp`, or the thread's queue's
     /// when 0.
     fn helper_cp(&self, vcpu_id: u32, idcp: u32) -> u32 {
@@ -761,37 +736,6 @@ mod tests {
         assert_eq!(px_to_dlg_units(14, 7, 4), 8);
         assert_eq!(dlg_units_to_px(-4, 16, 8), -8);
         assert_eq!(px_to_dlg_units(5, 0, 4), 0, "no metrics, no units");
-    }
-
-    /// WinQueryObject reads the object-ID map WPAbstract writes, and
-    /// gives a handle only while its object is still stored.
-    #[test]
-    fn object_ids_name_stored_objects() {
-        // A mock loader whose C: (where the user profile lives) is a
-        // temporary directory.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let l = super::super::Loader::new_mock();
-        {
-            let mut dm = l.shared.drive_mgr.lock_or_recover();
-            dm.set_drive_config(2, super::super::vfs::DriveConfig { host_path: tmp.path().to_path_buf(),
-                                                                    label: "T".into(), read_only: false });
-            dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
-        }
-        let write = |app: &[u8], key: &[u8], data: Option<&[u8]>| {
-            let profiles = l.shared.profiles.lock_or_recover();
-            let dm = l.shared.drive_mgr.lock_or_recover();
-            profiles.write(&dm, HINI_USERPROFILE, app, Some(key), data).unwrap();
-        };
-        let id = 0x0030_0000;
-        l.guest_write_bytes(id, b"<WP_CARD>\0").unwrap();
-        assert_eq!(l.win_query_object(id), 0, "nothing mapped");
-        write(WPS_APP_OBJECT_IDS, b"<WP_CARD>", Some(&0x0002_0005u32.to_le_bytes()));
-        assert_eq!(l.win_query_object(id), 0, "mapped, but no record");
-        write(WPS_APP_OBJECTS, b"00020005", Some(b"record"));
-        assert_eq!(l.win_query_object(id), 0x0002_0005);
-        write(WPS_APP_OBJECT_IDS, b"<WP_CARD>", Some(b"bad"));
-        assert_eq!(l.win_query_object(id), 0, "a mapping of the wrong size");
-        assert_eq!(l.win_query_object(0), 0, "no ID");
     }
 
     #[test]

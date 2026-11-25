@@ -1401,13 +1401,19 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: REXXAPI_BASE + 28, module: "REXXAPI", name: "RexxSaveMacroSpace", argc: 3,
                handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxSaveMacroSpace")) },
 
-    // ── PMWP — the Workplace Shell (window positions, object IDs; pm_winutil.rs) ──
+    // ── PMWP — the Workplace Shell (window positions, pm_winutil.rs; objects, pmwp_objects.rs) ──
     ApiEntry { ordinal: PMWP_BASE + 207, module: "PMWP", name: "WinStoreWindowPos", argc: 3,
                handler: |l,_v,i,a| ApiResult::Normal(l.win_store_window_pos(i,a[0],a[1],a[2])) },
     ApiEntry { ordinal: PMWP_BASE + 208, module: "PMWP", name: "WinRestoreWindowPos", argc: 3,
                handler: |l,_v,i,a| ApiResult::Normal(l.win_restore_window_pos(i,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: PMWP_BASE + 250, module: "PMWP", name: "WinSetObjectData", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.win_set_object_data(a[0],a[1])) },
+    ApiEntry { ordinal: PMWP_BASE + 251, module: "PMWP", name: "WinDestroyObject", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.win_destroy_object(a[0])) },
     ApiEntry { ordinal: PMWP_BASE + 252, module: "PMWP", name: "WinQueryObject", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.win_query_object(a[0])) },
+    ApiEntry { ordinal: PMWP_BASE + 281, module: "PMWP", name: "WinCreateObject", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.win_create_object(a[0],a[1],a[2],a[3],a[4])) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────

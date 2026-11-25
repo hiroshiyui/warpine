@@ -19,7 +19,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2: 32-bit (LX
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2489 unit tests (2372 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 20 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 239 integration tests
+cargo test                                 # 2493 unit tests (2376 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 20 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 239 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); then `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -48,7 +48,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 
 ## Architecture in brief
 
-1. **Execution:** `main.rs` parses the executable (`src/lx/`, `src/ne/`); `Loader::load` maps it and applies fixups; `Loader::run` sets up TIB / PIB and runs a vCPU (`vcpu.rs`). API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal; the VMEXIT goes to `api_dispatch.rs`: the registry (`api_registry.rs`, 597 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 438 ordinals) — 1035 entry points (`--compat`).
+1. **Execution:** `main.rs` parses the executable (`src/lx/`, `src/ne/`); `Loader::load` maps it and applies fixups; `Loader::run` sets up TIB / PIB and runs a vCPU (`vcpu.rs`). API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal; the VMEXIT goes to `api_dispatch.rs`: the registry (`api_registry.rs`, 600 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 438 ordinals) — 1038 entry points (`--compat`).
 2. **Threads:** one OS/2 thread = one host thread with its own vCPU.
    - All threads run paged at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread). 32-bit threads have their own page tables, identity-mapped except the thread-local page (`paging.rs`, ADR-0088; host accesses there go to the running thread's page, `guest_mem.rs`). GDT, IDT, ring-0 window and the paging arena (≤ 736 threads, ADR-0115) are supervisor-only, thunks read-only, CR0.WP set. No guest ring 0, no paging watch.
    - Warpine never writes its protected memory (GDT, IDT, stubs, paging arena) through a guest-given address: `guest_write` / `guest_write_bytes` / `guest_slice_mut` refuse it (`guest_mem::protected`); only Warpine's setup uses `system_write` / `system_write_bytes`, as must any new structure there. Copies of guest-named memory (`guest_read_bytes` / `guest_read_buffer`, guest strings) never read it either. Before an API runs, the stack must take the largest frame the host builds below it (`frame_fits`, `MAX_HOST_FRAME_BYTES`), else the process ends as by a fault.
@@ -59,7 +59,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 4. **PM:** API threads rasterise into per-frame surfaces (`src/gui/surface.rs`); the GUI thread composites them (`src/gui/sdl_renderer.rs`). Input waits in one system queue, routed when read (`pm_input.rs`, ADR-0051 / 0058). One desktop server process per session (`src/desktop/`, `src/gui/desktop_server.rs`; protocol 12; ADR-0052–0057, 0067, 0068, 0108); `WARPINE_DESKTOP=local` keeps it in-process.
 5. **Processes:** each OS/2 process is a host process (ADR-0020). Shared memory: a sealed memfd arena (ADR-0049), mapped per process through page tables so code reaches only the blocks it holds (addendum); shared semaphores: a memfd of slots (ADR-0050); named pipes: `AF_UNIX` sockets in a private session directory (ADR-0022).
 6. **Files:** drives map to host directories via the VFS (`vfs.rs`, `vfs_hostdir.rs`); C: is `$XDG_DATA_HOME/warpine/drive_c`. Guests never reach host paths outside their drives.
-7. **Built-in modules:** DOSCALLS, PMWIN, PMGPI, VIOCALLS, KBDCALLS, MOUCALLS, NLS, MSG, MDM, UCONV, SO32DLL / TCP32DLL, PMSHAPI, HELPMGR, PMSPL, PMCTLS, PMDRAG, SOM, REXX / REXXAPI, PMWP (window positions, `WinQueryObject`), WARPINE. Each has an ordinal base (`constants.rs`, `module_base`); PM sub-dispatcher arms must match `doc/os2_ordinals.md` (`test_pm*_dispatch_ordinals_match_ordinal_table`).
+7. **Built-in modules:** DOSCALLS, PMWIN, PMGPI, VIOCALLS, KBDCALLS, MOUCALLS, NLS, MSG, MDM, UCONV, SO32DLL / TCP32DLL, PMSHAPI, HELPMGR, PMSPL, PMCTLS, PMDRAG, SOM, REXX / REXXAPI, PMWP (window positions; Workplace objects by handle, `pmwp_objects.rs`, ADR-0130), WARPINE. Each has an ordinal base (`constants.rs`, `module_base`); PM sub-dispatcher arms must match `doc/os2_ordinals.md` (`test_pm*_dispatch_ordinals_match_ordinal_table`).
 
 **Guest memory layout** (`constants.rs`):
 

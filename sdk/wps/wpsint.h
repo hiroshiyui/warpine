@@ -11,14 +11,18 @@
  *   application WRP_WPS_APP_OBJECTS, key the handle in eight hex digits,
  *   data a record (WRP_WPS_RECORD_MAGIC, version, class name, saved
  *   values); WRP_WPS_APP_IDS maps an object ID (key) to its handle (four
- *   bytes, little-endian), which WinQueryObject reads; WRP_WPS_APP_HANDLES
- *   / WRP_WPS_KEY_NEXT holds the next handle to give.
+ *   bytes, little-endian), which WinQueryObject reads; WRP_WPS_APP_PENDING
+ *   holds, by handle, setup strings WinCreateObject / WinSetObjectData
+ *   queued (ADR-0130): a record without saved values is an object no
+ *   process has made yet; WRP_WPS_APP_HANDLES / WRP_WPS_KEY_NEXT holds the
+ *   next handle to give. src/loader/wps_setup.rs names the same.
  */
 #ifndef WRP_WPSINT_H
 #define WRP_WPSINT_H
 
 #define WRP_WPS_APP_OBJECTS  "WrpWPS:Objects"
 #define WRP_WPS_APP_IDS      "WrpWPS:ObjectIDs"
+#define WRP_WPS_APP_PENDING  "WrpWPS:Pending"
 #define WRP_WPS_APP_HANDLES  "WrpWPS:Handles"
 #define WRP_WPS_KEY_NEXT     "Next"
 #define WRP_WPS_FIRST_HANDLE 0x00020001UL
@@ -38,6 +42,10 @@ void      wrp_wps_set_initialized( WPObject *obj );
 /* A stored object awakened from the user profile (wpabstract.c); NULL
  * when there is none, or its class is not registered. */
 WPObject *wrp_wps_awaken( HOBJECT h );
+
+/* What WinSetObjectData queued for an awake stored object, applied
+ * (wpSetup) and saved; nothing for another object. */
+void      wrp_wps_apply_pending( WPObject *obj );
 
 /* The bytes the object's saved values take as a record's part; written
  * to buf only when cap is enough. */

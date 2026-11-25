@@ -3,6 +3,11 @@
  * wpabstract.c - WPAbstract and M_WPAbstract (ADR-0129): Workplace
  * objects kept in the user profile, in Warpine's own record format
  * (wpsint.h). The code is Warpine's own.
+ *
+ * An object WinCreateObject recorded (no saved values yet) is made when a
+ * process first asks for it: titled by its class, then wpSetupOnce with
+ * what was queued (ADR-0130); a stored object gets what WinSetObjectData
+ * queued through wpSetup, when it is awakened or asked for again.
  */
 #define INCL_WINWORKPLACE
 #define INCL_WINSHELLDATA
@@ -168,13 +173,42 @@ SOM_Scope WPObject *SOMLINK wpabM_wpclsNew( M_WPAbstract *somSelf, PSZ pszTitle,
 
 /* ---- Awakening ---- */
 
+/* The setup string queued for handle h, taken from the user profile
+ * (SOMMalloc'd, NUL-terminated); NULL when nothing is queued. */
+static char *take_pending( HOBJECT h )
+{
+    char  key[9], *text;
+    ULONG size = 0;
+    handle_key( h, key );
+    if( !PrfQueryProfileSize( HINI_USERPROFILE, WRP_WPS_APP_PENDING, key, &size ) || size == 0
+        || size > WRP_WPS_MAX_RECORD )
+        return( 0 );
+    if( !( text = (char *)SOMMalloc( size + 1 ) ) ) return( 0 );
+    if( !PrfQueryProfileData( HINI_USERPROFILE, WRP_WPS_APP_PENDING, key, text, &size ) ) { SOMFree( text ); return( 0 ); }
+    text[size] = '\0';
+    PrfWriteProfileData( HINI_USERPROFILE, WRP_WPS_APP_PENDING, key, 0, 0 );
+    return( text );
+}
+
+void wrp_wps_apply_pending( WPObject *obj )
+{
+    HOBJECT h;
+    char   *pending;
+    if( !_somIsA( obj, _WPAbstract ) || !( h = WPAbstractGetData( obj )->handle ) ) return;
+    if( !( pending = take_pending( h ) ) ) return;
+    _wpSetup( obj, pending );
+    SOMFree( pending );
+    _wpSaveImmediate( obj );
+}
+
 WPObject *wrp_wps_awaken( HOBJECT h )
 {
-    char           key[9], name[WP_MAX_TITLE];
-    ULONG          size = 0, head[3];
+    char           key[9], name[WP_MAX_TITLE], *pending = 0;
+    ULONG          size = 0, head[3], count = 0;
     unsigned char *rec;
     SOMClass      *cls;
     WPObject      *obj = 0;
+    BOOL           fresh;
     handle_key( h, key );
     if( !PrfQueryProfileSize( HINI_USERPROFILE, WRP_WPS_APP_OBJECTS, key, &size ) || size < 12 || size > WRP_WPS_MAX_RECORD )
         return( 0 );
@@ -188,10 +222,28 @@ WPObject *wrp_wps_awaken( HOBJECT h )
     /* Only a registered class that stores its objects here. */
     cls = _somFindClass( SOMClassMgrObject, somIdFromString( name ), 0, 0 );
     if( !cls || !_somDescendedFrom( cls, _WPAbstract ) ) goto done;
+    /* No saved values: WinCreateObject's, not made by any process yet. */
+    if( size - 12 - head[2] >= 4 ) memcpy( &count, rec + 12 + head[2], 4 );
+    fresh = ( count == 0 );
     if( !( obj = (WPObject *)_somNew( cls ) ) ) goto done;
     WPAbstractGetData( obj )->handle = h;
-    if( !wrp_wps_register( h, obj ) || !wrp_wps_store_read( obj, rec + 12 + head[2], size - 12 - head[2] )
-        || !_wpRestoreState( obj, 0 ) ) {
+    if( !wrp_wps_register( h, obj ) || !wrp_wps_store_read( obj, rec + 12 + head[2], size - 12 - head[2] ) ) {
+        WPAbstractGetData( obj )->handle = NULLHANDLE;
+        _somFree( obj );
+        obj = 0;
+        goto done;
+    }
+    pending = take_pending( h );
+    if( fresh ) {
+        /* Made now, as wpclsNew makes an object; when its setup fails the
+         * creation ends and the record goes (wpFree). */
+        PSZ title = _wpclsQueryTitle( (M_WPObject *)cls );
+        if( ( title && !_wpSetTitle( obj, title ) ) || !_wpSetupOnce( obj, pending ? pending : (PSZ)"" ) ) {
+            _wpFree( obj );
+            obj = 0;
+            goto done;
+        }
+    } else if( !_wpRestoreState( obj, 0 ) || ( pending && !_wpSetup( obj, pending ) ) ) {
         WPAbstractGetData( obj )->handle = NULLHANDLE;
         _somFree( obj );
         obj = 0;
@@ -199,7 +251,9 @@ WPObject *wrp_wps_awaken( HOBJECT h )
     }
     WPAbstractGetData( (WPAbstract *)obj )->storedID = _wpQueryObjectID( obj ) ? copy_string( _wpQueryObjectID( obj ) ) : 0;
     wrp_wps_set_initialized( obj );
+    if( fresh || pending ) _wpSaveImmediate( obj );
 done:
+    if( pending ) SOMFree( pending );
     SOMFree( rec );
     return( obj );
 }

@@ -69,6 +69,14 @@ Two parsers read files on drives a program can write, and had no target: `C:\CON
 
 Warpine reads no font or help file a program supplies (its fonts are built in, `GpiLoadFonts` is a stub, the Help Manager records a library's name only), so there is no such reader to fuzz yet.
 
+## Addendum (2026-11-26): Workplace setup strings
+
+`WinCreateObject` and `WinSetObjectData` (ADR-0130) bring a parser of setup strings from the program (`KEY=value;…`, `^;` a semicolon) and the joining of queued strings, in `src/loader/wps_setup.rs`, which builds alone. The `wps_setup` target's first byte splits the input into a key and a string. It checks that scanning never panics, that an escaped value scans back, that the next queued item is still found and that a later occurrence wins, and that a title is always followed safely. Within its first minute it found two problems:
+- `append` took a value ending in an escaped `^;` for the end of an item, joining it to the next one;
+- a value ending in `^` cannot be followed by another item at all, so `WinCreateObject` drops a title's trailing carets.
+
+After the fixes it ran 1.79 million inputs in two minutes without finding anything. `seed.sh` writes one setup string.
+
 ## Addendum (2026-11-25): the resolver
 
 The TCP/IP databases and resolver (v0.0.18) brought parsers of a DNS answer from the network, of the host's `/etc/hosts`, `/etc/networks` and `/etc/resolv.conf`, and of names and address strings from the program. `resolver.rs` was already pure; the address and RFC 1035 name parsers move out of `tcpip_util.rs` into `inet_names.rs` so that both build alone. The `resolver` target's first byte picks the input: a DNS message (every name in it expanded and skipped: `dn_skipname` must agree with `dn_expand`, no name over 255 bytes), each of the three files (within their bounds), or a string (a packed name expands back to itself, a parsed address prints and parses back, a query is no answer). In its first minute it found `expand_name` computing the length a name takes with `unwrap_or` / `get_or_insert`, whose argument is evaluated even when a pointer had already set it: past a backward pointer it underflowed, a panic in debug builds. With `unwrap_or_else` / `get_or_insert_with`, two minutes, 3.48 million inputs, nothing found; `seed.sh` writes one input of each kind.

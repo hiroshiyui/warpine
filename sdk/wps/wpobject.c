@@ -80,11 +80,14 @@ static char *copy_string( const char *s )
 
 /* ---- WPObject: setup ---- */
 
+/* The key's last occurrence wins: a setup string queued in parts
+ * (WinCreateObject, then WinSetObjectData) has the latest value last. */
 SOM_Scope BOOL SOMLINK wpobj_wpScanSetupString( WPObject *somSelf, PSZ pszSetupString, PSZ pszKey,
                                                 PSZ pszValue, PULONG pcbValue )
 {
-    const char *p = pszSetupString;
+    const char *p = pszSetupString, *from = 0, *to = 0, *v;
     size_t      keylen;
+    ULONG       need = 1, i = 0;
     (void)somSelf;
     if( !p || !pszKey || !pcbValue ) return( FALSE );
     keylen = strlen( pszKey );
@@ -96,23 +99,20 @@ SOM_Scope BOOL SOMLINK wpobj_wpScanSetupString( WPObject *somSelf, PSZ pszSetupS
             else if( *p == '=' && !eq ) eq = p;
             p++;
         }
-        if( eq && (size_t)( eq - name ) == keylen && same_key( name, pszKey, keylen ) ) {
-            const char *v;
-            ULONG       need = 1, i = 0;
-            for( v = eq + 1; v < p; v++ ) { if( *v == '^' && v[1] == ';' ) v++; need++; }
-            if( !pszValue ) { *pcbValue = need; return( TRUE ); }
-            if( *pcbValue < need ) { *pcbValue = need; return( FALSE ); }
-            for( v = eq + 1; v < p; v++ ) {
-                if( *v == '^' && v[1] == ';' ) v++;
-                pszValue[i++] = *v;
-            }
-            pszValue[i] = '\0';
-            *pcbValue = need;
-            return( TRUE );
-        }
+        if( eq && (size_t)( eq - name ) == keylen && same_key( name, pszKey, keylen ) ) { from = eq + 1; to = p; }
         if( *p == ';' ) p++;
     }
-    return( FALSE );
+    if( !from ) return( FALSE );
+    for( v = from; v < to; v++ ) { if( *v == '^' && v[1] == ';' ) v++; need++; }
+    if( !pszValue ) { *pcbValue = need; return( TRUE ); }
+    if( *pcbValue < need ) { *pcbValue = need; return( FALSE ); }
+    for( v = from; v < to; v++ ) {
+        if( *v == '^' && v[1] == ';' ) v++;
+        pszValue[i++] = *v;
+    }
+    pszValue[i] = '\0';
+    *pcbValue = need;
+    return( TRUE );
 }
 
 /* The value of key in setup, in buf; FALSE when there is none. */
@@ -652,7 +652,11 @@ SOM_Scope WPObject *SOMLINK wpobjM_wpclsQueryObject( M_WPObject *somSelf, HOBJEC
     (void)somSelf;
     if( !hObject ) return( 0 );
     obj = wrp_wps_lookup( hObject );
-    return( obj ? obj : wrp_wps_awaken( hObject ) );
+    if( obj ) {
+        wrp_wps_apply_pending( obj );
+        return( obj );
+    }
+    return( wrp_wps_awaken( hObject ) );
 }
 
 SOM_Scope void SOMLINK wpobjM_somDefaultInit( M_WPObject *somSelf, somInitCtrl *ctrl )

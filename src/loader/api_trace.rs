@@ -794,7 +794,10 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         o if (PMWP_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMWP_BASE {
             207 => "WinStoreWindowPos",
             208 => "WinRestoreWindowPos",
+            250 => "WinSetObjectData",
+            251 => "WinDestroyObject",
             252 => "WinQueryObject",
+            281 => "WinCreateObject",
             _ => "?",
         },
 
