@@ -90,6 +90,8 @@ Features for people using Warpine day to day. Each PM program keeps drawing on W
 - [ ] **Accessibility**: an AT-SPI bridge so screen readers read PM controls; a high-contrast theme; checked keyboard navigation in every control.
 - [ ] **Installing software**: WarpIN archives (`.wpi`; licence first) and a simple install from a ZIP archive.
 - [ ] **Session restore**: reopening the last session's programs where their windows were (extends PMWP's window positions).
+- [ ] **A Warpine login session, level 1**: the PM desktop full screen (only VIO has `WARPINE_VIO=fullscreen` today) under the kiosk compositor cage, started from a `wayland-sessions/warpine.desktop` entry and a start script, so the login screen offers "Warpine"; cage keeps the display, input and seat, so the sandbox stays as it is.
+- [ ] **A Warpine login session, level 2**: the Workplace Shell as the session's shell; log out, restart and shut down through logind; a screen lock; display, audio and network settings in the configuration program; a desktop server that restarts and recovers instead of ending the session.
 
 ## Console and multimedia
 
@@ -126,6 +128,10 @@ Each waits on a permissive public source; where none turns up and the original c
 - **Missing export lists**: DIVE, OpenGL / PGL, the SO32DLL / TCP32DLL split, dates of `unknown` exports, SOM.DLL 48+ (and with them IBM-built SOM classes, Stage B2/B3, and WPS compatibility).
 - **Undocumented behaviour**: `DB_RAISED` / `DB_DEPRESSED`; `THREADS=` (`CMDREF.INF` needs an INF reader); `WinQueryWindowPos` / `WinCreateWindow` errors.
 - **Third-party binaries**: bitwiseworks GCC / LIBCn / LIBCx (licences).
+
+## Long-term: Warpine as a Wayland compositor
+
+- [ ] **Linux applications in a Warpine session** (after level 2 of the login session): the desktop server as a Wayland compositor (Smithay), Linux windows as surfaces in Warpine's own compositor (ADR-0011) beside OS/2 programs; its own seccomp role and Landlock policy for the larger surface; needs an ADR.
 
 ## Long-term: XE, a 64-bit OS/2-lineage platform
 
