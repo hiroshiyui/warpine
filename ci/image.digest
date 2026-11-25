@@ -3,3 +3,4 @@
 # (its summary prints the line). vendor/setup_ci_image.sh --pull takes the
 # image of the current tag by this digest, and builds it when none is
 # listed. Lines of tags no longer in use may be removed.
+trixie-20261115T000000Z-rust1.100.0-deny0.19.4-fuzznightly-2026-11-15-rust-src-r2 sha256:b212a1f381426d99767cdc56772f960edaed3ae62597f0da47beafba1c02b076
