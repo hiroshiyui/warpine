@@ -83,3 +83,15 @@ Tests: `holders_have_their_own_access`, `lost_blocks_are_those_let_go`, `reaping
 - **Fixed on the way:** `DosRead` of a file ignored a buffer it could not write and returned `NO_ERROR`; it now returns `ERROR_INVALID_PARAMETER`, as for a pipe.
 
 Tests: `the_arena_guard_allows_only_held_ranges`, `host_accesses_reach_only_held_blocks`; `shmem_test` (`DosWrite` from a block not got fails, from one got read-only works, `DosRead` into it fails; 31 checks + 22 in the child); `a_16_bit_program_cannot_reach_the_shared_arena`.
+
+## Addendum (2026-11-25): changes of the holds ordered under the table's lock
+
+A security audit of v0.0.18 found three ways a process kept a block after letting it go, which matter because the next allocation takes the lowest free range, so another process soon has it:
+
+1. `arena_fault` read the table under its lock but wrote the block's page entries after it. A fault racing a free by another thread of the process wrote them after the free had unmapped the block, and nothing unmapped it again: guest code kept reaching the block.
+2. `recv` / `recvfrom` handed the kernel a slice of guest memory checked before a wait of unbounded length; a block freed meanwhile was written by the kernel after another process got it.
+3. `arena_allows` read the table file unlocked and stored what it read. A read made before a free and stored after it put the block back into the cached holds, which later API calls trusted.
+
+**Decision.** Every change of what the process reaches happens inside the table's lock, before the lock lets another process take the range: `with_arena_table` unmaps the blocks let go (and flushes the TLBs), writes the table, sets the holds and zeroes freed memory, in that order; `arena_fault` writes its entries inside the lock. `ArenaGuard` counts the changes set under the lock (a generation); a refresh runs outside the guard's lock and is kept only when the generation did not move meanwhile, else the call is answered from the holds of that change. A host call that blocks never keeps a slice of guest memory: the sockets receive into host memory and copy out through the checked path.
+
+**Consequences.** A single API call still checks its buffer and then copies, so a block freed by another thread in between can be reached once by that copy (no longer afterwards); TLB flushes still do not wait for every vCPU to see them. Both are short windows that close by themselves and stay listed in the TODOs. Tests: `a_fault_never_maps_a_block_let_go` (fails within 32 iterations when the entries are written after the lock with a widened window), `a_refresh_older_than_a_change_is_not_kept` (fails with the generation check removed), `recv_writes_guest_memory_only_through_the_checked_path`.

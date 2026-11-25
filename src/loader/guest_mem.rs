@@ -126,7 +126,18 @@ pub struct ArenaGuard {
     /// Look again (the session's table, read without its lock: it is
     /// replaced by rename, so a read sees one whole version); `None` when
     /// it cannot be read, which keeps the holds known.
-    pub refresh: Box<dyn Fn() -> Option<Vec<HeldBlock>> + Send + Sync>,
+    pub refresh: std::sync::Arc<dyn Fn() -> Option<Vec<HeldBlock>> + Send + Sync>,
+    /// Bumped by each [`GuestMemory::set_arena_holds`] (a change made
+    /// under the table's lock): a refresh read before it is stale and is
+    /// not kept (it could list a block just let go).
+    generation: u64,
+}
+
+impl ArenaGuard {
+    /// A guard knowing `holds`, looking again with `refresh`.
+    pub fn new(holds: Vec<HeldBlock>, refresh: Box<dyn Fn() -> Option<Vec<HeldBlock>> + Send + Sync>) -> Self {
+        ArenaGuard { holds, refresh: refresh.into(), generation: 0 }
+    }
 }
 
 /// Whether `start..end` lies inside held blocks (writable ones for a
@@ -178,10 +189,12 @@ impl GuestMemory {
         *self.arena.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(guard);
     }
 
-    /// The blocks the process holds now (after a change of the table).
+    /// The blocks the process holds now: called under the session table's
+    /// lock after a change of it, so it overrules any refresh read before.
     pub fn set_arena_holds(&self, holds: Vec<HeldBlock>) {
         if let Some(g) = self.arena.write().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
             g.holds = holds;
+            g.generation += 1;
         }
     }
 
@@ -197,15 +210,24 @@ impl GuestMemory {
             return true;
         }
         let (start, end) = (start.max(lo), end.min(hi));
-        let refresh = {
+        let (refresh, seen) = {
             let g = self.arena.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(guard) = g.as_ref() else { return true };
             if covered(&guard.holds, start, end, write) { return true; }
-            (guard.refresh)()
+            (guard.refresh.clone(), guard.generation)
         };
-        let Some(holds) = refresh else { return false };
+        // Read without the guard's lock, so a change of the holds need not
+        // wait for a file read.
+        let Some(holds) = refresh() else { return false };
+        let mut g = self.arena.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(guard) = g.as_mut() else { return true };
+        if guard.generation != seen {
+            // The table changed under its lock meanwhile: what was read may
+            // be older than that change (security audit 2026-11-25, H3).
+            return covered(&guard.holds, start, end, write);
+        }
         let ok = covered(&holds, start, end, write);
-        self.set_arena_holds(holds);
+        guard.holds = holds;
         ok
     }
 
@@ -467,7 +489,7 @@ mod tests {
         assert!(!covered(&held, u64::from(A) + 0x3000, u64::from(A) + 0x3004, true), "read-only");
         let gm = GuestMemory::alloc(0x1000);
         assert!(gm.arena_allows(A, 4, true), "no guard: not checked");
-        gm.guard_arena(ArenaGuard { holds: held.to_vec(), refresh: Box::new(|| None) });
+        gm.guard_arena(ArenaGuard::new(held.to_vec(), Box::new(|| None)));
         assert!(gm.arena_allows(A + 4, 4, true));
         assert!(!gm.arena_allows(A + 0x2000, 4, false));
         assert!(gm.arena_allows(A - 8, 4, true) && gm.arena_allows(A + SHARED_ARENA_SIZE, 4, true), "outside");
@@ -475,6 +497,32 @@ mod tests {
         assert!(!gm.arena_allows(A + 0x1FFE, 4, false), "straddling into a gap");
         gm.set_arena_holds(Vec::new());
         assert!(!gm.arena_allows(A + 4, 4, false), "let go");
+    }
+
+    /// A refresh that read the table before a change made under its lock
+    /// is not kept (security audit 2026-11-25, H3): here the block is let
+    /// go (`set_arena_holds`, from another thread) while the refresh still
+    /// returns the old table that lists it.
+    #[test]
+    fn a_refresh_older_than_a_change_is_not_kept() {
+        use super::super::constants::SHARED_ARENA_BASE as A;
+        use super::{ArenaGuard, GuestMemory};
+        use std::sync::{Arc, OnceLock, atomic::{AtomicU32, Ordering}};
+        let cell: Arc<OnceLock<Arc<GuestMemory>>> = Arc::new(OnceLock::new());
+        let calls = Arc::new(AtomicU32::new(0));
+        let (c, n) = (cell.clone(), calls.clone());
+        let gm = Arc::new(GuestMemory::alloc(0x1000));
+        cell.set(gm.clone()).ok().unwrap();
+        gm.guard_arena(ArenaGuard::new(Vec::new(), Box::new(move || {
+            if n.fetch_add(1, Ordering::SeqCst) > 0 { return Some(Vec::new()); }
+            // The first look reads the old table, which lists the block;
+            // before it returns, the block is let go under the table's lock.
+            c.get().unwrap().set_arena_holds(Vec::new());
+            Some(vec![(A, A + 0x1000, true)])
+        })));
+        assert!(!gm.arena_allows(A, 4, true), "the change came after the look: the old table is not used");
+        assert!(!gm.arena_allows(A, 4, true), "nor kept");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "the second call looked again");
     }
 
     /// Memory handed out again is zero, as OS/2 commits it: DosAllocMem

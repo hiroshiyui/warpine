@@ -33,9 +33,10 @@
 //! names the arena (device and inode), so a process that somehow has
 //! another arena does not share blocks under the same addresses.
 //!
-//! Limits (Warpine's): the guest can read and write every block of the
-//! arena whether or not its process holds it, and the access flags of a
-//! get or give are checked but not enforced.
+//! Access (ADR-0049 addenda): guest code reaches only the blocks its
+//! process holds, through its page tables (`arena_fault`), and so do API
+//! calls through guest addresses (`GuestMemory::arena_allows`); a holder
+//! may hold a block read-only. Both views change under the table's lock.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -451,10 +452,6 @@ impl Arena {
 
 // ── The session's table ──────────────────────────────────────────────────
 
-/// What one use of the table gives: `f`'s result, the blocks this process
-/// let go (offset, size) and the blocks it holds afterwards.
-type TableRun<R> = (R, Vec<(u32, u32)>, Vec<HeldBlock>);
-
 /// Why the table cannot be used.
 #[derive(Debug)]
 pub struct TableUnavailable;
@@ -471,7 +468,7 @@ impl super::SharedState {
         let arena = self.arena.get().ok_or(TableUnavailable)?;
         let slots = self.thread_slots.lock_or_recover();
         let session = slots.session().ok_or(TableUnavailable)?;
-        let run = || -> std::io::Result<TableRun<R>> {
+        let run = || -> std::io::Result<R> {
             let t = session.tables()?;
             let bytes = t.read(SHARED_MEM_TABLE, MAX_TABLE_BYTES)?.unwrap_or_default();
             let mut table = ArenaTable::parse(&bytes);
@@ -491,23 +488,25 @@ impl super::SharedState {
             }
             let before = table.clone();
             let r = f(&mut table, &live, &mut freed);
+            // All of this under the lock (security audit 2026-11-25): another
+            // process may take a range as soon as it is released, so this
+            // process's guest code loses the blocks it let go before the
+            // table says so, its API calls lose them before the lock goes
+            // (a refresh read earlier is then not kept, `GuestMemory::
+            // set_arena_holds`), and their memory is zeroed.
+            let me = self.process_id();
+            self.unmap_arena_blocks(&lost_blocks(&before, &table, me));
             if table != before || !freed.is_empty() || bytes.is_empty() {
                 t.write(SHARED_MEM_TABLE, &table.encode())?;
             }
-            // Still under the lock: another process may take the range as
-            // soon as it is released.
+            self.guest_mem.set_arena_holds(held_blocks(&table, me));
             for (offset, size) in freed {
                 arena.zero(offset, size);
             }
-            let me = self.process_id();
-            Ok((r, lost_blocks(&before, &table, me), held_blocks(&table, me)))
+            Ok(r)
         };
         match run() {
-            Ok((r, lost, held)) => {
-                self.guest_mem.set_arena_holds(held);
-                self.unmap_arena_blocks(&lost);
-                Ok(r)
-            }
+            Ok(r) => Ok(r),
             Err(e) => {
                 warn!("shared arena: the session's table cannot be used: {e}");
                 Err(TableUnavailable)
@@ -562,10 +561,10 @@ impl super::SharedState {
         let table = self.thread_slots.lock_or_recover().session().map(|s| s.dir_path().join(SHARED_MEM_TABLE));
         if let Some(table) = table {
             let me = self.process_id();
-            self.guest_mem.guard_arena(ArenaGuard {
-                holds: Vec::new(),
-                refresh: Box::new(move || held_in_table_file(&table, id, me)),
-            });
+            self.guest_mem.guard_arena(ArenaGuard::new(
+                Vec::new(),
+                Box::new(move || held_in_table_file(&table, id, me)),
+            ));
         }
         // Make sure the table is this arena's (or say why not).
         if self.with_arena_table(|_, _, _| ()).is_err() {
@@ -706,27 +705,32 @@ impl super::Loader {
         if !in_arena(addr) { return None; }
         let me = self.shared.process_id();
         let offset = addr - SHARED_ARENA_BASE;
-        let held = self.shared.with_arena_table(|t, _, _| {
-            t.containing(offset).map(|b| (b.offset, b.size, b.access_of(me)))
-        }).ok()?;
-        let Some((base, size, access)) = held.filter(|&(_, _, a)| a != PageAccess::None) else {
-            return Some(FaultKind::Violation);
-        };
-        let present = self.guest_read::<u32>(process_pte_at(addr)?).is_some_and(|e| e & 1 != 0);
-        if present && (!write || access == PageAccess::ReadWrite) {
-            // Mapped meanwhile by another thread, or a stale TLB entry.
-            return Some(FaultKind::Retry);
-        }
-        if write && access != PageAccess::ReadWrite {
-            return Some(FaultKind::Violation);
-        }
-        for page in (base..base + size).step_by(PAGE as usize) {
-            let a = SHARED_ARENA_BASE + page;
-            if let Some(at) = process_pte_at(a) {
-                self.system_write::<u32>(at, process_pte(a, access));
+        let pte = process_pte_at(addr)?;
+        // The pages are written under the table's lock, as a free unmaps
+        // them under it: written after it, they could outlive the block's
+        // release by another thread (security audit 2026-11-25, H1).
+        self.shared.with_arena_table(|t, _, _| {
+            let Some((base, size, access)) = t.containing(offset)
+                .map(|b| (b.offset, b.size, b.access_of(me)))
+                .filter(|&(_, _, a)| a != PageAccess::None) else {
+                return FaultKind::Violation;
+            };
+            let present = self.guest_read::<u32>(pte).is_some_and(|e| e & 1 != 0);
+            if present && (!write || access == PageAccess::ReadWrite) {
+                // Mapped meanwhile by another thread, or a stale TLB entry.
+                return FaultKind::Retry;
             }
-        }
-        Some(FaultKind::Retry)
+            if write && access != PageAccess::ReadWrite {
+                return FaultKind::Violation;
+            }
+            for page in (base..base + size).step_by(PAGE as usize) {
+                let a = SHARED_ARENA_BASE + page;
+                if let Some(at) = process_pte_at(a) {
+                    self.system_write::<u32>(at, process_pte(a, access));
+                }
+            }
+            FaultKind::Retry
+        }).ok()
     }
 
     /// `DosQueryMem` in the arena (ADR-0049 addendum): a block this
@@ -978,7 +982,7 @@ mod tests {
         let id = l.shared.arena.get().unwrap().id();
         let path = d.path().join("s").join(SHARED_MEM_TABLE);
         let p = path.clone();
-        l.shared.guest_mem.guard_arena(ArenaGuard { holds: Vec::new(), refresh: Box::new(move || held_in_table_file(&p, id, me)) });
+        l.shared.guest_mem.guard_arena(ArenaGuard::new(Vec::new(), Box::new(move || held_in_table_file(&p, id, me))));
         let gm = &l.shared.guest_mem;
         assert!(!gm.arena_allows(SHARED_ARENA_BASE, 4, false), "nothing held yet");
         assert!(gm.arena_allows(SHARED_ARENA_BASE - 4, 4, true), "below the arena");
@@ -999,6 +1003,38 @@ mod tests {
         assert!(!gm.arena_allows(b, 4, true), "but not written");
         assert_eq!(l.arena_free(a), Some(NO_ERROR));
         assert!(!gm.arena_allows(a, 4, false), "let go");
+        l.shared.leave_thread_session();
+    }
+
+    /// A fault never maps a block let go meanwhile (security audit
+    /// 2026-11-25, H1): one thread faults on a block over and over while
+    /// another allocates and frees it; right after each free, before it is
+    /// allocated again, its page must not be present.
+    #[test]
+    fn a_fault_never_maps_a_block_let_go() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let d = tempfile::tempdir().unwrap();
+        let l = loader_in_session(d.path());
+        l.shared.process_tables_ready.store(true, Ordering::Release);
+        let pte = process_pte_at(SHARED_ARENA_BASE).unwrap();
+        let done = AtomicBool::new(false);
+        /// Stops the faulting thread also when an assertion fails.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> { fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); } }
+        std::thread::scope(|s| {
+            s.spawn(|| while !done.load(Ordering::Relaxed) {
+                let _ = l.arena_fault(SHARED_ARENA_BASE, true);
+            });
+            let _stop = Stop(&done);
+            for i in 0..300 {
+                assert_eq!(l.arena_alloc(DYNAMIC_ALLOC_BASE, None, 0x1000, PAG_READ | PAG_WRITE), Some(NO_ERROR));
+                assert_eq!(l.guest_read::<u32>(DYNAMIC_ALLOC_BASE), Some(SHARED_ARENA_BASE), "the lowest block");
+                std::thread::yield_now();
+                assert_eq!(l.arena_free(SHARED_ARENA_BASE), Some(NO_ERROR));
+                let e = l.guest_read::<u32>(pte).unwrap();
+                assert_eq!(e & 1, 0, "iteration {i}: a block let go stays unmapped");
+            }
+        });
         l.shared.leave_thread_session();
     }
 

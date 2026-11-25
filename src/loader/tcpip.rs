@@ -833,21 +833,42 @@ impl super::Loader {
     pub fn so_recv(&self, s: u32, buf_ptr: u32, len: u32, flags: u32) -> u32 {
         debug!("recv(s=0x{:X}, len={}, flags={})", s, len, flags);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
-        let Some(buf) = self.guest_slice_mut(buf_ptr, len as usize) else {
-            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
-            return SOCK_ERROR;
-        };
+        let Some(mut buf) = self.so_recv_buffer(buf_ptr, len) else { return SOCK_ERROR; };
         if let Err(e) = self.so_wait(fd, libc::POLLIN, flags) { return self.so_fail(e); }
+        // SAFETY: `buf` is a live host buffer of `buf.len()` bytes.
         let received = unsafe {
-            libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, len as usize, flags as i32)
+            libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), flags as i32)
         };
         if received < 0 {
             let e = errno_to_soce(last_errno());
             self.shared.socket_mgr.lock_or_recover().set_errno(e);
             return SOCK_ERROR;
         }
+        if !self.so_recv_deliver(buf_ptr, &buf[..received as usize]) { return SOCK_ERROR; }
         self.shared.socket_mgr.lock_or_recover().clear_errno();
         received as u32
+    }
+
+    /// A host buffer for a receive into the guest's `buf_ptr` (`len` bytes,
+    /// at most `MAX_SOCKET_BUF`), or None with `SOCEFAULT`. The kernel never
+    /// writes guest memory itself: a receive may block for as long as the
+    /// peer likes, and the guest buffer, checked now, may by then be a
+    /// shared block another process holds (security audit 2026-11-25, H2).
+    fn so_recv_buffer(&self, buf_ptr: u32, len: u32) -> Option<Vec<u8>> {
+        let len = (len as usize).min(MAX_SOCKET_BUF);
+        if self.guest_slice_mut(buf_ptr, len).is_none() {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
+            return None;
+        }
+        Some(vec![0; len])
+    }
+
+    /// The bytes received, copied to the guest's buffer through the checked
+    /// path; false (with `SOCEFAULT`) when it may no longer be written.
+    fn so_recv_deliver(&self, buf_ptr: u32, data: &[u8]) -> bool {
+        if data.is_empty() || self.guest_write_bytes(buf_ptr, data).is_some() { return true; }
+        self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
+        false
     }
 
     // ── recvfrom (ordinal 12) ─────────────────────────────────────────────────
@@ -859,17 +880,14 @@ impl super::Loader {
                        from_ptr: u32, fromlen_ptr: u32) -> u32 {
         debug!("recvfrom(s=0x{:X}, len={}, flags={})", s, len, flags);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
-        let Some(buf) = self.guest_slice_mut(buf_ptr, len as usize) else {
-            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
-            return SOCK_ERROR;
-        };
+        let Some(mut buf) = self.so_recv_buffer(buf_ptr, len) else { return SOCK_ERROR; };
 
         let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
         let mut from_len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
 
         if let Err(e) = self.so_wait(fd, libc::POLLIN, flags) { return self.so_fail(e); }
         let received = unsafe {
-            libc::recvfrom(fd, buf.as_mut_ptr() as *mut libc::c_void, len as usize,
+            libc::recvfrom(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(),
                 flags as i32,
                 &mut storage as *mut _ as *mut libc::sockaddr,
                 &mut from_len)
@@ -879,6 +897,7 @@ impl super::Loader {
             self.shared.socket_mgr.lock_or_recover().set_errno(e);
             return SOCK_ERROR;
         }
+        if !self.so_recv_deliver(buf_ptr, &buf[..received as usize]) { return SOCK_ERROR; }
         if from_ptr != 0 && fromlen_ptr != 0 {
             let guest_len = self.guest_read::<u32>(fromlen_ptr).unwrap_or(0) as usize;
             let copy_len = (from_len as usize).min(guest_len);
@@ -1806,6 +1825,33 @@ mod tests {
 
         loader.so_close(cli_h);
         loader.so_close(srv_h);
+    }
+
+    /// recv receives into a host buffer and copies it out through the
+    /// checked path (security audit 2026-11-25, H2): a buffer that may not
+    /// be written fails with SOCEFAULT before anything is read, and a
+    /// receive takes at most MAX_SOCKET_BUF bytes.
+    #[test]
+    fn recv_writes_guest_memory_only_through_the_checked_path() {
+        use std::io::Write;
+        use std::os::unix::io::IntoRawFd;
+        let (mut peer, mine) = std::os::unix::net::UnixStream::pair().unwrap();
+        let loader = Loader::new_mock();
+        let h = loader.shared.socket_mgr.lock_or_recover().alloc(mine.into_raw_fd());
+        peer.write_all(&vec![7u8; MAX_SOCKET_BUF + 100]).unwrap();
+        let gdt = crate::loader::constants::SYSTEM_AREA_BASE;
+        assert_eq!(loader.so_recv(h, gdt, 16, 0), SOCK_ERROR, "protected memory");
+        assert_eq!(loader.so_sock_errno(), SOCBASEERR + SOCE_FAULT as u32);
+        let buf = loader.shared.mem_mgr.lock_or_recover().alloc((2 * MAX_SOCKET_BUF) as u32).unwrap();
+        let got = loader.so_recv(h, buf, (2 * MAX_SOCKET_BUF) as u32, 0);
+        assert_eq!(got as usize, MAX_SOCKET_BUF, "one receive is capped");
+        assert_eq!(loader.guest_read::<u8>(buf + got - 1), Some(7));
+        assert_eq!(loader.guest_read::<u8>(buf + got), Some(0), "nothing past what was received");
+        let mut from = [0u8; 16];
+        assert_eq!(loader.so_recvfrom(h, buf, 1000, 0, 0, 0), 100, "the rest, by recvfrom");
+        from[0] = loader.guest_read::<u8>(buf + 99).unwrap();
+        assert_eq!(from[0], 7);
+        loader.so_close(h);
     }
 
     #[test]
