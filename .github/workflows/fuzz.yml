@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: fuzz
@@ -46,9 +47,16 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
+      - name: Log in to GitHub's registry (read-only), for the published image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin || echo "No registry login: the image will be built"
+
       - name: Fuzz in the pinned image
         env:
           CI_JOBS: "4"
+          CI_IMAGE_PULL: "1"
           # A number of seconds only: anything else falls back to ten minutes.
           SECONDS_IN: ${{ github.event.inputs.seconds }}
         run: |

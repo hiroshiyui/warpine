@@ -6,7 +6,8 @@
 #   ci/run.sh watcom gcc clang    # (default: all three)
 #   FUZZ_SECONDS=600 ci/run.sh fuzz   # the weekly long fuzz runs
 #
-# Builds the image if needed (vendor/setup_ci_image.sh), then runs
+# Builds the image if needed (vendor/setup_ci_image.sh; with
+# CI_IMAGE_PULL=1 pulls the published one first), then runs
 # ci/matrix.sh in it with /dev/kvm, the repository mounted at its own
 # path and the caller's user id. Cargo builds into target/ci, and the C
 # samples go to samples/build/ci-<cc>, apart from a workstation's own
@@ -15,7 +16,13 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 cd "$ROOT"
-"$ROOT/vendor/setup_ci_image.sh"
+# CI_IMAGE_PULL=1 (GitHub's CI): the published image by its pinned digest,
+# built here only when there is none (ADR-0106 addendum).
+if [ "${CI_IMAGE_PULL:-}" = 1 ]; then
+    "$ROOT/vendor/setup_ci_image.sh" --pull
+else
+    "$ROOT/vendor/setup_ci_image.sh"
+fi
 IMAGE=$("$ROOT/vendor/setup_ci_image.sh" --print-image)
 [ $# -gt 0 ] || set -- watcom gcc clang
 for mode in "$@"; do

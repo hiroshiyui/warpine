@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The CI image (ADR-0106 addendum): build vendor/setup_ci_image.sh's image
+# once and publish it to GitHub's registry, so the test and fuzz jobs pull
+# one image instead of each building it from Debian's snapshot archive and
+# rustup (dozens of downloads, any of which could fail a test run).
+#
+# Runs when the image's inputs change, and on demand. Publishes nothing
+# when the tag is already published. Its summary prints the line to add
+# to ci/image.digest: until that is committed, the jobs build the image.
+#
+# Supply chain: no third-party actions; the image's inputs are pinned as
+# setup_ci_image.sh says, and the jobs pull it by digest only.
+name: CI image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - vendor/setup_ci_image.sh
+      - vendor/setup_compilers.sh
+      - rust-toolchain.toml
+      - fuzz/rust-toolchain.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ci-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build and publish the CI image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the commit (plain git)
+        env:
+          REPO: ${{ github.server_url }}/${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          git init -q .
+          git fetch -q --depth=1 "$REPO" "$SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Log in to GitHub's registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Build and publish (three tries: the build downloads a lot)
+        run: |
+          for i in 1 2 3; do
+              vendor/setup_ci_image.sh --publish && exit 0
+              echo "::warning::attempt $i failed"
+              sleep $((i * 60))
+          done
+          exit 1

@@ -95,7 +95,7 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 Open Watcom stays the ABI baseline; a modern toolchain enters only through stable formats (i386 ELF in, LX out, `lx-link` the bridge).
 
 - [ ] **C SDK** (ADR-0095–0100): `os2rc` HELPTABLE / HELPSUBTABLE, ASSOCTABLE, FONTDIR, string resource names; undeclared entries (`gen_api -- check-headers`); float and long double math.
-- [ ] **CI and C++** (ADR-0101–0110): cache the CI image and crates; C++ exceptions through Warpine's callbacks; clang ignores `-fnon-call-exceptions` (ADR-0110); a C++ standard library.
+- [ ] **CI and C++** (ADR-0101–0110): cache the crates in CI; C++ exceptions through Warpine's callbacks; clang ignores `-fnon-call-exceptions` (ADR-0110); a C++ standard library.
 - [ ] **Ported software**: 🚧 bitwiseworks GCC / LIBCn / LIBCx as regression inputs (licences first); the DOSCALLS ordinals they import; their current versions and debug formats.
 
 ## Blockers

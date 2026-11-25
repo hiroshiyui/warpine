@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # CI (ADR-0106): the test matrix of ci/matrix.sh, in the pinned image of
 # vendor/setup_ci_image.sh, on GitHub's Linux runners (which have KVM).
+# The image is pulled from GitHub's registry by the digest ci/image.digest
+# pins (ci-image.yml publishes it), and built only when there is none.
 #
 # Supply chain: no third-party actions. The checkout is plain git, and
 # everything else runs in the image, whose inputs are pinned by digest,
@@ -16,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -48,8 +51,15 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
+      - name: Log in to GitHub's registry (read-only), for the published image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin || echo "No registry login: the image will be built"
+
       - name: Run the matrix entry in the pinned image
         env:
           SAMPLES: ${{ matrix.samples }}
           CI_JOBS: "4"
+          CI_IMAGE_PULL: "1"
         run: ci/run.sh "$SAMPLES"

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- **CI pulls a published image instead of building it in every job** (ADR-0106 addendum): the new `ci-image.yml` workflow publishes the pinned image to GitHub's registry when its inputs change, `ci/image.digest` pins it by digest, and the test and fuzz jobs pull it (building it as before when there is no pin or the pull fails). The image build retries its downloads and no longer asks rustup to check for its own update, the call behind two failed runs.
+
 ### Security
 - **A process could keep a shared block after letting it go** (ADR-0049 third addendum, found by a security audit of v0.0.18): a page fault on the block racing its free by another thread mapped it again for good; `recv` / `recvfrom` let the kernel write a buffer checked before a wait, by then perhaps a block another process had been given; and a look at the session's table taken before a free and stored after it put the block back among those API calls may use. The page entries, the holds and the table now change in order under the table's lock, a stale look is dropped, and sockets receive into host memory and copy out through the checked path (one receive takes at most 64 KB).
 

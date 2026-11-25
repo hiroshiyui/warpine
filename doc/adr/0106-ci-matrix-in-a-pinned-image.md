@@ -53,3 +53,15 @@ The tests need KVM, SDL3, GDB, the pinned Open Watcom snapshot and the pinned co
 
   The `gcc` entry was then run from a fresh worktree with `ci/run.sh`, which reproduces a clean checkout.
 - `.gitignore` ignores the debug companions (`*.dbg`) and the message files built in `samples/c_msg_test`.
+
+## Addendum (2026-11-25): the image is published once and pulled by digest
+
+**Context.** Each CI job built the image itself: Debian packages from snapshot.debian.org, rustup and two toolchains, cargo-deny — three builds a push, dozens of downloads each. On 2026-11-25 two runs out of three failed this way (`curl: (56) Connection died` in rustup's self-update check), before any of Warpine's code was built.
+
+**Decision.**
+- `.github/workflows/ci-image.yml` builds the image once and publishes it to GitHub's registry (`ghcr.io/hiroshiyui/warpine-ci`) under the tag `setup_ci_image.sh` already derives from every pin; it runs when those inputs change, and on demand, with `packages: write` (the only workflow that has it) and three tries. A tag already published is not pushed again: a rebuild would not give the same digest.
+- `ci/image.digest` pins each tag to the digest it was published with (`<tag> <digest>`, committed by hand from the workflow's summary). `setup_ci_image.sh --pull` takes the current tag's image by that digest, so a replaced or tampered image fails the pull, and builds the image as before when the tag has no pin yet or the pull fails three times.
+- `ci.yml` and `fuzz.yml` set `CI_IMAGE_PULL=1` and log in with a read-only token; a workstation keeps building unless it sets `CI_IMAGE_PULL=1` too.
+- The build itself retries its downloads (`curl --retry`, apt's `Acquire::Retries`) and installs the fuzz toolchain with `--no-self-update`, which removes the call that failed.
+
+**Consequences.** A test job downloads one image from GitHub's own registry instead of building it. A change of the pins takes two commits to reach the pulled path: the change (the jobs build, the image is published) and the pin. The registry's copy is trusted only through the committed digest; the image's own inputs stay pinned as before.

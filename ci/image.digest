@@ -1,0 +1,5 @@
+# The published CI images (ADR-0106 addendum): one line per image tag,
+# "<tag> <digest>", added after .github/workflows/ci-image.yml publishes it
+# (its summary prints the line). vendor/setup_ci_image.sh --pull takes the
+# image of the current tag by this digest, and builds it when none is
+# listed. Lines of tags no longer in use may be removed.

@@ -374,6 +374,7 @@ WARPINE_SAMPLES=gcc cargo test --test integration
 ./vendor/setup_compilers.sh        # pinned GCC and clang in a Podman image, by digest and snapshot date
 CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc
 ci/run.sh gcc                      # a CI matrix entry (watcom, gcc, clang) in the pinned image (ADR-0106)
+CI_IMAGE_PULL=1 ci/run.sh gcc      # the same in the published image, pulled by the digest ci/image.digest pins
 ```
 
 C++ works too, with exceptions and RTTI (ADR-0103): `os2.mk` gives `OS2_CXX` and `OS2_CXXFLAGS`, and a program links `libos2cxx.a` before `libos2c.a`. Exceptions pass between a program and its DLLs (ADR-0107), and an OS/2 exception handler may `throw`, so a trap unwinds the frames that trapped and runs their destructors (ADR-0110).
