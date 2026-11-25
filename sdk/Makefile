@@ -4,7 +4,9 @@
 #   make CC=clang   the runtime for clang, in build/clang/
 # It writes crt0.o (link it first in a program), dll0.o (link it first in
 # a DLL), libos2c.a (link it last), and libos2cxx.a, the C++ runtime
-# (link it before libos2c.a; ADR-0103), with g++ or clang++.
+# (link it before libos2c.a; ADR-0103), with g++ or clang++; and, when
+# somidl is built, libwps.a, the Workplace Shell classes (ADR-0129), with
+# their bindings in include/ (`make wps` builds them alone).
 
 WARPINE_SDK_BUILDING = 1
 include os2.mk
@@ -48,10 +50,31 @@ $(OS2_LIBCXX): $(CXX_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# The Workplace Shell classes: bindings from the IDL, then the library.
+WPS_IDL     = include/wpobject.idl
+WPS_HEADERS = $(OS2_BUILD)/include/wpobject.h
+WPS_CFLAGS  = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -Werror -I$(OS2_BUILD)/wps
+ifneq ($(wildcard $(SOMIDL)),)
+all: $(OS2_LIBWPS)
+endif
+wps: $(OS2_LIBWPS)
+
+$(WPS_HEADERS) $(OS2_BUILD)/wps/wpobject.ih &: $(WPS_IDL) include/wptypes.idl $(wildcard include/som*.idl) $(SOMIDL)
+	mkdir -p $(OS2_BUILD)/include $(OS2_BUILD)/wps
+	$(SOMIDL) -I include -s h -o $(OS2_BUILD)/include $(WPS_IDL)
+	$(SOMIDL) -I include -s ih -o $(OS2_BUILD)/wps $(WPS_IDL)
+
+$(OS2_BUILD)/wps/%.o: wps/%.c $(OS2_BUILD)/wps/%.ih $(WPS_HEADERS) $(HEADERS)
+	$(CC) $(WPS_CFLAGS) -c $< -o $@
+
+$(OS2_LIBWPS): $(OS2_BUILD)/wps/wpobject.o
+	rm -f $@
+	$(AR) rcs $@ $^
+
 $(OS2_BUILD):
 	mkdir -p $@
 
 clean:
 	rm -rf build
 
-.PHONY: all clean
+.PHONY: all clean wps

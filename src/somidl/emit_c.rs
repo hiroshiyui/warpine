@@ -22,10 +22,15 @@
 // after its parents' and explicit metaclass's `NewClass`. Exceptions are
 // structs with an `ex_<name>` id; `raises` adds nothing to the C
 // signature: the exception travels in the Environment (somSetException).
+//
+// An interface only declared forward (`interface WPFolder;`) is an object
+// type (`WPFolder *`), declared as a `SOMObject` in the usage bindings. A
+// parent or metaclass from an included IDL file whose implementation names
+// a `filestem` has its usage bindings included (`#include <stem.h>`).
 
 use super::ast::*;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
 /// The root classes: their bindings are in the SDK's som.h, and their
@@ -130,6 +135,8 @@ struct Emitter<'a> {
     type_names: HashMap<String, String>,
     /// The sequence types used: struct name to element C type.
     sequences: RefCell<BTreeMap<String, String>>,
+    /// Interfaces only declared forward: object types.
+    forwards: BTreeSet<String>,
 }
 
 type Res<T> = Result<T, String>;
@@ -167,7 +174,20 @@ impl<'a> Emitter<'a> {
             }
         }
         module_names(defs, &mut Vec::new(), &mut type_names);
-        Emitter { known, type_names, sequences: RefCell::new(BTreeMap::new()) }
+        fn forward_names(defs: &[Definition], out: &mut BTreeSet<String>) {
+            for d in defs {
+                match d {
+                    Definition::Forward(n) => { out.insert(n.clone()); }
+                    Definition::Module { defs, .. } => forward_names(defs, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut forwards = BTreeSet::new();
+        forward_names(defs, &mut forwards);
+        let known: HashMap<&str, Known> = known;
+        forwards.retain(|n| !known.contains_key(n.as_str()) && !ROOT_CLASSES.contains(&n.as_str()));
+        Emitter { known, type_names, sequences: RefCell::new(BTreeMap::new()), forwards }
     }
 
     /// The C name of class `name` (a root class keeps its own).
@@ -206,7 +226,7 @@ impl<'a> Emitter<'a> {
             Type::Named(n) => {
                 let last = n.parts.last().cloned().unwrap_or_default();
                 if let Some(k) = self.known.get(last.as_str()) { format!("{} *", k.cname) }
-                else if ROOT_CLASSES.contains(&last.as_str()) { format!("{last} *") }
+                else if ROOT_CLASSES.contains(&last.as_str()) || self.forwards.contains(&last) { format!("{last} *") }
                 else { self.type_names.get(&last).cloned().unwrap_or(last) }
             }
         })
@@ -795,11 +815,27 @@ pub fn emit(defs: &[Definition], stem: &str, kinds: &[&str]) -> Result<Vec<Outpu
             "h" | "xh" => {
                 let cpp = kind == "xh";
                 let (base, objects) = if cpp { ("som.xh", "class") } else { ("som.h", "typedef") };
-                let _ = writeln!(out, "#ifndef SOM_{g}_{kind}\n#define SOM_{g}_{kind}\n\n#include <{base}>\n#include <somapi.h>\n");
-                // Every class's object type first: they name one another.
+                let _ = writeln!(out, "#ifndef SOM_{g}_{kind}\n#define SOM_{g}_{kind}\n\n#include <{base}>\n#include <somapi.h>");
+                // The usage bindings of parents and metaclasses from other
+                // files that name their filestem.
+                let mut stems = BTreeSet::new();
+                for c in &classes {
+                    for other in c.parents.iter().chain(c.meta.iter()) {
+                        let Some(k) = e.known.get(other.as_str()).filter(|k| k.iface.file != 0) else { continue };
+                        if let Some(stem) = class_modifier(k.iface, "filestem").map(modifier_text) { stems.insert(stem); }
+                    }
+                }
+                for stem in &stems { let _ = writeln!(out, "#include <{stem}.{kind}>"); }
+                out.push('\n');
+                // Every class's object type first: they name one another;
+                // then the interfaces only declared forward.
                 for c in &classes {
                     if objects == "class" { let _ = writeln!(out, "class {};", c.name); }
                     else { let _ = writeln!(out, "#ifndef {0}_defined\n#define {0}_defined\ntypedef SOMObject {0};\n#endif", c.name); }
+                }
+                for f in &e.forwards {
+                    if objects == "class" { let _ = writeln!(out, "class {f};"); }
+                    else { let _ = writeln!(out, "#ifndef {f}_defined\n#define {f}_defined\ntypedef SOMObject {f};\n#endif"); }
                 }
                 let mut body = String::new();
                 e.module_types(&mut body, defs, &mut Vec::new())?;

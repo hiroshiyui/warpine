@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wptypes.idl - the OS/2 C types the Workplace Shell classes' IDL names
+// (ADR-0129)
+//
+// Each stands for the os2.h type of the same name (IDL has no pointers);
+// somidl's emitters use the name as it is and never emit these
+// declarations, so a program includes <os2.h> before a WPS class's header.
+#ifndef wptypes_idl
+#define wptypes_idl
+
+typedef unsigned long ULONG;
+typedef unsigned long BOOL;
+typedef unsigned long PSZ;
+typedef unsigned long PULONG;
+typedef unsigned long PBYTE;
+typedef unsigned long PVOID;
+
+#endif

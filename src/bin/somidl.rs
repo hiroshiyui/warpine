@@ -263,6 +263,30 @@ mod tests {
         };\n\
         interface Kid : Counter { implementation { add: override; }; };\n";
 
+    /// A class derived from WPObject (ADR-0129): its parent's usage
+    /// bindings included by the parent's filestem, and an interface only
+    /// declared forward is an object type.
+    #[test]
+    fn included_parents_and_forward_interfaces() {
+        let text = "#include <wpobject.idl>\n\
+            interface Shelf;\n\
+            interface Note : WPObject {\n\
+            \x20 void putOn(in Shelf shelf);\n\
+            \x20 implementation { callstyle = oidl; wpSetup: override; };\n\
+            };\n";
+        let h = emitted(text, "h");
+        assert!(h.contains("#include <somapi.h>\n#include <wpobject.h>\n"), "{h}");
+        assert!(h.contains("#ifndef Shelf_defined\n#define Shelf_defined\ntypedef SOMObject Shelf;\n#endif"), "{h}");
+        assert!(h.contains("typedef void SOMLINK somTP_Note_putOn( Note *somSelf, Shelf *shelf );"), "{h}");
+        assert!(emitted(text, "xh").contains("#include <wpobject.xh>\n\nclass Note;"), "C++: the parent's .xh");
+        // A class of the main file is not included, nor a root class's,
+        // and a forward declaration of a declared class adds nothing.
+        let h = emitted("#include <somobj.idl>\ninterface B;\ninterface A : SOMObject { void f(in B b); };\n\
+                         interface B : A { };\n", "h");
+        assert!(!h.contains("#include <wpobject") && !h.contains("typedef SOMObject B;\n#endif\n#ifndef B_defined"), "{h}");
+        assert!(h.contains("somTP_A_f( A *somSelf, Environment *ev, B *b );"), "{h}");
+    }
+
     /// The usage bindings: method types, NewClass, ClassData in release
     /// order, the class macro, `_method` macros with the Environment.
     #[test]

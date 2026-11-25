@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wpobject.idl - WPObject, the root Workplace object class, and its
+// metaclass M_WPObject (ADR-0129)
+//
+// The methods are those the OS/2 Warp 4 Toolkit *Workplace Shell
+// Programming Reference* documents, with its signatures (OIDL call style:
+// no Environment); this is the first part of the class: setup, title,
+// style, default view, object ID, errors, memory, the save / restore
+// calls, deletion and locking. The release order, the constants' values
+// and the instance data are Warpine's own (the Toolkit's wpobject.idl is
+// not used). The class is built into the SDK's libwps.a (sdk/wps/).
+//
+// A program includes <os2.h> before <wpobject.h>; a class derived from
+// WPObject includes this file in its IDL, and its bindings include
+// <wpobject.h> (filestem).
+#ifndef wpobject_idl
+#define wpobject_idl
+
+#include <somcls.idl>
+#include <wptypes.idl>
+
+interface WPFolder;
+interface M_WPObject;
+
+// Object styles (wpQueryStyle, wpSetStyle; the class's are
+// wpclsQueryStyle's CLSSTYLE_ values, the same bits).
+const unsigned long OBJSTYLE_NOMOVE        = 0x00000002;
+const unsigned long OBJSTYLE_NOLINK        = 0x00000004;
+const unsigned long OBJSTYLE_NOCOPY        = 0x00000008;
+const unsigned long OBJSTYLE_NOTDEFAULTICON = 0x00000010;
+const unsigned long OBJSTYLE_TEMPLATE      = 0x00000020;
+const unsigned long OBJSTYLE_NODELETE      = 0x00000040;
+const unsigned long OBJSTYLE_NOPRINT       = 0x00000080;
+const unsigned long OBJSTYLE_NODRAG        = 0x00000100;
+const unsigned long OBJSTYLE_NOTVISIBLE    = 0x00000200;
+const unsigned long OBJSTYLE_NOSETTINGS    = 0x00000400;
+const unsigned long OBJSTYLE_NORENAME      = 0x00000800;
+const unsigned long OBJSTYLE_NODROP        = 0x00001000;
+const unsigned long OBJSTYLE_NODROPON      = 0x00002000;
+const unsigned long OBJSTYLE_CUSTOMICON    = 0x00004000;
+const unsigned long OBJSTYLE_LOCKEDINPLACE = 0x00020000;
+
+const unsigned long CLSSTYLE_NEVERMOVE     = 0x00000002;
+const unsigned long CLSSTYLE_NEVERLINK     = 0x00000004;
+const unsigned long CLSSTYLE_NEVERCOPY     = 0x00000008;
+const unsigned long CLSSTYLE_DONTTEMPLATE  = 0x00000020;
+const unsigned long CLSSTYLE_NEVERDELETE   = 0x00000040;
+const unsigned long CLSSTYLE_NEVERPRINT    = 0x00000080;
+const unsigned long CLSSTYLE_NEVERDRAG     = 0x00000100;
+const unsigned long CLSSTYLE_NEVERVISIBLE  = 0x00000200;
+const unsigned long CLSSTYLE_NEVERSETTINGS = 0x00000400;
+const unsigned long CLSSTYLE_NEVERRENAME   = 0x00000800;
+const unsigned long CLSSTYLE_NEVERDROPON   = 0x00002000;
+
+// Views (wpQueryDefaultView, wpclsQueryDefaultView); OPEN_USER and above
+// are a class's own.
+const unsigned long OPEN_UNKNOWN   = 0xFFFFFFFF;
+const unsigned long OPEN_DEFAULT   = 0;
+const unsigned long OPEN_CONTENTS  = 1;
+const unsigned long OPEN_SETTINGS  = 2;
+const unsigned long OPEN_HELP      = 3;
+const unsigned long OPEN_RUNNING   = 4;
+const unsigned long OPEN_PROMPTDLG = 5;
+const unsigned long OPEN_PALETTE   = 121;
+const unsigned long OPEN_USER      = 0x6500;
+
+// wpDelete's and wpConfirmDelete's results.
+const unsigned long OK_DELETE     = 1;
+const unsigned long NO_DELETE     = 2;
+const unsigned long CANCEL_DELETE = 3;
+
+// The longest title wpSetTitle takes, its NUL included (the Reference:
+// CCHMAXPATHCOMP).
+const unsigned long WP_MAX_TITLE = 256;
+
+interface WPObject : SOMObject
+{
+    void wpInitData();
+    // The object's instance data to a known state (zero-filled before);
+    // an override calls its parent first.
+    void wpUnInitData();
+    // Frees what wpInitData allocated; an override calls its parent last.
+    BOOL wpSetup(in PSZ pszSetupString);
+    // "KEY=value;KEY2=value;" pairs (^; a literal semicolon).
+    BOOL wpSetupOnce(in PSZ pszSetupString);
+    // Called once, when the object is created (wpclsNew); calls wpSetup.
+    BOOL wpScanSetupString(in PSZ pszSetupString, in PSZ pszKey, in PSZ pszValue, in PULONG pcbValue);
+    // The value of pszKey in pszSetupString.
+    BOOL wpSetTitle(in PSZ pszNewTitle);
+    PSZ wpQueryTitle();
+    BOOL wpSetStyle(in ULONG ulNewStyle);
+    ULONG wpQueryStyle();
+    BOOL wpSetDefaultView(in ULONG ulView);
+    ULONG wpQueryDefaultView();
+    BOOL wpSetObjectID(in PSZ pszObjectID);
+    PSZ wpQueryObjectID();
+    BOOL wpSetError(in ULONG ulErrorId);
+    ULONG wpQueryError();
+    PBYTE wpAllocMem(in ULONG cbBytes, in PULONG prc);
+    BOOL wpFreeMem(in PBYTE pByte);
+    BOOL wpSaveState();
+    BOOL wpRestoreState(in ULONG ulReserved);
+    BOOL wpSaveString(in PSZ pszClass, in ULONG ulKey, in PSZ pszValue);
+    BOOL wpRestoreString(in PSZ pszClass, in ULONG ulKey, in PSZ pszValue, in PULONG pcbValue);
+    BOOL wpSaveLong(in PSZ pszClass, in ULONG ulKey, in ULONG ulValue);
+    BOOL wpRestoreLong(in PSZ pszClass, in ULONG ulKey, in PULONG pulValue);
+    BOOL wpSaveData(in PSZ pszClass, in ULONG ulKey, in PBYTE pValue, in ULONG cbValue);
+    BOOL wpRestoreData(in PSZ pszClass, in ULONG ulKey, in PBYTE pValue, in PULONG pcbValue);
+    BOOL wpSaveImmediate();
+    BOOL wpSaveDeferred();
+    BOOL wpFree();
+    ULONG wpDelete(in ULONG fConfirmations);
+    ULONG wpConfirmDelete(in ULONG fConfirmations);
+    BOOL wpIsObjectInitialized();
+    void wpLockObject();
+    BOOL wpUnlockObject();
+    BOOL wpIsLocked();
+    WPFolder wpQueryFolder();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: wpInitData, wpUnInitData, wpSetup, wpSetupOnce, wpScanSetupString,
+                      wpSetTitle, wpQueryTitle, wpSetStyle, wpQueryStyle,
+                      wpSetDefaultView, wpQueryDefaultView, wpSetObjectID, wpQueryObjectID,
+                      wpSetError, wpQueryError, wpAllocMem, wpFreeMem,
+                      wpSaveState, wpRestoreState, wpSaveString, wpRestoreString,
+                      wpSaveLong, wpRestoreLong, wpSaveData, wpRestoreData,
+                      wpSaveImmediate, wpSaveDeferred, wpFree, wpDelete, wpConfirmDelete,
+                      wpIsObjectInitialized, wpLockObject, wpUnlockObject, wpIsLocked,
+                      wpQueryFolder;
+        callstyle = oidl;
+        filestem = wpobject;
+        functionprefix = wpobj_;
+        metaclass = M_WPObject;
+        majorversion = 1;
+        minorversion = 2;
+        PSZ title;
+        PSZ objectID;
+        ULONG style;
+        ULONG defaultView;
+        ULONG error;
+        ULONG locks;
+        BOOL initialized;
+        WPFolder folder;
+        PVOID saved;
+        PVOID memory;
+        somDefaultInit: override;
+        somDestruct: override;
+    };
+#endif
+};
+
+interface M_WPObject : SOMClass
+{
+    WPObject wpclsNew(in PSZ pszTitle, in PSZ pszSetupEnv, in WPFolder Folder, in BOOL fLock);
+    // A new object: initialized (wpInitData), titled, styled by the class,
+    // then wpSetupOnce with pszSetupEnv; NULL when that fails, or for
+    // WPObject itself (no object of it can be created).
+    PSZ wpclsQueryTitle();
+    // The default title of the class's objects.
+    ULONG wpclsQueryStyle();
+    // The class's style (CLSSTYLE_): its new objects' first style.
+    ULONG wpclsQueryDefaultView();
+    // The view wpQueryDefaultView gives an object whose own is OPEN_DEFAULT.
+    void wpclsInitData();
+    // Called when the class object is made; an override calls its parent
+    // first.
+    void wpclsUnInitData();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: wpclsNew, wpclsQueryTitle, wpclsQueryStyle, wpclsQueryDefaultView,
+                      wpclsInitData, wpclsUnInitData;
+        callstyle = oidl;
+        filestem = wpobject;
+        functionprefix = wpobjM_;
+        majorversion = 1;
+        minorversion = 2;
+        somDefaultInit: override;
+    };
+#endif
+};
+
+#endif

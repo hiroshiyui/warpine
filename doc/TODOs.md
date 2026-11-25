@@ -16,7 +16,7 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 - [ ] 🚧 **IBM's SOM.DLL ordinals 48+ and control blocks**: Warpine's own ordinals (3072+, ADR-0123) serve programs built from source; IBM-built binaries need IBM's ordinals and initializer / destructor / assignment control blocks. Unused by `somBuildClass` (ADR-0073): DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`. An interface repository (`somInterfaceRepository` is NULL).
 - [ ] **`somidl`**, if needed: OIDL `.csc` input, an `ir` emitter and interface repository, `TC_<Name>` TypeCode constants for declared types (the kernel has TypeCodes, ADR-0128), DSOM.
 - [ ] **Smaller**: C++ SOM objects on the stack and in static storage; `dllname` for `somLocateClassFile`; `SOMU` classes, `SOMIR`, IDL metadata.
-- [ ] **WPS classes**: `WPObject`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`; persistence in OS2.INI; settings notebooks; `wpDragOver` / `wpDrop`.
+- [ ] **WPS classes** (ADR-0129: guest code in the SDK's `libwps.a`): the rest of `WPObject` (views — `wpOpen`, `wpClose`, `wpViewObject`; icons; pop-up menus; `wpCopyObject` / `wpMoveObject`; the object-ID registry, `wpclsQueryObject`); `WPAbstract` (persistence in OS2.INI), `WPTransient`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`; settings notebooks; `wpDragOver` / `wpDrop`; a Workplace Shell process with `WinCreateObject`.
 
 ## Kernel and processes
 

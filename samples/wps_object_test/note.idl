@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// note.idl - a Workplace object class of the program's own (ADR-0129):
+// Note, derived from WPObject, with its own metaclass M_Note. It adds a
+// TEXT setup key, saves and restores its text, counts its
+// initializations, and gives its class a title, a style and a class
+// initializer of its own.
+#include <wpobject.idl>
+
+interface M_Note;
+
+interface Note : WPObject
+{
+    PSZ queryText();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: queryText;
+        callstyle = oidl;
+        functionprefix = note_;
+        metaclass = M_Note;
+        PSZ text;
+        wpInitData: override;
+        wpUnInitData: override;
+        wpSetup: override;
+        wpSaveState: override;
+        wpRestoreState: override;
+    };
+#endif
+};
+
+interface M_Note : M_WPObject
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        functionprefix = noteM_;
+        wpclsQueryTitle: override;
+        wpclsQueryStyle: override;
+        wpclsInitData: override;
+    };
+#endif
+};

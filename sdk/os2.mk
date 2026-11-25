@@ -35,6 +35,12 @@ OS2_CRT0   = $(OS2_BUILD)/crt0.o
 OS2_DLL0   = $(OS2_BUILD)/dll0.o
 OS2_LIBCXX = $(OS2_BUILD)/libos2cxx.a
 OS2_LIBC   = $(OS2_BUILD)/libos2c.a
+# The Workplace Shell classes (ADR-0129): WPObject and M_WPObject, built
+# with somidl; link $(OS2_LIBWPS) before $(OS2_LIBC). Their bindings
+# (<wpobject.h>, from include/wpobject.idl) are generated into
+# $(OS2_BUILD)/include, so build $(OS2_LIBWPS) before compiling a program
+# that includes them.
+OS2_LIBWPS = $(OS2_BUILD)/libwps.a
 
 # Freestanding i386 ELF that lx-link can link: no position-independent
 # code, no stack protector, a section per function so --gc-sections can
@@ -55,7 +61,8 @@ else
 OS2_BASEFLAGS += -mincoming-stack-boundary=2
 endif
 OS2_COMPILER_INCLUDE := $(shell $(CC) -m32 -print-file-name=include)
-OS2_CFLAGS = $(OS2_BASEFLAGS) -nostdinc -isystem $(WARPINE_SDK)/include -isystem $(OS2_COMPILER_INCLUDE)
+OS2_CFLAGS = $(OS2_BASEFLAGS) -nostdinc -isystem $(WARPINE_SDK)/include -isystem $(OS2_BUILD)/include \
+             -isystem $(OS2_COMPILER_INCLUDE)
 
 # C++ (ADR-0103): g++ beside gcc, clang++ beside clang (a path keeps its
 # directory), Warpine's C++ headers before the C ones, exceptions and
@@ -74,4 +81,6 @@ OS2_CXXFLAGS = $(filter-out -ffreestanding,$(OS2_BASEFLAGS)) \
 ifndef WARPINE_SDK_BUILDING
 $(OS2_LIBC) $(OS2_CRT0) $(OS2_DLL0) $(OS2_LIBCXX):
 	$(MAKE) -C $(WARPINE_SDK) CC=$(CC) OS2_BUILD=$(OS2_BUILD)
+$(OS2_LIBWPS): $(SOMIDL)
+	$(MAKE) -C $(WARPINE_SDK) CC=$(CC) OS2_BUILD=$(OS2_BUILD) SOMIDL=$(SOMIDL) wps
 endif
