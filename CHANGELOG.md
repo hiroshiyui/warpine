@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **The SOM class manager's registry calls** (SOM Programming Reference; Warpine's own ordinals 3410–3414, ADR-0123): `somSubstituteClass` (the lookups by a class's name give an immediate child instead, and `<Class>New()` makes it) with the SDK's `SOM_SubstituteClass(Old, New)`, `somMergeInto` (another class manager becomes `SOMClassMgrObject`), `_get_somRegisteredClasses` (a sequence of every registered class) and `_get_somInterfaceRepository` (NULL: there is none). `som_idl_test` has 59 checks. 1022 entry points.
 
 ### Changed
+- **The Workplace Shell is built on SOM** (ADR-0127): XPCOM, listed as an alternative, is no longer considered.
 - **A confined process runs with the GPU drivers' shader disk caches off** (ADR-0111 addendum): `ci/check_desktop.sh` with `strace` on a Wayland / PipeWire / NVIDIA desktop showed the driver trying its cache in the home directory, which the sandbox keeps out of reach on purpose. Warpine now runs itself again at its start with `__GL_SHADER_DISK_CACHE=0` and `MESA_SHADER_CACHE_DISABLE=true` when they are missing (unless `WARPINE_SANDBOX=off`), so the drivers stop trying. The script reports that cache and `/proc` thread naming as expected refusals.
 
 ### Security
