@@ -264,6 +264,13 @@ pub const SOMOBJECT_METHODS: &[(u32, &str)] = &[
     (3218, "somDefaultAssign"), (3219, "somDefaultConstAssign"),
     (3220, "somDefaultVAssign"), (3221, "somDefaultConstVAssign"),
 ];
+/// Whether SOM ordinal `ord` is the procedure of a root class's method
+/// (not another export of the module, nor the not-implemented one).
+pub fn is_root_method(ord: u32) -> bool {
+    ord != NOT_IMPLEMENTED
+        && [SOMOBJECT_METHODS, SOMCLASS_METHODS, SOMCLASSMGR_METHODS].iter().any(|t| t.iter().any(|&(o, _)| o == ord))
+}
+
 pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
     (3300, "somNew"), (3328, "somRenew"), (3310, "somInitClass"), (3313, "somClassReady"),
     (3302, "somGetName"), (3303, "somGetParent"), (3309, "somDescendedFrom"), (3317, "somCheckVersion"),
@@ -549,7 +556,7 @@ pub struct SomRuntime {
     /// class registered in a `somApplyInfo`.
     pub apply: HashMap<u32, u32>,
     /// The buffers of the live `somVaBuf`s.
-    pub va_buffers: HashSet<u32>,
+    pub va_buffers: HashMap<u32, u32>,
 }
 
 impl SomRuntime {

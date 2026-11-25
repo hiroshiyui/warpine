@@ -127,6 +127,11 @@ pub const MAX_HOOKS_PER_SCOPE: usize = 64;
 pub const CHAIN_BLOCK_BYTES: u32 = 48;
 /// Most arguments of a chained call.
 pub const MAX_CHAIN_ARGS: usize = 6;
+/// The most host frames (calls into the guest) one thread nests before a
+/// chain's next call is skipped: guest code that makes the host call it
+/// back without end (somDispatch dispatching itself, a window procedure
+/// sending to itself) ends there instead of growing host memory.
+pub const MAX_CHAIN_NESTING: usize = 512;
 
 /// Scope key of the process ("system") hooks in [`HookTable`].
 const PROCESS_SCOPE: u32 = 0;

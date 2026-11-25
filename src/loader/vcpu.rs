@@ -2250,7 +2250,7 @@ fn continue_call_chain(
     saved_rip: u64,
     saved_rsp: u64,
 ) {
-    use super::pm_hook::{CallStep, ChainEnd, CHAIN_BLOCK_BYTES, MAX_CHAIN_ARGS};
+    use super::pm_hook::{CallStep, ChainEnd, CHAIN_BLOCK_BYTES, MAX_CHAIN_ARGS, MAX_CHAIN_NESTING};
     while let Some(step) = chain.steps.pop_front() {
         match step {
             CallStep::Builtin { hwnd, msg, mp1, mp2 } => {
@@ -2264,10 +2264,25 @@ fn continue_call_chain(
                     continue; // destroyed by an earlier call
                 }
                 args.truncate(MAX_CHAIN_ARGS);
-                let block_at = (saved_rsp - 4) as u32 - CHAIN_BLOCK_BYTES;
+                // The call goes below the API caller's stack, which the
+                // guest chose: a call that nests too deep, or whose frame
+                // cannot be written there, is skipped as if it returned 0
+                // rather than ending the process (security audit
+                // 2026-11-25; somDispatch can dispatch itself, each level
+                // a host frame).
+                let frame = (saved_rsp as u32).checked_sub(4 + CHAIN_BLOCK_BYTES).and_then(|block_at| {
+                    let sp = block_at.checked_sub(4 * (args.len() as u32 + 1))?;
+                    loader.guest_slice_mut(sp, (block_at + CHAIN_BLOCK_BYTES - sp) as usize).map(|_| (block_at, sp))
+                });
+                let Some((block_at, sp)) = frame.filter(|_| callback_stack.len() < MAX_CHAIN_NESTING) else {
+                    warn!("call chain: a call to {proc_addr:#x} skipped (nested {} deep, or no room for its frame below {saved_rsp:#x})",
+                          callback_stack.len());
+                    chain.returned(0, false);
+                    continue;
+                };
                 let words = block.len().min((CHAIN_BLOCK_BYTES / 4) as usize);
                 for (i, w) in block.iter().take(words).enumerate() {
-                    loader.guest_write::<u32>(block_at + 4 * i as u32, *w).expect("call-chain stack OOB");
+                    let _ = loader.guest_write::<u32>(block_at + 4 * i as u32, *w);
                 }
                 if words > 0 && block_arg < args.len() {
                     args[block_arg] = block_at;
@@ -2278,10 +2293,9 @@ fn continue_call_chain(
                     kind: FrameKind::CallChain { chain, stops: stop_on_true },
                 });
                 let mut regs = vcpu.get_regs().unwrap();
-                let sp = block_at - 4 * (args.len() as u32 + 1);
-                loader.guest_write::<u32>(sp, CALLBACK_RET_TRAP).expect("call-chain stack OOB");
+                let _ = loader.guest_write::<u32>(sp, CALLBACK_RET_TRAP);
                 for (i, a) in args.iter().enumerate() {
-                    loader.guest_write::<u32>(sp + 4 * (i as u32 + 1), *a).expect("call-chain stack OOB");
+                    let _ = loader.guest_write::<u32>(sp + 4 * (i as u32 + 1), *a);
                 }
                 regs.rsp = sp as u64;
                 regs.rip = proc_addr as u64;
@@ -2498,6 +2512,38 @@ mod tests {
             assert_eq!((seg.selector, seg.dpl), (0x13, 3));
         }
         assert_eq!((s.fs.selector, s.fs.dpl), (0x1B, 3));
+    }
+
+    /// A chain call is skipped, as if it returned 0, when its frame has no
+    /// room below the guest's stack or calls nest too deep (security audit
+    /// 2026-11-25): the process goes on instead of the host panicking.
+    #[test]
+    fn a_chain_call_without_room_or_nested_too_deep_is_skipped() {
+        use super::super::constants::DYNAMIC_ALLOC_BASE;
+        use super::super::pm_hook::{CallChain, CallStep, ChainThen, MAX_CHAIN_NESTING};
+        let loader = super::super::Loader::new_mock();
+        let chain = || Box::new(CallChain::new(0, vec![CallStep::hook(0x1_0000, vec![1, 2], false)], false, ChainThen::ReturnLast));
+        let mut vcpu = MockVcpu::new();
+        let mut stack = Vec::new();
+        // Just above the paging arena (protected), and near address 0.
+        for saved_rsp in [u64::from(DYNAMIC_ALLOC_BASE) + 8, 8] {
+            continue_call_chain(&mut vcpu, &loader, &mut stack, chain(), 0x4242, saved_rsp);
+            assert!(stack.is_empty(), "{saved_rsp:#x}: no frame pushed");
+            let r = vcpu.get_regs().unwrap();
+            assert_eq!((r.rip, r.rsp, r.rax), (0x4242, saved_rsp, 0), "{saved_rsp:#x}: back to the caller");
+        }
+        let ok_rsp = 0x8_0000u64;
+        for _ in 0..MAX_CHAIN_NESTING {
+            stack.push(CallbackFrame { saved_rip: 0, saved_rsp: 0, kind: FrameKind::CallChain {
+                chain: Box::new(CallChain::new(0, Vec::new(), false, ChainThen::ReturnLast)), stops: false } });
+        }
+        continue_call_chain(&mut vcpu, &loader, &mut stack, chain(), 0x4242, ok_rsp);
+        assert_eq!(stack.len(), MAX_CHAIN_NESTING, "too deep: skipped");
+        assert_eq!(vcpu.get_regs().unwrap().rip, 0x4242);
+        stack.clear();
+        continue_call_chain(&mut vcpu, &loader, &mut stack, chain(), 0x4242, ok_rsp);
+        assert_eq!(stack.len(), 1, "with room: the call is made");
+        assert_eq!(vcpu.get_regs().unwrap().rip, 0x1_0000);
     }
 
     /// Every message the modal loop dispatches is called at the same stack

@@ -30,3 +30,7 @@ Separately, Open Watcom-built samples had an empty `argv` and no environment. Th
 - Gaps:
   - Exit codes reach the parent through the host process, so only 8 bits arrive.
   - Signals to processes other than one's own children need an id-to-host-pid map for the session.
+
+## Addendum (2026-11-25): wrapped numbering skips ids in use
+
+Ids wrap from `MAX_PROCESS_ID` (0xFFFF) back to `FIRST_CHILD_PROCESS_ID`, and nothing kept a long session from giving out an id still in use: a live process's, or a dead one's that the shared-memory table still names as a holder until its next sweep. The new process would then hold that process's shared blocks (holders are OS/2 ids). The security audit of 2026-11-25 found this. `take_process_id` now skips, under the session directory's lock, the ids of live process records and every holder in the `shmem` table; the counter moves on past the id given. Shared semaphores record each opener's host identity too, so a reused id does not match a dead opener there.

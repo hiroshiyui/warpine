@@ -196,9 +196,12 @@ impl Locked {
         let _ = std::fs::remove_file(self.path(name));
     }
 
-    /// The session's next process id (`FIRST_CHILD_PROCESS_ID` when the
-    /// counter is missing or malformed); the counter moves on past it.
-    fn take_process_id(&self) -> std::io::Result<u32> {
+    /// The session's next process id not in `busy` (`FIRST_CHILD_PROCESS_ID`
+    /// when the counter is missing or malformed); the counter moves on past
+    /// it. Ids wrap after `MAX_PROCESS_ID`, so a long session comes back to
+    /// ids still in use: a live process's, or a dead one's that a table
+    /// still names (security audit 2026-11-25).
+    fn take_process_id(&self, busy: &HashSet<u32>) -> std::io::Result<u32> {
         let current = match OpenOptions::new().read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(self.path(PID_COUNTER)) {
             Ok(f) => {
@@ -213,7 +216,11 @@ impl Locked {
             // A link or something else odd: start again.
             Err(_) => { self.remove(PID_COUNTER); None }
         };
-        let id = current.unwrap_or(FIRST_CHILD_PROCESS_ID);
+        let mut id = current.unwrap_or(FIRST_CHILD_PROCESS_ID);
+        for _ in FIRST_CHILD_PROCESS_ID..=MAX_PROCESS_ID {
+            if !busy.contains(&id) { break; }
+            id = next_process_id(id);
+        }
         let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
             .custom_flags(libc::O_NOFOLLOW).open(self.path(PID_COUNTER))?;
         f.write_all(format!("{}\n", next_process_id(id)).as_bytes())?;
@@ -574,7 +581,15 @@ impl ThreadSession {
     /// cannot be used, or the process is leaving).
     pub fn next_process_id(&mut self) -> Option<u32> {
         if self.local_only || self.left { return None; }
-        match self.dir.lock().and_then(|l| l.take_process_id()) {
+        let taken = self.dir.lock().and_then(|l| {
+            let tables = SessionTables { l, session: self };
+            let mut busy = tables.live_processes()?;
+            if let Some(bytes) = tables.read(SHARED_MEM_TABLE, super::shared_arena::MAX_TABLE_BYTES)? {
+                busy.extend(super::shared_arena::table_holders(&bytes));
+            }
+            tables.l.take_process_id(&busy)
+        });
+        match taken {
             Ok(id) => Some(id),
             Err(e) => { self.fall_back("cannot number a child process", &e); None }
         }
@@ -1038,6 +1053,30 @@ mod tests {
         // … and goes with the last one, with the directory.
         b.leave();
         assert!(!d.path().join("s").exists());
+    }
+
+    /// Numbering skips ids still in use once it comes round to them
+    /// (security audit 2026-11-25): a live process's, and those the
+    /// shared-memory table names as holders (a dead one's until a sweep).
+    #[test]
+    fn numbering_skips_ids_in_use() {
+        use super::super::constants::{PAG_READ, PAG_WRITE};
+        use super::super::shared_arena::ArenaTable;
+        let d = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let mut a = procs.session(d.path(), 64, 10);
+        a.join(None).unwrap();
+        let mut b = procs.session(d.path(), 64, 20).with_os2pid(FIRST_CHILD_PROCESS_ID + 202);
+        b.join(None).unwrap();
+        let mut t = ArenaTable::parse(b"");
+        let off = t.alloc(1, PAG_READ | PAG_WRITE, None, FIRST_CHILD_PROCESS_ID + 200).unwrap();
+        t.hold_as(off, FIRST_CHILD_PROCESS_ID + 201, false).unwrap();
+        std::fs::write(d.path().join("s").join(SHARED_MEM_TABLE), t.encode()).unwrap();
+        std::fs::write(d.path().join("s").join(PID_COUNTER), format!("{}\n", FIRST_CHILD_PROCESS_ID + 200)).unwrap();
+        assert_eq!(a.next_process_id(), Some(FIRST_CHILD_PROCESS_ID + 203), "two holders and a live process skipped");
+        assert_eq!(a.next_process_id(), Some(FIRST_CHILD_PROCESS_ID + 204), "the counter moved past it");
+        a.leave();
+        b.leave();
     }
 
     #[test]

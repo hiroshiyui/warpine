@@ -200,6 +200,7 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 ## Kernel and processes
 
+- **Queue limits**: a queue holds at most 65,536 elements and 256 MB of copied data, and `DosWriteQueue` answers `ERROR_QUE_NO_MEMORY` past either (OS/2 bounds a queue by the shared memory its writers allocate; Warpine copies elements, so it sets limits of its own).
 - **Exit lists**:
   - the 5 s grace even when a handler continues;
   - a routine that returns, calls `DosExit` or faults counting as `EXLST_EXIT`;

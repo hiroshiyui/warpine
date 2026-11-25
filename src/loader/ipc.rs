@@ -715,6 +715,13 @@ pub struct QueueEntry {
     pub id: u32,
 }
 
+/// The largest element `DosWriteQueue` copies.
+pub const MAX_QUEUE_ELEMENT: u32 = 64 * 1024 * 1024;
+/// The most elements, and bytes, one queue holds (Warpine's limits; OS/2
+/// bounds a queue by the memory its writers share).
+pub const MAX_QUEUE_ITEMS: usize = 1 << 16;
+pub const MAX_QUEUE_BYTES: usize = 256 * 1024 * 1024;
+
 pub struct OS2Queue {
     pub name: String,
     pub items: VecDeque<QueueEntry>,

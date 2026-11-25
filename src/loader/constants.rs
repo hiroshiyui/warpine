@@ -981,6 +981,8 @@ pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
 pub const ERROR_INIT_ROUTINE_FAILED: u32 = 295;
+/// `DosWriteQueue`: the queue holds as much as it may (bseerr.h).
+pub const ERROR_QUE_NO_MEMORY: u32 = 334;
 pub const ERROR_INVALID_PARAMETER:    u32 = 87;
 /// `DosSetDateTime`: a date or time field out of range (`<bseerr.h>`).
 pub const ERROR_TS_DATETIME:          u32 = 327;

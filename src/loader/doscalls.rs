@@ -175,6 +175,10 @@ impl super::Loader {
             if len > 0 && !self.wait_host_readable(&file) {
                 return ERROR_INTERRUPT;
             }
+            // The buffer is checked first: the length is the program's, and
+            // a read into a buffer it may not write must not take the data
+            // (security audit 2026-11-25).
+            if self.guest_slice_mut(buf_ptr, len as usize).is_none() { return ERROR_INVALID_PARAMETER; }
             let mut data = vec![0u8; len as usize];
             match (&*file).read(&mut data) {
                 Ok(n) => {
@@ -188,6 +192,7 @@ impl super::Loader {
             }
         } else {
             // VFS file handle
+            if self.guest_slice_mut(buf_ptr, len as usize).is_none() { return ERROR_INVALID_PARAMETER; }
             let dm = self.shared.drive_mgr.lock_or_recover();
             let mut data = vec![0u8; len as usize];
             match dm.read_file(hf, &mut data) {
@@ -1769,8 +1774,14 @@ impl super::Loader {
         let queue_mgr = self.shared.queue_mgr.lock_or_recover();
         if let Some(q_arc) = queue_mgr.get(hq) {
             let mut q = q_arc.lock_or_recover();
-            // Cap len to prevent OOM from untrusted guest-supplied sizes.
-            let len = len.min(64 * 1024 * 1024);
+            // Cap len to prevent OOM from untrusted guest-supplied sizes,
+            // and what one queue holds (security audit 2026-11-25: a
+            // writer looping on a queue nobody reads filled the session).
+            let len = len.min(MAX_QUEUE_ELEMENT);
+            let held: usize = q.items.iter().map(|e| e.data.len()).sum();
+            if q.items.len() >= MAX_QUEUE_ITEMS || held + len as usize > MAX_QUEUE_BYTES {
+                return ERROR_QUE_NO_MEMORY;
+            }
             let data = self.guest_read_buffer(buf_ptr, len as usize).unwrap_or_else(|| vec![0u8; len as usize]);
             let id = q.next_id;
             q.next_id = q.next_id.wrapping_add(1).max(1);
@@ -2787,6 +2798,21 @@ mod tests {
         assert_eq!(loader.dos_close_queue(hq), 0);
     }
 
+    /// A queue holds at most MAX_QUEUE_ITEMS elements (security audit
+    /// 2026-11-25): a writer nobody reads cannot fill the session.
+    #[test]
+    fn a_queue_holds_a_bounded_number_of_elements() {
+        let loader = Loader::new_mock();
+        loader.guest_write_bytes(0x3000, b"\\QUEUES\\FULL\0");
+        assert_eq!(loader.dos_create_queue(0x2000, 0, 0x3000), 0);
+        let hq = loader.guest_read::<u32>(0x2000).unwrap();
+        for _ in 0..super::super::ipc::MAX_QUEUE_ITEMS {
+            assert_eq!(loader.dos_write_queue(hq, 0, 1, 0x4000, 0), 0);
+        }
+        assert_eq!(loader.dos_write_queue(hq, 0, 1, 0x4000, 0), ERROR_QUE_NO_MEMORY);
+        assert_eq!(loader.dos_close_queue(hq), 0);
+    }
+
     // ── DosSleep ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -3000,6 +3026,20 @@ mod tests {
         assert_eq!(loader.dos_query_h_type(2, pt, pa), 0);
         assert_eq!(loader.guest_read::<u32>(pt), Some(HANDTYPE_PIPE));
         assert_eq!(loader.dos_query_h_type(0x0FFF, pt, pa), ERROR_INVALID_HANDLE);
+    }
+
+    /// A read into a buffer the program may not write fails before it
+    /// takes the data (security audit 2026-11-25): the next read gets it.
+    #[test]
+    fn a_read_into_an_unwritable_buffer_takes_nothing() {
+        let (loader, _dir) = loader_with_drive_c();
+        assert_eq!(loader.dos_create_pipe(0x4500, 0x4504, 0), 0);
+        let (hr, hw) = (loader.guest_read::<u32>(0x4500).unwrap(), loader.guest_read::<u32>(0x4504).unwrap());
+        assert_eq!(write(&loader, hw, b"piped"), 0);
+        let gdt = crate::loader::constants::SYSTEM_AREA_BASE;
+        assert_eq!(loader.dos_read(hr, gdt, 5, PACTUAL), ERROR_INVALID_PARAMETER);
+        assert_eq!(loader.dos_read(hr, 0x4600, 5, PACTUAL), 0);
+        assert_eq!(loader.guest_read::<u32>(PACTUAL), Some(5), "still there");
     }
 
     /// A pipe duplicated into handle 1 receives DosWrite(1).

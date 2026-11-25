@@ -5,13 +5,8 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 ## Security
 
 - [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): test the sandbox and deny lists on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers; only SDL's dummy drivers are tested); namespaces only if those leave gaps.
-- [ ] **Audit 2026-11-25, Medium** (High ones fixed, ADR-0049 third addendum):
-  - `somApply` / `somDispatch` apply themselves without end (their thunks pass as root methods): allow only root-class methods, count the nesting (`som_apply_chain`);
-  - `continue_call_chain` panics when the guest's ESP is next to unwritable memory: `checked_sub`, raise an access violation instead (`vcpu.rs`);
-  - `getservbyname` / `getservbyport` use libc's static result without `HOST_SERVICES`' lock (`tcpip.rs`);
-  - OS/2 process ids wrap at 0xFFFF unchecked, so a new process can inherit a live one's shared blocks (`take_process_id`);
-  - residual windows: check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU.
-- [ ] **Audit 2026-11-25, Low**: copies of guest buffers read protected memory back (`somVaBuf_add`, `net_writev`, `read_guest_bytes`: use `guest_read_buffer`); debug-build overflows on guest values (`som_apply`'s `md + 12`, `somVaBuf_add`, `dn_comp`'s `dnptrs` walk); `DosRead` allocates before checking the buffer, `DosWriteQueue` is unbounded; `somVaBuf` sizes trusted from guest memory; root methods over six arguments (`somInitClass`, `somInitMIClass`) get wrong ones; `arena_alloc` zeroes after the lock; the resolver's wait restarts per stray packet, its query ids are sequential.
+- [ ] **Audit 2026-11-25, Medium, left**: the other host frames built on the guest's stack (window-procedure calls, `WM_CREATE`, `WM_DESTROY`, owner drawing, modal loops, exception dispatch, `INITTERM`, a chain's `DosExit`) still `expect` room there, as the call chain did; the arena's residual windows (check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU).
+- [ ] **Audit 2026-11-25, Low, left**: other calls that copy a guest-named buffer out with `guest_read` / `guest_read_bytes` rather than `guest_read_buffer` (they reach Warpine's protected memory, the process's own); a sweep of the API handlers for them.
 - [ ] **Fuzzing** (ADR-0112): font and help-file readers once Warpine reads guest-supplied ones (none today).
 
 ## SOM / Workplace Shell

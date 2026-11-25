@@ -55,6 +55,23 @@ const MAX_SERVICES: usize = 4096;
 /// libc's services cursor is process-wide state: one reader at a time.
 static HOST_SERVICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One lookup in the host's services database (`getservbyname` /
+/// `getservbyport`, given as `lookup`): its name, port (network order)
+/// and protocol, copied out under `HOST_SERVICES`' lock. libc keeps the
+/// result in static storage that the next lookup by any thread overwrites
+/// (security audit 2026-11-25), and the walk below shares that state.
+pub fn host_service(lookup: impl FnOnce() -> *mut libc::servent) -> Option<(String, i32, String)> {
+    let _one_reader = HOST_SERVICES.lock().unwrap_or_else(|e| e.into_inner());
+    let se = lookup();
+    if se.is_null() { return None; }
+    // SAFETY: a non-null result of getservbyname / getservbyport, read
+    // before the lock lets another lookup overwrite it.
+    unsafe {
+        let text = |p: *const libc::c_char| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+        Some((text((*se).s_name), (*se).s_port, text((*se).s_proto)))
+    }
+}
+
 /// The host's services database (name, port in network order, protocol),
 /// at most `MAX_SERVICES` entries.
 fn host_services() -> Vec<(String, i32, String)> {
@@ -111,6 +128,10 @@ const NTOA_BUF: u32 = 16;
 /// The guest buffer for a `protoent` (12 bytes), its alias list (8) and
 /// its strings.
 const PROTOENT_BUF: u32 = 64;
+
+/// The most `dnptrs` entries `dn_comp` looks at (BIND's resolvers keep a
+/// few dozen).
+const MAX_DNPTRS: u32 = 1024;
 
 impl super::Loader {
     /// A NUL-terminated guest string's bytes (at most `MAX_DNAME * 4`).
@@ -331,11 +352,7 @@ impl super::Loader {
         let (op, dname, class, qtype, buf, buflen) = (a[0], a[1], a[2], a[3], a[7], a[8]);
         if op != super::resolver::QUERY { return FAIL; }
         let name = self.read_guest_string(dname);
-        let id = {
-            let mut sockets = self.shared.socket_mgr.lock_or_recover();
-            sockets.query_id = sockets.query_id.wrapping_add(1);
-            sockets.query_id
-        };
+        let id = super::resolver::random_query_id();
         let Some(q) = super::resolver::make_query(id, name.as_bytes(), class as u16, qtype as u16) else { return FAIL };
         if q.len() > buflen as usize || self.guest_write_bytes(buf, &q).is_none() { return FAIL; }
         q.len() as u32
@@ -365,11 +382,7 @@ impl super::Loader {
     /// `h_errno` (`HOST_NOT_FOUND` for NXDOMAIN, `NO_DATA` for none of the
     /// type, `TRY_AGAIN` without an answer, `NO_RECOVERY` for other errors).
     fn res_query_name(&self, name: &str, class: u32, qtype: u32, answer: u32, anslen: u32) -> u32 {
-        let id = {
-            let mut sockets = self.shared.socket_mgr.lock_or_recover();
-            sockets.query_id = sockets.query_id.wrapping_add(1);
-            sockets.query_id
-        };
+        let id = super::resolver::random_query_id();
         let set = |e: u32| { self.shared.socket_mgr.lock_or_recover().h_errno = e; u32::MAX };
         let Some(q) = super::resolver::make_query(id, name.as_bytes(), class as u16, qtype as u16) else { return set(NO_RECOVERY) };
         let Some(a) = self.res_exchange(&q) else { return set(TRY_AGAIN) };
@@ -416,7 +429,7 @@ impl super::Loader {
     pub fn net_dn_expand(&self, msg: u32, eom: u32, comp: u32, exp: u32, length: u32) -> u32 {
         const FAIL: u32 = u32::MAX;
         if comp < msg || comp >= eom || eom - msg > super::tcpip::MAX_MESSAGE { return FAIL; }
-        let Some(bytes) = (0..eom - msg).map(|i| self.guest_read::<u8>(msg + i)).collect::<Option<Vec<u8>>>() else { return FAIL };
+        let Some(bytes) = self.guest_read_buffer(msg, (eom - msg) as usize) else { return FAIL };
         let Some((mut name, used)) = expand_name(&bytes, (comp - msg) as usize) else { return FAIL };
         name.push(0);
         if name.len() > length as usize || self.guest_write_bytes(exp, &name).is_none() { return FAIL; }
@@ -426,7 +439,7 @@ impl super::Loader {
     /// dn_skipname: the bytes of the packed name at `comp` before `eom`, or -1.
     pub fn net_dn_skipname(&self, comp: u32, eom: u32) -> u32 {
         if comp >= eom || eom - comp > super::tcpip::MAX_MESSAGE { return u32::MAX; }
-        let Some(bytes) = (0..eom - comp).map(|i| self.guest_read::<u8>(comp + i)).collect::<Option<Vec<u8>>>() else { return u32::MAX };
+        let Some(bytes) = self.guest_read_buffer(comp, (eom - comp) as usize) else { return u32::MAX };
         skip_name(&bytes, 0).map_or(u32::MAX, |n| n as u32)
     }
 
@@ -438,16 +451,21 @@ impl super::Loader {
         let Some(packed) = self.net_string(exp).and_then(|s| pack_name(&s)) else { return u32::MAX };
         if packed.len() > length as usize || self.guest_write_bytes(comp, &packed).is_none() { return u32::MAX; }
         if dnptrs != 0 && packed.len() > 1 {
-            // Append comp before the first NULL entry, if that is before lastdnptr.
-            let mut slot = dnptrs + 4;
-            while slot < lastdnptr {
-                match self.guest_read::<u32>(slot) {
+            // Append comp before the first NULL entry, if that is before
+            // lastdnptr; at most MAX_DNPTRS entries looked at, with checked
+            // arithmetic (security audit 2026-11-25).
+            let mut slot = dnptrs.checked_add(4);
+            for _ in 0..MAX_DNPTRS {
+                let Some(at) = slot.filter(|&s| s < lastdnptr) else { break };
+                match self.guest_read::<u32>(at) {
                     Some(0) => {
-                        let _ = self.guest_write::<u32>(slot, comp);
-                        if slot + 4 < lastdnptr { let _ = self.guest_write::<u32>(slot + 4, 0); }
+                        let _ = self.guest_write::<u32>(at, comp);
+                        if let Some(next) = at.checked_add(4).filter(|&n| n < lastdnptr) {
+                            let _ = self.guest_write::<u32>(next, 0);
+                        }
                         break;
                     }
-                    Some(_) => slot += 4,
+                    Some(_) => slot = at.checked_add(4),
                     None => break,
                 }
             }
@@ -519,7 +537,7 @@ impl super::Loader {
         let Some(vecs) = self.net_iovecs(iov, count) else { return self.socket_failure(super::tcpip::SOCE_INVAL) };
         let mut data = Vec::new();
         for (base, len) in vecs {
-            let Some(part) = (0..len).map(|i| self.guest_read::<u8>(base.checked_add(i)?)).collect::<Option<Vec<u8>>>() else {
+            let Some(part) = self.guest_read_buffer(base, len as usize) else {
                 return self.socket_failure(super::tcpip::SOCE_FAULT);
             };
             data.extend_from_slice(&part);
@@ -549,6 +567,46 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Service lookups from many threads at once each get a whole, own
+    /// answer (security audit 2026-11-25: libc's result is shared static
+    /// storage, copied under one lock).
+    #[test]
+    fn service_lookups_from_many_threads_get_their_own_answers() {
+        let tcp = std::ffi::CString::new("tcp").unwrap();
+        // SAFETY: live CStrings.
+        let by_port = |p: u16| host_service(|| unsafe { libc::getservbyport(i32::from(p.to_be()), tcp.as_ptr()) });
+        let want: Vec<_> = [22u16, 25, 80, 443].iter().map(|&p| by_port(p)).collect();
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| for _ in 0..200 {
+                    for (i, &p) in [22u16, 25, 80, 443].iter().enumerate() {
+                        assert_eq!(by_port(p), want[i]);
+                    }
+                });
+            }
+        });
+    }
+
+    /// Calls that copy a buffer the program names do not read Warpine's
+    /// protected memory, and dn_comp's dnptrs walk stays in bounds
+    /// (security audit 2026-11-25).
+    #[test]
+    fn protected_memory_is_not_copied_and_dnptrs_stay_in_bounds() {
+        use super::super::tcpip::{SOCBASEERR, SOCE_FAULT};
+        let l = super::super::Loader::new_mock();
+        let gdt = crate::loader::constants::SYSTEM_AREA_BASE;
+        let (iov, exp) = (0x0020_0000u32, 0x0020_0100u32);
+        l.guest_write::<u32>(iov, gdt).unwrap();
+        l.guest_write::<u32>(iov + 4, 8).unwrap();
+        assert_eq!(l.net_writev(0xA000, iov, 1), u32::MAX);
+        assert_eq!(l.so_sock_errno(), SOCBASEERR + SOCE_FAULT as u32);
+        assert_eq!(l.net_dn_expand(gdt, gdt + 16, gdt, exp, 64), u32::MAX, "a message in protected memory");
+        assert_eq!(l.net_dn_skipname(gdt, gdt + 16), u32::MAX);
+        l.guest_write_bytes(exp, b"a.b\0").unwrap();
+        let comp = 0x0020_0200u32;
+        assert_eq!(l.net_dn_comp(exp, comp, 64, 0xFFFF_FFF8, u32::MAX), 5, "a dnptrs list at the top: no overflow");
+    }
 
     #[test]
     fn protocols_and_ioctl_requests() {

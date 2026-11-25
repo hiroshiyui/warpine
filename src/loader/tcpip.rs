@@ -241,8 +241,6 @@ pub struct SocketManager {
     pub host_cursor: usize,
     pub networks: Option<Vec<(String, u32)>>,
     pub net_cursor: usize,
-    /// The id of the next `res_mkquery` message.
-    pub query_id: u16,
 }
 
 impl Default for SocketManager {
@@ -266,7 +264,6 @@ impl SocketManager {
             host_cursor: 0,
             networks: None,
             net_cursor: 0,
-            query_id: (std::process::id() as u16) ^ 0x5A5A,
         }
     }
 
@@ -1285,18 +1282,13 @@ impl super::Loader {
             Some(std::ffi::CString::new(proto_str.as_str()).unwrap_or_default())
         };
         let c_proto = c_proto_owned.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
-        let se = unsafe { libc::getservbyname(c_name.as_ptr(), c_proto) };
-        if se.is_null() {
+        // SAFETY: both strings are live CStrings (or NULL for the protocol).
+        let found = super::tcpip_util::host_service(|| unsafe { libc::getservbyname(c_name.as_ptr(), c_proto) });
+        let Some((host_name, port, host_proto)) = found else {
             warn!("getservbyname(\"{}\") not found", svc_name);
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_INVAL);
             return 0;
-        }
-
-        // SAFETY: se is a non-null pointer returned by libc::getservbyname.
-        let port       = unsafe { (*se).s_port } as i32;
-        let host_name  = unsafe { std::ffi::CStr::from_ptr((*se).s_name).to_string_lossy().to_string() };
-        let host_proto = unsafe { std::ffi::CStr::from_ptr((*se).s_proto).to_string_lossy().to_string() };
-
+        };
         self.write_servent_to_scratch(&host_name, port, &host_proto)
     }
 
@@ -1314,15 +1306,12 @@ impl super::Loader {
             Some(std::ffi::CString::new(proto_str.as_str()).unwrap_or_default())
         };
         let c_proto = c_proto_owned.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
-        let se = unsafe { libc::getservbyport(port as i32, c_proto) };
-        if se.is_null() {
+        // SAFETY: the protocol is a live CString or NULL.
+        let found = super::tcpip_util::host_service(|| unsafe { libc::getservbyport(port as i32, c_proto) });
+        let Some((host_name, resolved_port, host_proto)) = found else {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_INVAL);
             return 0;
-        }
-        // SAFETY: se is a non-null pointer returned by libc::getservbyport.
-        let host_name  = unsafe { std::ffi::CStr::from_ptr((*se).s_name).to_string_lossy().to_string() };
-        let host_proto = unsafe { std::ffi::CStr::from_ptr((*se).s_proto).to_string_lossy().to_string() };
-        let resolved_port = unsafe { (*se).s_port } as i32;
+        };
         self.write_servent_to_scratch(&host_name, resolved_port, &host_proto)
     }
 
@@ -1415,7 +1404,7 @@ impl super::Loader {
         let max_name_len = (SCRATCH_REGION as usize).saturating_sub(0x18 + 2); // leave 2 bytes for proto + NUL
         let host_name = if svc_name.len() > max_name_len {
             warn!("getservbyname: service name too long for scratch buffer; truncating");
-            &svc_name[..max_name_len]
+            &svc_name[..svc_name.floor_char_boundary(max_name_len)]
         } else {
             svc_name
         };
@@ -1430,7 +1419,7 @@ impl super::Loader {
         let max_proto_len = scratch_end.saturating_sub(sproto_base + 1) as usize;
         let host_proto = if proto_name.len() > max_proto_len {
             warn!("getservbyname: protocol name too long for scratch buffer; truncating");
-            &proto_name[..max_proto_len]
+            &proto_name[..proto_name.floor_char_boundary(max_proto_len)]
         } else {
             proto_name
         };
@@ -1461,14 +1450,13 @@ impl super::Loader {
     /// untrusted guest length fields.
     fn read_guest_bytes(&self, addr: u32, len: usize) -> Vec<u8> {
         let capped = len.min(MAX_SOCKET_BUF);
-        if let Some(slice) = self.guest_slice_mut(addr, capped) {
-            slice.to_vec()
-        } else {
-            // guest_slice_mut failed (OOB or zero len); fall back to safe byte-by-byte.
+        // Never Warpine's protected memory, which the guest cannot read
+        // itself (security audit 2026-11-25): byte by byte up to it.
+        self.guest_read_buffer(addr, capped).unwrap_or_else(|| {
             (0..capped)
-                .map_while(|i| self.guest_read::<u8>(addr.checked_add(i as u32)?))
+                .map_while(|i| self.guest_read_buffer(addr.checked_add(i as u32)?, 1).map(|b| b[0]))
                 .collect()
-        }
+        })
     }
 
     /// Translate a Linux syscall return value (0 = ok, -1 = error) into an OS/2 result.

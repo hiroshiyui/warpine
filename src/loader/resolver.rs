@@ -132,16 +132,22 @@ pub fn search_names(name: &str, search: &[String]) -> Vec<String> {
 }
 
 /// Send `msg` to each of `servers` in turn, `ROUNDS` times over, and
-/// return the first reply that answers it (same id).
+/// return the first reply that answers it (same id). Each server gets
+/// `wait` in all: stray packets do not extend it (security audit
+/// 2026-11-25: a timeout per receive let a flood keep a call waiting).
 pub fn exchange(msg: &[u8], servers: &[SocketAddr], wait: Duration) -> Option<Vec<u8>> {
     if msg.len() < HEADER_LEN || msg.len() > MAX_UDP_MESSAGE { return None; }
     let id = u16::from_be_bytes([msg[0], msg[1]]);
     for _ in 0..ROUNDS {
         for server in servers {
             let Ok(sock) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else { continue };
-            if sock.set_read_timeout(Some(wait)).is_err() || sock.send_to(msg, server).is_err() { continue; }
+            if sock.send_to(msg, server).is_err() { continue; }
+            let deadline = std::time::Instant::now() + wait;
             let mut buf = [0u8; MAX_UDP_MESSAGE];
-            while let Ok((n, from)) = sock.recv_from(&mut buf) {
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() { break; }
+                let Ok((n, from)) = sock.recv_from(&mut buf) else { break };
                 if from == *server && n >= HEADER_LEN && buf[0..2] == id.to_be_bytes() {
                     return Some(buf[..n].to_vec());
                 }
@@ -149,6 +155,15 @@ pub fn exchange(msg: &[u8], servers: &[SocketAddr], wait: Duration) -> Option<Ve
         }
     }
     None
+}
+
+/// A query id nobody off the path can guess (std's randomly keyed hasher):
+/// with the source port, what keeps a forged answer from being taken.
+pub fn random_query_id() -> u16 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u8(0);
+    h.finish() as u16
 }
 
 /// The host's name servers (port 53) and search list.
@@ -236,5 +251,36 @@ mod tests {
         assert_eq!(answer_status(&a, 0x4242), Some((0, 0)));
         t.join().unwrap();
         assert_eq!(exchange(&q[..4], &[addr], Duration::from_millis(10)), None, "not a message");
+    }
+
+    /// Stray replies do not extend the wait (security audit 2026-11-25):
+    /// a server sending wrong ids without end gives up after the wait.
+    #[test]
+    fn stray_replies_do_not_extend_the_wait() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s = stop.clone();
+        let t = std::thread::spawn(move || {
+            server.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            let mut buf = [0u8; 512];
+            let mut client = None;
+            while !s.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok((n, from)) = server.recv_from(&mut buf) { client = Some((from, n)); }
+                if let Some((from, n)) = client {
+                    let mut wrong = buf[..n].to_vec();
+                    wrong[0] ^= 0xFF;
+                    let _ = server.send_to(&wrong, from);
+                }
+            }
+        });
+        let q = make_query(random_query_id(), b"x.test", 1, 1).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(exchange(&q, &[addr], Duration::from_millis(300)), None);
+        assert!(started.elapsed() < Duration::from_secs(3), "gave up after the wait ({:?})", started.elapsed());
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        t.join().unwrap();
+        let ids: std::collections::HashSet<u16> = (0..16).map(|_| random_query_id()).collect();
+        assert!(ids.len() > 1, "query ids vary");
     }
 }

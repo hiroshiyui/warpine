@@ -38,8 +38,10 @@ const VA_BUF_SIZE: u32 = 20;
 /// First capacity of a buffer, and the largest one.
 const VA_FIRST_CAPACITY: u32 = 64;
 pub const MAX_VA_BUF: u32 = 64 * 1024;
-/// The most argument words a root method takes.
-const MAX_ROOT_ARGS: u32 = 16;
+/// The most argument words a root method takes: what one call-chain step
+/// passes (a method with more is not applied: its later arguments would be
+/// lost).
+const MAX_ROOT_ARGS: u32 = super::pm_hook::MAX_CHAIN_ARGS as u32;
 
 /// The `TCKind`s `somVaBuf_add` takes, in the reference's order
 /// (`TypeCode_kind`; C numbers them from 0).
@@ -90,9 +92,9 @@ impl Loader {
     /// The arguments a va_list `ap` leads to, the first being a SOM object
     /// (`target`, when given, that one), or a `somVaBuf`'s buffer.
     fn som_va_args(&self, ap: u32, target: Option<u32>) -> Option<u32> {
-        let read = |at: u32| self.guest_read::<u32>(at);
+        let read = |at: u32| self.guest_word(at);
         let ok = |args: u32, first: u32| {
-            if self.shared.som.lock_or_recover().va_buffers.contains(&args) { return true; }
+            if self.shared.som.lock_or_recover().va_buffers.contains_key(&args) { return true; }
             match target {
                 Some(t) => first == t,
                 None => self.som_object_class(first).is_some(),
@@ -110,14 +112,20 @@ impl Loader {
             let step = CallStep::hook(stub, vec![ret, method, args], false);
             return Some(self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::Return(1))));
         }
-        // A root method: one of this module's thunks.
+        // A root method: the thunk of a SOMObject, SOMClass or SOMClassMgr
+        // method. Not any of this module's thunks: somApply's own, given
+        // as its method, would apply itself without end, each level a
+        // host frame (security audit 2026-11-25).
         let first = thunk(0);
         if method < first || method - first >= SOM_ORDINALS { return None; }
-        let entry = super::api_registry::find(SOM_BASE + (method - (MAGIC_API_BASE as u32 + SOM_BASE)))?;
+        let ord = method - (MAGIC_API_BASE as u32 + SOM_BASE);
+        if !super::som::is_root_method(ord) { return None; }
+        let entry = super::api_registry::find(SOM_BASE + ord)?;
         let argc = entry.argc as u32;
         if argc > MAX_ROOT_ARGS { return None; }
-        let words: Option<Vec<u32>> = (0..argc).map(|i| self.guest_read::<u32>(args.checked_add(4 * i)?)).collect();
-        let step = CallStep::hook(method, words?, false);
+        let bytes = self.guest_read_buffer(args, 4 * argc as usize)?;
+        let words = bytes.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
+        let step = CallStep::hook(method, words, false);
         Some(self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::SomStoreLast { at: ret })))
     }
 
@@ -128,7 +136,8 @@ impl Loader {
         let (obj, ret, md, ap) = (a[0], a[1], a[2], a[3]);
         let fail = ApiResult::Normal(0);
         if ret == 0 || md == 0 { return fail; }
-        let (Some(token), Some(method)) = (self.guest_read::<u32>(md + 12), self.guest_read::<u32>(md + 16)) else { return fail };
+        let word = |o: u32| md.checked_add(o).and_then(|at| self.guest_word(at));
+        let (Some(token), Some(method)) = (word(12), word(16)) else { return fail };
         let Some(args) = self.som_va_args(ap, Some(obj)) else { return fail };
         self.som_apply_chain(vcpu, ret, token, method, args).unwrap_or(fail)
     }
@@ -193,19 +202,34 @@ impl Loader {
             if owned != 0 { self.som_release(vb); }
             return 0;
         };
-        self.shared.som.lock_or_recover().va_buffers.insert(buf);
+        self.shared.som.lock_or_recover().va_buffers.insert(buf, VA_FIRST_CAPACITY);
         for (i, w) in [VA_BUF_MAGIC, buf, VA_FIRST_CAPACITY, 0, owned].into_iter().enumerate() {
-            if self.guest_write::<u32>(vb + 4 * i as u32, w).is_none() { return 0; }
+            if vb.checked_add(4 * i as u32).and_then(|at| self.guest_write::<u32>(at, w)).is_none() {
+                self.shared.som.lock_or_recover().va_buffers.remove(&buf);
+                self.som_release(buf);
+                if owned != 0 { self.som_release(vb); }
+                return 0;
+            }
         }
         vb
     }
 
     /// A somVaBuf's words (buffer, capacity, used, owned), when `vb` is one.
+    /// The capacity is the kernel's own record of the buffer, not the
+    /// header's, which the program can rewrite (security audit 2026-11-25:
+    /// a larger one sent appends past the buffer).
     fn som_va_buf(&self, vb: u32) -> Option<[u32; 4]> {
         let w = |i: u32| self.guest_read::<u32>(vb.checked_add(4 * i)?);
         if vb == 0 || w(0)? != VA_BUF_MAGIC { return None; }
-        let words = [w(1)?, w(2)?, w(3)?, w(4)?];
-        (self.shared.som.lock_or_recover().va_buffers.contains(&words[0]) && words[2] <= words[1]).then_some(words)
+        let (buf, used, owned) = (w(1)?, w(3)?, w(4)?);
+        let cap = *self.shared.som.lock_or_recover().va_buffers.get(&buf)?;
+        (used <= cap).then_some([buf, cap, used, owned])
+    }
+
+    /// A word the program names, unless it lies in Warpine's protected
+    /// memory (which the program cannot read itself).
+    fn guest_word(&self, at: u32) -> Option<u32> {
+        self.guest_read_buffer(at, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
     /// `somVaBuf_add(vb, arg, type)`: the argument at `arg` of TCKind
@@ -214,10 +238,10 @@ impl Loader {
     pub(crate) fn som_va_buf_add(&self, vb: u32, arg: u32, kind: u32) -> u32 {
         let Some([mut buf, mut cap, used, owned]) = self.som_va_buf(vb) else { return 0 };
         let bytes = match kind {
-            tk::DOUBLE => self.guest_read_bytes(arg, 8),
-            tk::SHORT | tk::USHORT => self.guest_read_bytes(arg, 2),
-            tk::CHAR | tk::BOOLEAN | tk::OCTET => self.guest_read_bytes(arg, 1),
-            _ => self.guest_read_bytes(arg, 4),
+            tk::DOUBLE => self.guest_read_buffer(arg, 8),
+            tk::SHORT | tk::USHORT => self.guest_read_buffer(arg, 2),
+            tk::CHAR | tk::BOOLEAN | tk::OCTET => self.guest_read_buffer(arg, 1),
+            _ => self.guest_read_buffer(arg, 4),
         };
         let Some(bytes) = bytes else { return 0 };
         let mut raw = [0u8; 8];
@@ -232,7 +256,7 @@ impl Loader {
             {
                 let mut rt = self.shared.som.lock_or_recover();
                 rt.va_buffers.remove(&buf);
-                rt.va_buffers.insert(grown);
+                rt.va_buffers.insert(grown, new_cap);
             }
             self.som_release(buf);
             (buf, cap) = (grown, new_cap);
@@ -268,7 +292,7 @@ impl Loader {
         let Some(args) = self.som_va_args(ap, None) else { return 0 };
         match set {
             Some(v) => { let _ = self.guest_write::<u32>(args, v); 0 }
-            None => self.guest_read::<u32>(args).unwrap_or(0),
+            None => self.guest_word(args).unwrap_or(0),
         }
     }
 }
@@ -320,6 +344,55 @@ mod tests {
         assert_eq!(l.guest_read::<u32>(args), Some(0xCD));
         l.som_va_buf_destroy(vb);
         assert_eq!(l.som_va_buf_add(vb, at, tk::LONG), 0, "destroyed");
+    }
+
+    /// Hostile somVaBufs and arguments (security audit 2026-11-25): a
+    /// header claiming more room than the buffer has, an argument in
+    /// Warpine's protected memory, an mdPtr at the top of the address
+    /// space, and a root method of more arguments than a call passes.
+    #[test]
+    fn hostile_va_bufs_and_arguments_are_refused() {
+        let l = Loader::new_mock();
+        let at = 0x0020_0000u32;
+        let vb = l.som_va_buf_create(0, 0);
+        l.guest_write::<u32>(vb + 8, 0x10000).unwrap(); // capacity
+        l.guest_write::<u32>(vb + 12, 0x8000).unwrap(); // used, past the real buffer
+        assert_eq!(l.som_va_buf_add(vb, at, tk::LONG), 0, "the kernel's capacity counts");
+        l.guest_write::<u32>(vb + 12, 0).unwrap();
+        let gdt = crate::loader::constants::SYSTEM_AREA_BASE;
+        assert_eq!(l.som_va_buf_add(vb, gdt, tk::DOUBLE), 0, "protected memory is not read");
+        assert!(matches!(l.som_apply(0, &[at, at, 0xFFFF_FFF8, at, 0, 0, 0, 0, 0, 0]), ApiResult::Normal(0)));
+        // somInitClass (seven arguments) through somApply.
+        let (md, args) = (at + 0x100, at + 0x200);
+        l.guest_write::<u32>(args, at).unwrap();
+        l.guest_write::<u32>(md + 12, 0).unwrap();
+        l.guest_write::<u32>(md + 16, thunk(3310)).unwrap();
+        assert!(matches!(l.som_apply(0, &[at, at + 0x300, md, args, 0, 0, 0, 0, 0, 0]), ApiResult::Normal(0)),
+                "more arguments than a call passes: not applied");
+        l.som_va_buf_destroy(vb);
+    }
+
+    /// somApply applies root-class methods only (security audit
+    /// 2026-11-25): given its own thunk as the method, it would apply
+    /// itself without end; that is refused, a root method is not.
+    #[test]
+    fn som_apply_takes_only_root_class_methods() {
+        let l = Loader::new_mock();
+        let obj = 0x0020_0000u32;
+        let (md, args, ret) = (obj + 0x100, obj + 0x200, obj + 0x300);
+        // The arguments: the target first (somApply's own four, for the loop).
+        for (i, w) in [obj, ret, md, args].into_iter().enumerate() {
+            l.guest_write::<u32>(args + 4 * i as u32, w).unwrap();
+        }
+        let apply = |method: u32| {
+            l.guest_write::<u32>(md + 12, 0).unwrap(); // a token without an apply stub
+            l.guest_write::<u32>(md + 16, method).unwrap();
+            l.som_apply(0, &[obj, ret, md, args, 0, 0, 0, 0, 0, 0])
+        };
+        assert!(matches!(apply(thunk(3102)), ApiResult::Normal(0)), "somApply itself is no root method");
+        assert!(matches!(apply(thunk(3103)), ApiResult::Normal(0)), "nor somVaBuf_create");
+        assert!(!matches!(apply(thunk(3204)), ApiResult::Normal(_)), "somGetClassName is: a call is made");
+        assert!(super::super::som::is_root_method(3224), "somDispatch is a method (nesting bounds it)");
     }
 
     /// A va_list is taken in whichever form leads to the target: GCC's

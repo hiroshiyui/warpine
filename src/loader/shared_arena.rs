@@ -61,7 +61,7 @@ pub const MAX_HOLDERS: usize = 64;
 /// Longest block name, in bytes (UTF-8 of the upper-case name).
 pub const MAX_NAME_BYTES: usize = 255;
 /// Largest table file: a header and `MAX_SHARED_BLOCKS` full lines.
-const MAX_TABLE_BYTES: usize = 64 + MAX_SHARED_BLOCKS * (3 * 9 + 2 * MAX_NAME_BYTES + 2 + MAX_HOLDERS * 11 + 1);
+pub(crate) const MAX_TABLE_BYTES: usize = 64 + MAX_SHARED_BLOCKS * (3 * 9 + 2 * MAX_NAME_BYTES + 2 + MAX_HOLDERS * 11 + 1);
 /// First line of a table.
 const HEADER: &str = "warpine-shmem 2";
 /// The name prefix of named shared memory.
@@ -97,6 +97,12 @@ pub type ArenaId = (u64, u64);
 pub struct ArenaTable {
     pub arena: Option<ArenaId>,
     blocks: Vec<ArenaBlock>,
+}
+
+/// Every process id the table `bytes` names as a holder, dead ones too
+/// (until a sweep drops them): ids a new process must not take.
+pub fn table_holders(bytes: &[u8]) -> HashSet<u32> {
+    ArenaTable::parse(bytes).blocks().iter().flat_map(|b| b.holders.iter().copied()).collect()
 }
 
 fn hex_name(name: &str) -> String {
@@ -633,14 +639,16 @@ impl super::Loader {
                 return Err(ERROR_ALREADY_EXISTS);
             }
             let offset = t.alloc(cb, flag, name, me).ok_or(ERROR_NOT_ENOUGH_MEMORY)?;
-            Ok((offset, t.at(offset).map_or(0, |b| b.size)))
+            // Zero whatever a block there before left behind, under the
+            // lock: after it, another holder (a named block's) may already
+            // have written it (security audit 2026-11-25).
+            if let (Some(arena), Some(size)) = (self.shared.arena.get(), t.at(offset).map(|b| b.size)) {
+                arena.zero(offset, size);
+            }
+            Ok(offset)
         }).ok()?;
         Some(match r {
-            Ok((offset, size)) => {
-                // Zero whatever a block there before left behind.
-                if let Some(arena) = self.shared.arena.get() {
-                    arena.zero(offset, size);
-                }
+            Ok(offset) => {
                 self.guest_write::<u32>(ppb, SHARED_ARENA_BASE + offset);
                 NO_ERROR
             }
