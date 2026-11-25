@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **SOM TypeCodes** (ADR-0128; SOM Programming Reference; Warpine's own ordinals 3109–3120, ADR-0123): `TypeCodeNew` for every kind (structs, unions, enums, sequences, arrays, pointers, self-references, foreign types, object references, bounded strings and the basic kinds), `TypeCode_alignment`, `_copy`, `_equal`, `_free`, `_kind`, `_param_count`, `_parameter` (an `any` pointing at the parameter; `TypeCode::Bounds` out of range), `_print` (the `TypeCodeNew` call that makes it), `_setAlignment` and `_size`, and the `TC_*` constants. Sizes and alignments are those of the SDK's i386 C types; the TypeCodes live in guest memory in Warpine's own layout, answered from the kernel's own records. `c_som_test` checks the sizes against each compiler's `sizeof` (36 checks). 1034 entry points.
 
 ### Fixed
+- **A GDB interrupt (Ctrl-C) stops a program spinning in guest code** (ADR-0104 addendum): the stub only set a flag the vCPU reads between runs, so a loop that never called Warpine was never stopped (the stub gave up after 2 s); it now kicks every vCPU out of the guest. `c_gdb_test spin` and a raw-RSP integration test check it.
 - **`DosSetPathInfo` level 2** returned success without setting the extended attributes, and **`DosQueryPathInfo` level 5** was refused (`ERROR_INVALID_LEVEL`).
 
 ### Changed

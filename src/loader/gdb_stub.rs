@@ -522,7 +522,7 @@ impl BlockingEventLoop for GdbBlockingEventLoop {
     fn on_interrupt(
         target: &mut WarpineTarget,
     ) -> Result<Option<SingleThreadStopReason<u32>>, <WarpineTarget as Target>::Error> {
-        target.gdb_state.stop_requested.store(true, Ordering::Relaxed);
+        request_stop(&target.gdb_state, &target.shared);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
@@ -540,6 +540,16 @@ impl BlockingEventLoop for GdbBlockingEventLoop {
         warn!("GDB: interrupt timed out — vCPU did not stop within 2 s");
         Ok(None)
     }
+}
+
+/// Ask the program to stop for the client: the stop flag set, then every
+/// vCPU kicked out of `KVM_RUN`. A vCPU looks at the flag before it runs
+/// guest code again, so a thread spinning in guest code without exits
+/// stops at once; one blocked in a host call (`DosSleep`, a semaphore
+/// wait) stops when the call returns.
+fn request_stop(gdb: &GdbState, shared: &super::SharedState) {
+    gdb.stop_requested.store(true, Ordering::Release);
+    shared.threads.table.lock_or_recover().kick_all_but(0);
 }
 
 // ── TCP listener ──────────────────────────────────────────────────────────────
@@ -638,6 +648,24 @@ mod tests {
         g.started.store(true, Ordering::Release);
         g.libraries_changed();
         assert!(g.library_event.load(Ordering::Acquire) && g.stop_requested.load(Ordering::Acquire));
+    }
+
+    /// A stop request kicks every vCPU, so one spinning in guest code
+    /// leaves KVM_RUN and sees the flag (ADR-0104 addendum).
+    #[test]
+    fn a_stop_request_kicks_every_vcpu() {
+        use super::super::vm_backend::{VcpuBackend, mock::MockVcpu};
+        let loader = super::super::Loader::new_mock();
+        let (a, b) = (MockVcpu::new(), MockVcpu::new());
+        {
+            let mut table = loader.shared.threads.table.lock_or_recover();
+            table.set_kicker(1, a.kicker());
+            table.set_kicker(2, b.kicker());
+        }
+        let gdb = GdbState::new();
+        request_stop(&gdb, &loader.shared);
+        assert!(gdb.stop_requested.load(Ordering::Acquire));
+        assert_eq!((a.kick.kicks.load(Ordering::SeqCst), b.kick.kicks.load(Ordering::SeqCst)), (1, 1));
     }
 
     #[test]

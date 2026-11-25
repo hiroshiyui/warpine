@@ -2442,6 +2442,81 @@ fn gui_c_pm_from_gcc_and_clang() {
     }
 }
 
+/// A GDB stop request (the interrupt byte, Ctrl-C) stops a program that
+/// spins in guest code without calling Warpine: the stub kicks every vCPU
+/// out of KVM_RUN (ADR-0104 addendum). Spoken in raw RSP, since a batch GDB
+/// cannot send Ctrl-C: continue, interrupt, expect a stop reply, kill.
+#[test]
+fn gdb_interrupts_a_program_spinning_in_guest_code() {
+    use std::io::{Read, Write};
+    let has = |tool: &str| Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !has("make") || !compiler_available("gcc") { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let vars = ["CC=gcc".to_string(), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                format!("BUILD={}", dir.path().display()),
+                format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+    let out = Command::new("make").args(["-s", "-C", "samples/c_gdb_test"]).args(&vars).output().expect("run make");
+    assert!(out.status.success(), "make:\n{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut child = Command::new(warpine())
+        .args(["--gdb", &port.to_string()]).arg(dir.path().join("c_gdb_test.exe")).arg("spin")
+        .env("WARPINE_HEADLESS", "1")
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .envs(PINNED_ENV.iter().copied())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().expect("spawn warpine");
+    // The stub listens once the program is loaded.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut conn = loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(c) => break c,
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => { let _ = child.kill(); panic!("no stub on port {port}: {e}"); }
+        }
+    };
+    conn.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let send = |conn: &mut std::net::TcpStream, body: &str| {
+        let sum = body.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+        conn.write_all(format!("${body}#{sum:02x}").as_bytes()).unwrap();
+    };
+    // Every packet the stub sends until `deadline`, acknowledged; the
+    // first whose body starts with one of `want`.
+    let wait_for = |conn: &mut std::net::TcpStream, want: &[&str], secs: u64| -> Option<String> {
+        let until = std::time::Instant::now() + Duration::from_secs(secs);
+        let mut buf = Vec::new();
+        while std::time::Instant::now() < until {
+            let mut chunk = [0u8; 512];
+            if let Ok(n) = conn.read(&mut chunk) { buf.extend_from_slice(&chunk[..n]); }
+            while let Some(start) = buf.iter().position(|&b| b == b'$') {
+                let Some(hash) = buf[start..].iter().position(|&b| b == b'#') else { break };
+                if buf.len() < start + hash + 3 { break; }
+                let body = String::from_utf8_lossy(&buf[start + 1..start + hash]).into_owned();
+                buf.drain(..start + hash + 3);
+                conn.write_all(b"+").unwrap();
+                if want.iter().any(|w| body.starts_with(w)) { return Some(body); }
+            }
+        }
+        None
+    };
+    send(&mut conn, "?");
+    assert!(wait_for(&mut conn, &["S", "T"], 10).is_some(), "no first stop reply");
+    send(&mut conn, "c");
+    // Let it spin, then interrupt.
+    std::thread::sleep(Duration::from_millis(500));
+    let asked = std::time::Instant::now();
+    conn.write_all(&[0x03]).unwrap();
+    let stop = wait_for(&mut conn, &["S", "T"], 5);
+    let took = asked.elapsed();
+    send(&mut conn, "k");
+    let ended = (0..100).any(|_| { std::thread::sleep(Duration::from_millis(50)); child.try_wait().ok().flatten().is_some() });
+    if !ended { let _ = child.kill(); }
+    assert!(stop.is_some(), "no stop reply after the interrupt");
+    assert!(took < Duration::from_millis(1500), "the stop took {took:?}: the vCPU was not kicked");
+}
+
 /// ADR-0102: source-level debugging through Warpine's GDB stub.
 /// samples/c_gdb_test is built with -g by GCC and by clang; lx-link writes
 /// its debug companion (c_gdb_test.dbg), and GDB, given that file with
@@ -2510,7 +2585,7 @@ fn gdb_debugs_a_c_program_at_the_source_level() {
         use std::io::Read;
         child.stdout.take().unwrap().read_to_string(&mut program_out).ok();
         for want in ["gdbdll.dbg",
-                     "Breakpoint 1, add_points (a=", "c_gdb_test.c:25",
+                     "Breakpoint 1, add_points (a=", "c_gdb_test.c:31",
                      "a->x += b->x;",
                      "$1 = {x = 30, y = 40}",
                      "Value returned is $2 = 73",

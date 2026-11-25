@@ -27,7 +27,7 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 
 - [ ] **Shared memory** (ADR-0049): `DosAllocShrSeg` / `DosGetShrSeg`; blocks of a killed process whose parent never waits, swept at the next table use.
 - [ ] **Semaphores** (ADR-0050): named and shared muxwait semaphores across processes; limits of 512 per session, 28 processes per semaphore.
-- [ ] **Signals** (ADR-0035, 0093): interrupting anonymous-pipe writes and host I/O on FIFOs and devices; signal focus across the session; `ERROR_INVALID_PROCID` for PM programs; a GDB stop request kicking the vCPUs.
+- [ ] **Signals** (ADR-0035, 0093): interrupting anonymous-pipe writes and host I/O on FIFOs and devices; signal focus across the session; `ERROR_INVALID_PROCID` for PM programs.
 - [ ] **Pipes**: muxwait semaphores as pipe semaphores, a real `NPSS_WAIT`; echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Extended attributes by handle**: `DosSetFileInfo` level 2 and `DosQueryFileInfo` level 3 (they need the path behind a handle); `DosQueryPathInfo` level 3 checking its `FEA2LIST`'s `cbList` before it writes (it writes past a too-small buffer, in the program's own memory); `DosOpen`'s `EAOP2`.

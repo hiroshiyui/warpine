@@ -12,12 +12,18 @@
  * in gdbdyn.dll, which it loads with DosLoadModule: the stub lists both
  * DLLs' companions at their load addresses (ADR-0104), and the test stops
  * in each at its source line.
+ *
+ * Run as "c_gdb_test spin" it loops in guest code without calling Warpine,
+ * until a debugger sets `released`: the test interrupts it there (a stop
+ * request must kick the vCPU out of the guest).
  */
 #include <os2.h>
 #include <stdio.h>
 #include "gdb_point.h"
 
 int counter;
+volatile int released;
+volatile unsigned long spins;
 static const char greeting[] = "debugging";
 
 int add_points(struct point *a, const struct point *b)
@@ -42,9 +48,13 @@ static int call_dyn_twice(int v)
     return result;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     struct point p = { 1, 2 }, q = { 30, 40 };
+    if (argc > 1 && argv[1][0] == 's') {
+        while (!released) spins++;
+        return 0;
+    }
     int sum = add_points(&p, &q);
     int grown = scale_point(&p, 3);
     int twice = call_dyn_twice(21);

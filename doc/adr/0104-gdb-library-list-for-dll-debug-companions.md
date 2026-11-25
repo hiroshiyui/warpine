@@ -46,3 +46,11 @@ ADR-0102 gave programs a debug companion. A DLL's companion has the addresses `l
 - **Tests:**
   - `gdb_stub.rs`: the library list XML and its escaping, the reply window, the target description, the companion lookup, the stop gating, the stop reason;
   - `managers.rs`: `loaded_files`.
+
+## Addendum (2026-11-26): a stop request kicks the vCPUs
+
+A GDB stop request (the interrupt byte, Ctrl-C) used to set a flag the vCPU looks at before each `KVM_RUN`. A program spinning in guest code without calling Warpine never left `KVM_RUN`, so the stub gave up after two seconds and the program was never stopped.
+
+`request_stop` (`gdb_stub.rs`) now sets the flag and then kicks every vCPU (`ThreadTable::kick_all_but(0)`, the kick `flush_tlbs` uses: `immediate_exit` and a signal to the thread). A kicked vCPU leaves the guest with `VmExit::Interrupted`, finds the flag at the top of its loop and reports the stop.
+- A thread blocked in a host call (`DosSleep`, a semaphore wait) still stops when that call returns.
+- `gdb_interrupts_a_program_spinning_in_guest_code` checks the behaviour end to end. It runs `c_gdb_test spin`, which loops on a `volatile` flag, and speaks raw RSP, since a batch-mode GDB cannot send Ctrl-C: continue, interrupt, expect the stop reply. Without the kick, no reply comes.

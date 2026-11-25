@@ -494,7 +494,7 @@ gdb -ex 'target remote :1234'
 | `x/<N>x <addr>` | Examine memory (hex) |
 | `x/<N>i <addr>` | Disassemble at address |
 | `set {int}<addr> = <val>` | Write guest memory |
-| `Ctrl-C` | Interrupt (pause vCPU) |
+| `Ctrl-C` | Interrupt (pause vCPU): every vCPU is kicked out of the guest, so a program spinning in its own code stops at once; a thread blocked in a Warpine call stops when the call returns |
 
 ### How It Works
 
