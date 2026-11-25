@@ -68,6 +68,11 @@ run() {
     echo $? > "$OUT/$name.$mode.rc"
 }
 
+# Refusals known and kept (ADR-0111 addendum): the GPU drivers' shader
+# disk caches in the home directory (Warpine also turns them off, so these
+# should not come up), and a library naming another thread through /proc.
+EXPECTED='^openat (/proc/self/task/[0-9]+/comm|[^ ]*/\.cache/(nvidia|mesa_shader_cache[^/ ]*|radv_builtin_shaders[^/ ]*)/[^ ]*) '
+
 # A run's log and its desktop server's.
 # (The server log may be missing: cat failing would fail a pipeline under
 # pipefail.)
@@ -125,7 +130,9 @@ for check in "${CHECKS[@]}"; do
     if [ -n "$STRACE" ]; then
         refusals "$OUT/$name.open.strace" > "$OUT/$name.open.refused"
         refusals "$OUT/$name.confined.strace" > "$OUT/$name.confined.refused"
-        comm -13 "$OUT/$name.open.refused" "$OUT/$name.confined.refused" > "$OUT/$name.blocked"
+        comm -13 "$OUT/$name.open.refused" "$OUT/$name.confined.refused" > "$OUT/$name.refused-diff"
+        grep -E "$EXPECTED" "$OUT/$name.refused-diff" > "$OUT/$name.expected" || true
+        grep -vE "$EXPECTED" "$OUT/$name.refused-diff" > "$OUT/$name.blocked" || true
         [ -s "$OUT/$name.blocked" ] && flag "calls refused only when confined"
     fi
     [ "$verdict" = PASS ] || failed=1
@@ -135,6 +142,9 @@ for check in "${CHECKS[@]}"; do
         if [ -s "$OUT/$name.blocked" ]; then
             echo "  refused only when confined:"
             sed 's/^/    /' "$OUT/$name.blocked" | head -40
+        fi
+        if [ -s "$OUT/$name.expected" ]; then
+            echo "  expected refusals (kept, ADR-0111 addendum): $(wc -l < "$OUT/$name.expected")"
         fi
         head -20 "$OUT/$name.warnings"
     } >> "$SUMMARY"

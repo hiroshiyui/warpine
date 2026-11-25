@@ -4,7 +4,7 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 
 ## Security
 
-- [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): `ci/check_desktop.sh` passed on Wayland with PipeWire (2026-11-25: PM and VIO windows and sound, the desktop server); still to run on X11, native PulseAudio and other GPU drivers, widening the policy where it reports a difference; namespaces only if those leave gaps.
+- [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): `ci/check_desktop.sh` passed on Wayland with PipeWire and NVIDIA (2026-11-25: PM and VIO windows and sound, the desktop server; the shader cache and `/proc` thread naming stay refused, ADR-0111 addendum); still to run on X11, native PulseAudio and other GPU drivers, widening the policy where it reports a difference; namespaces only if those leave gaps.
 - [ ] **Audit 2026-11-25, Medium, left**: the other host frames built on the guest's stack (window-procedure calls, `WM_CREATE`, `WM_DESTROY`, owner drawing, modal loops, exception dispatch, `INITTERM`, a chain's `DosExit`) still `expect` room there, as the call chain did; the arena's residual windows (check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU).
 - [ ] **Audit 2026-11-25, Low, left**: other calls that copy a guest-named buffer out with `guest_read` / `guest_read_bytes` rather than `guest_read_buffer` (they reach Warpine's protected memory, the process's own); a sweep of the API handlers for them.
 - [ ] **Fuzzing** (ADR-0112): font and help-file readers once Warpine reads guest-supplied ones (none today).

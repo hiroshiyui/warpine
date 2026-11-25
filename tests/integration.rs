@@ -1428,6 +1428,44 @@ fn test_sigterm_ends_a_process_waiting_for_standard_input() {
     }
 }
 
+/// A confined process runs with the GPU drivers' shader caches off
+/// (`__GL_SHADER_DISK_CACHE=0`, `MESA_SHADER_CACHE_DISABLE=true`; ADR-0111
+/// addendum), set by running itself again at its start; unconfined, not.
+#[test]
+fn a_confined_process_runs_with_the_shader_caches_off() {
+    let sample = "samples/audio_test/audio_test.exe";
+    if !kvm_available() || !sample_exists(sample) { return; }
+    for (sandbox, want) in [(None, true), (Some("off"), false)] {
+        let data_home = tempfile::tempdir().expect("tempdir");
+        let out_path = data_home.path().join("out.txt");
+        let mut cmd = Command::new(warpine());
+        cmd.arg(sample_path(sample))
+            .env("WARPINE_HEADLESS", "1")
+            .env("XDG_DATA_HOME", data_home.path())
+            .env("XDG_STATE_HOME", data_home.path())
+            .env("XDG_RUNTIME_DIR", data_home.path())
+            .env_remove("__GL_SHADER_DISK_CACHE").env_remove("MESA_SHADER_CACHE_DISABLE")
+            .envs(PINNED_ENV.iter().copied())
+            .env("RUST_LOG", "error")
+            .stdin(Stdio::piped()).stdout(std::fs::File::create(&out_path).unwrap()).stderr(Stdio::null());
+        if let Some(v) = sandbox { cmd.env("WARPINE_SANDBOX", v); }
+        let mut child = cmd.spawn().expect("spawn warpine");
+        let _stdin = child.stdin.take();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !std::fs::read_to_string(&out_path).unwrap_or_default().contains("Press ENTER") {
+            assert!(std::time::Instant::now() < deadline && child.try_wait().unwrap().is_none(), "audio_test never started");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let environ = std::fs::read(format!("/proc/{}/environ", child.id())).unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        let vars: Vec<&[u8]> = environ.split(|&b| b == 0).collect();
+        for var in [&b"__GL_SHADER_DISK_CACHE=0"[..], b"MESA_SHADER_CACHE_DISABLE=true"] {
+            assert_eq!(vars.contains(&var), want, "{} with WARPINE_SANDBOX={sandbox:?}", String::from_utf8_lossy(var));
+        }
+    }
+}
+
 /// Ctrl+\\ in piped keyboard input, a terminal's stand-in for Ctrl+Break,
 /// is XCPT_SIGNAL_BREAK for KbdCharIn, which returns the next key (ADR-0093).
 #[test]

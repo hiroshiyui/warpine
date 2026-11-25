@@ -73,6 +73,40 @@ pub fn disabled_by(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|v| v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("no"))
 }
 
+/// The GPU drivers' switches that turn their shader disk caches off
+/// (NVIDIA's, Mesa's). The caches live in the home directory, which the
+/// sandbox keeps out of reach on purpose (ADR-0111 addendum): a cache other
+/// GL programs load is no place an escaped guest should write. With the
+/// caches off the drivers stop trying, and compile shaders at each start.
+pub const SHADER_CACHES_OFF: &[(&str, &str)] = &[("__GL_SHADER_DISK_CACHE", "0"), ("MESA_SHADER_CACHE_DISABLE", "true")];
+
+/// The [`SHADER_CACHES_OFF`] switches the environment (`get`) lacks, when
+/// the sandbox is on (`sandbox`: `WARPINE_SANDBOX`'s value); a switch the
+/// user set is left as it is.
+pub fn missing_shader_switches(sandbox: Option<&std::ffi::OsStr>, get: &dyn Fn(&str) -> bool)
+    -> Vec<(&'static str, &'static str)> {
+    if disabled_by(sandbox) { return Vec::new(); }
+    SHADER_CACHES_OFF.iter().copied().filter(|&(name, _)| !get(name)).collect()
+}
+
+/// Make sure the GPU drivers will find [`SHADER_CACHES_OFF`]: they read
+/// them when they load, and the process environment must not be changed
+/// while threads may read it (`std::env::set_var` is forbidden here), so a
+/// process that lacks them runs itself again with them added. Called first
+/// in `main`, before any thread starts; children inherit them. A failed
+/// `exec` leaves the process as it was (the drivers then try their caches
+/// and are refused).
+pub fn turn_off_shader_caches() {
+    use std::os::unix::process::CommandExt;
+    let missing = missing_shader_switches(std::env::var_os(SANDBOX_ENV).as_deref(), &|n| std::env::var_os(n).is_some());
+    if missing.is_empty() { return; }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut args = std::env::args_os();
+    let mut cmd = std::process::Command::new(exe);
+    if let Some(arg0) = args.next() { cmd.arg0(arg0); }
+    let _ = cmd.args(args).envs(missing).exec();
+}
+
 /// A drive's host directory, and whether the drive is read-only.
 pub type Drive = (PathBuf, bool);
 
@@ -183,6 +217,18 @@ pub fn filter_syscalls(role: crate::syscall_filter::Role) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shader-cache switches are added only when the sandbox is on, and
+    /// one the user set stays as it is (ADR-0111 addendum).
+    #[test]
+    fn shader_cache_switches_are_added_only_when_confined() {
+        use std::ffi::OsStr;
+        let none = |_: &str| false;
+        assert_eq!(missing_shader_switches(None, &none), SHADER_CACHES_OFF.to_vec());
+        assert!(missing_shader_switches(Some(OsStr::new("off")), &none).is_empty(), "unconfined: the caches stay");
+        let nvidia_set = |n: &str| n == "__GL_SHADER_DISK_CACHE";
+        assert_eq!(missing_shader_switches(None, &nvidia_set), vec![("MESA_SHADER_CACHE_DISABLE", "true")]);
+    }
 
     #[test]
     fn off_and_its_spellings_turn_it_off() {

@@ -57,3 +57,12 @@ The "Security Facilities" TODOs proposed confining the process. The user chose L
   - `sandbox.rs`: the policy's grants, read-only drives, the `off` spellings, a program without a directory;
   - `crash_dump.rs`: the crash directory;
   - `integration.rs`: `--sandbox-check` denying the home directory and allowing the system's files.
+
+## Addendum (2026-11-25): what a real desktop asks for, and what stays out
+
+`ci/check_desktop.sh` ran on a desktop session (Wayland, PipeWire 1.6.9 through its PulseAudio service, NVIDIA's GL driver) with `strace`. PM and VIO windows, their sound and the desktop server worked the same confined as unconfined; the only calls refused only when confined were two kinds of `openat`:
+
+- **The GPU driver's shader disk cache** (`~/.cache/nvidia/GLCache/…`; Mesa keeps its own under `~/.cache/mesa_shader_cache`). The driver loads compiled shaders from it into every GL program the user runs, so a writable cache would let an escaped guest reach those programs. It stays out of reach. To stop the drivers trying, a confined process runs with their switches off, `__GL_SHADER_DISK_CACHE=0` and `MESA_SHADER_CACHE_DISABLE=true`: `sandbox::turn_off_shader_caches`, first in `main`, runs the process again with the switches added when they are missing (the environment cannot be changed in place once threads may read it, and `std::env::set_var` is forbidden), unless `WARPINE_SANDBOX=off` or the user set them. Shaders are compiled at each start instead.
+- **Naming another thread** (`/proc/self/task/<tid>/comm`, written by a library for threads it starts). Allowing it means writing under `/proc/self/task/`, which holds more than names (each thread's `mem` among them); the threads keep their default names, which only debuggers show.
+
+`ci/check_desktop.sh` reports these two as expected refusals rather than differences. X11, native PulseAudio and other GPU drivers are still to be checked.

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- **A confined process runs with the GPU drivers' shader disk caches off** (ADR-0111 addendum): `ci/check_desktop.sh` with `strace` on a Wayland / PipeWire / NVIDIA desktop showed the driver trying its cache in the home directory, which the sandbox keeps out of reach on purpose. Warpine now runs itself again at its start with `__GL_SHADER_DISK_CACHE=0` and `MESA_SHADER_CACHE_DISABLE=true` when they are missing (unless `WARPINE_SANDBOX=off`), so the drivers stop trying. The script reports that cache and `/proc` thread naming as expected refusals.
+
 ## [0.0.19] - 2026-11-25
 
 ### Added

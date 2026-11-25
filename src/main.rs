@@ -119,6 +119,10 @@ fn license_notices() -> String {
 }
 
 fn main() {
+    // Before anything else (no thread yet): the GPU drivers' shader caches
+    // off, by running again with their switches when they are missing
+    // (ADR-0111 addendum).
+    sandbox::turn_off_shader_caches();
     init_logging();
     // The pipe a Warpine parent gave for this process's exit code (ADR-0090).
     loader::exit_report::adopt_from_env();
