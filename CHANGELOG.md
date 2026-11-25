@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-11-25
+
 ### Added
 - **The SOM class manager's registry calls** (SOM Programming Reference; Warpine's own ordinals 3410–3414, ADR-0123): `somSubstituteClass` (the lookups by a class's name give an immediate child instead, and `<Class>New()` makes it) with the SDK's `SOM_SubstituteClass(Old, New)`, `somMergeInto` (another class manager becomes `SOMClassMgrObject`), `_get_somRegisteredClasses` (a sequence of every registered class) and `_get_somInterfaceRepository` (NULL: there is none). `som_idl_test` has 59 checks. 1022 entry points.
 
