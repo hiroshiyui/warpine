@@ -4,9 +4,12 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 
 ## Security
 
+- [ ] **No-execute guest memory**: guests use 32-bit paging without PAE, so every readable page is executable. PAE paging with `EFER.NXE` would mark stacks, heaps and LX data objects non-executable (`PAG_EXECUTE` stays runnable). Needs an ADR: PAE tables are twice the size, which changes the paging arena and its 736-thread budget (ADR-0088, 0114, 0115).
+- [ ] **Per-application permissions**: a manifest per program naming the drives, network and devices it gets, narrowing Landlock / seccomp per process (ADR-0066, 0111, 0124); the desktop server asking the user when a program reaches for more.
 - [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): `ci/check_desktop.sh` passed on Wayland with PipeWire and NVIDIA (2026-11-25: PM and VIO windows and sound, the desktop server; the shader cache and `/proc` thread naming stay refused, ADR-0111 addendum); still to run on X11, native PulseAudio and other GPU drivers, widening the policy where it reports a difference; namespaces only if those leave gaps.
 - [ ] **Audit 2026-11-25, left**: the shared arena's residual windows (check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU); single-value `guest_read`s of guest-named addresses still reach Warpine's protected memory (Warpine's own reads need them), so a call that echoes one back can leak a word of it.
 - [ ] **Fuzzing** (ADR-0112): font and help-file readers once Warpine reads guest-supplied ones (none today).
+- [ ] **Guest ASLR**, opt-in (`WARPINE_ASLR`): a random start of each process's allocator region, when Warpine hosts network servers (ADR-0125's revisit condition).
 
 ## SOM / Workplace Shell
 
@@ -17,6 +20,8 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 - [ ] **`somidl`**, if needed: OIDL `.csc` input, an `ir` emitter and interface repository, `TC_<Name>` TypeCode constants for declared types (the kernel has TypeCodes, ADR-0128), DSOM.
 - [ ] **Smaller**: C++ SOM objects on the stack and in static storage; `dllname` for `somLocateClassFile`; `SOMU` classes, `SOMIR`, IDL metadata.
 - [ ] **WPS classes** (ADR-0129: guest code in the SDK's `libwps.a`): the rest of `WPObject` (views — `wpOpen`, `wpClose`, `wpViewObject`; icons; pop-up menus; `wpCopyObject` / `wpMoveObject`; the object-ID registry, `wpclsQueryObject`); `WPAbstract` (persistence in OS2.INI), `WPTransient`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`; settings notebooks; `wpDragOver` / `wpDrop`; a Workplace Shell process with `WinCreateObject`.
+- [ ] **A system message bus on SOM**: notifications, settings changes and "open this file with…" requests as SOM objects between processes, like D-Bus (ADR-0127); needs an ADR.
+- [ ] **Self-contained application bundles**: installed by dropping in a folder, no `CONFIG.SYS` `LIBPATH` editing, shown by the WPS as objects; needs an ADR.
 
 ## Kernel and processes
 
@@ -26,6 +31,10 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 - [ ] **Pipes**: muxwait semaphores as pipe semaphores, a real `NPSS_WAIT`; echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Threads**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; allocator blocks would lift it.
+- [ ] **Large files**: `DosOpenL`, `DosSetFilePtrL`, `DosSetFileSizeL`, `DosProtect*L`, `DosSetFileLocksL` and 64-bit sizes in `DosQueryFileInfo` level 11 (`DosQueryProcAddr` answers `ERROR_PROC_NOT_FOUND` for them today).
+- [ ] **Asynchronous I/O**: a completion-based interface (like io_uring or completion ports) as `Wrp*` calls in `WARPINE.DLL`, over threads and event semaphores.
+- [ ] **UTF-8 for new programs**: an opt-in per program making codepage 1208 its process codepage, so text passes through as UTF-8 (ADR-0008); old programs keep theirs.
+- [ ] **Services**: a service manager (start on demand, restart on failure, ordered dependencies) in place of `CONFIG.SYS`'s `RUN=` lines; needs an ADR.
 - [ ] **Profiles**: program-list calls, `PRF16*` / `WIN16*` exports; 🚧 binary OS/2 INI files.
 - [ ] **CONFIG.SYS** (ADR-0032, 0092): 🚧 `THREADS=` range and parsing against `CMDREF.INF` (secondary sources agree on 64–4095, default 64, but not on clamping, case, spaces, `REM`); `MAXWAIT`, `DPATH`.
 - [ ] **Compatibility chart** (ADR-0033): date the `unknown` exports (22 of os2386.lib, 7 elsewhere); check the Warp 3 data and dates (SOM 2.0, the VIO / MOU threshold, `VioGlobalReg`); 🚧 the SO32DLL / TCP32DLL split; chart Open32 (PMWINX), OpenGL, DIVE, MMIO, MCIAPI, LIBUNI, TCPIP32.
@@ -66,6 +75,21 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 
 **Rendering** (measure with `RUST_LOG=warpine::gui=debug` and `samples/pm_bench`)
 - [ ] Idle CPU and input latency on real X11 / Wayland; damage smaller than a window; a moved window's old and new rectangles damaged apart; present a `WinBeginPaint` PS only at `WinEndPaint`; HiDPI (agree the approach first); a shared glyph atlas if profiling asks for it.
+- [ ] **Modern rendering**: alpha (translucent windows and bitmaps) and anti-aliased text in every control; GPU composition through SDL3's renderer; then bring back the modern theme from `feature/modern-theme` (ADR-0118, 0121) once the PM widgets are done.
+
+## Desktop integration
+
+Features for people using Warpine day to day. Each PM program keeps drawing on Warpine's own desktop (ADR-0011); one host window per PM window is not planned.
+
+- [ ] **Launching from the host**: a MIME type for LX executables, so the file manager starts them; optionally a `binfmt_misc` registration; `.desktop` menu entries with the program's icon taken from its LX resources.
+- [ ] **A configuration program**: a PM program for drive mappings, codepage and country, theme, sound, the desktop window size and per-application permissions, in place of environment variables and text files; needs an ADR for where the settings live.
+- [ ] **A crash dialog**: when a program traps, a dialog naming the program and the exception, with *Close*, *Show details* and the crash dump's path (`$XDG_STATE_HOME/warpine`).
+- [ ] **Host drag and drop and portals**: host files dropped onto PM programs and the desktop; host documents and URLs opened, and notifications shown, through XDG desktop portals, each with the user's consent (ADR-0066).
+- [ ] **Host fonts**: fontconfig's fonts offered to PM programs, read-only through the sandbox policy (ADR-0012, 0111, 0119).
+- [ ] **Translations**: Warpine's own text (system menus, CMD messages, standard dialogs, error boxes) in other languages, following the country setting.
+- [ ] **Accessibility**: an AT-SPI bridge so screen readers read PM controls; a high-contrast theme; checked keyboard navigation in every control.
+- [ ] **Installing software**: WarpIN archives (`.wpi`; licence first) and a simple install from a ZIP archive.
+- [ ] **Session restore**: reopening the last session's programs where their windows were (extends PMWP's window positions).
 
 ## Console and multimedia
 
@@ -90,6 +114,8 @@ Open Watcom stays the ABI baseline; a modern toolchain enters only through stabl
 
 - [ ] **C SDK** (ADR-0095–0100): `os2rc` HELPTABLE / HELPSUBTABLE, ASSOCTABLE, FONTDIR, string resource names; undeclared entries (`gen_api -- check-headers`); float and long double math.
 - [ ] **CI and C++** (ADR-0101–0110): cache the crates in CI; C++ exceptions through Warpine's callbacks; clang ignores `-fnon-call-exceptions` (ADR-0110); a C++ standard library.
+- [ ] **Rust as a first-class SDK language**: complete the guest crates (`warpine-os2-sys` / `-rt` / `warpine-os2`) to the C SDK's coverage, PM included, for memory safety inside the guest.
+- [ ] **A declarative UI layer**: guest-side library code over PM (like `libwps`, ADR-0129): a view tree diffed into real PM windows (`WinCreateWindow`, `WinSetWindowText`, `LM_*`, `WinDestroyWindow`), notifications turned into callbacks that update the state, and a layout engine (stacks, grids, fill) applied with `WinSetMultWindowPos`. Rust first (macro syntax over `warpine-os2`), then a markup language compiled to C by a Warpine tool, with state from SOM attributes. Warpine's own names and API; needs an ADR.
 - [ ] **Ported software**: 🚧 bitwiseworks GCC / LIBCn / LIBCx as regression inputs (licences first); the DOSCALLS ordinals they import; their current versions and debug formats.
 
 ## Blockers
