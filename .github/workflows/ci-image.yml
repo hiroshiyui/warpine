@@ -51,7 +51,7 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
 
-      - name: Build and publish (three tries: the build downloads a lot)
+      - name: Build and publish (three tries, as the build downloads a lot)
         run: |
           for i in 1 2 3; do
               vendor/setup_ci_image.sh --publish && exit 0

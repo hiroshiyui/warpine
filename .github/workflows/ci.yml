@@ -55,7 +55,9 @@ jobs:
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-        run: echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin || echo "No registry login: the image will be built"
+        run: |
+          echo "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin \
+            || echo "No registry login, so the image will be built"
 
       - name: Run the matrix entry in the pinned image
         env:
