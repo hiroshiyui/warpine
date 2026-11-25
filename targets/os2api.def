@@ -1060,6 +1060,11 @@ SOM.3406   WrpSOMClassMgr_somUnregisterClass
 SOM.3407   WrpSOMClassMgr_somUnloadClassFile
 SOM.3408   WrpSOMClassMgr_somGetInitFunction
 SOM.3409   WrpSOMClassMgr_somGetRelatedClasses
+SOM.3410   WrpSOMClassMgr_somSubstituteClass
+SOM.3411   WrpSOMClassMgr_somMergeInto
+SOM.3412   WrpSOMClassMgr__get_somRegisteredClasses
+SOM.3413   WrpSOMClassMgr__get_somInterfaceRepository
+SOM.3414   WrpSOMClassMgr__set_somInterfaceRepository
 
 # ── REXX ─────────────────────────────────────────────────────────────────────
 REXX.1      RexxStart

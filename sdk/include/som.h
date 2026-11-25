@@ -284,6 +284,28 @@ typedef somTP_SOMClassMgr_somGetInitFunction *somTD_SOMClassMgr_somGetInitFuncti
 typedef SOMClassArray SOMLINK somTP_SOMClassMgr_somGetRelatedClasses( SOMClassMgr *, SOMClass * );
 typedef somTP_SOMClassMgr_somGetRelatedClasses *somTD_SOMClassMgr_somGetRelatedClasses;
 #define _somGetRelatedClasses( m, c ) SOM_Resolve( m, SOMClassMgr, somGetRelatedClasses )( (SOMClassMgr *)(m), (c) )
+/* Make the lookups by origClassName give newClassName, an immediate child
+ * of it (both registered); 0, or a SOMERROR_* code. */
+typedef long SOMLINK somTP_SOMClassMgr_somSubstituteClass( SOMClassMgr *, zString, zString );
+typedef somTP_SOMClassMgr_somSubstituteClass *somTD_SOMClassMgr_somSubstituteClass;
+#define _somSubstituteClass( m, o, n ) \
+    SOM_Resolve( m, SOMClassMgr, somSubstituteClass )( (SOMClassMgr *)(m), (zString)(o), (zString)(n) )
+/* Let target, another class manager, take over (SOMClassMgrObject too). */
+typedef void SOMLINK somTP_SOMClassMgr_somMergeInto( SOMClassMgr *, SOMObject * );
+typedef somTP_SOMClassMgr_somMergeInto *somTD_SOMClassMgr_somMergeInto;
+#define _somMergeInto( m, t ) SOM_Resolve( m, SOMClassMgr, somMergeInto )( (SOMClassMgr *)(m), (SOMObject *)(t) )
+/* The interface repository: Warpine has none (NULL). */
+typedef SOMObject * SOMLINK somTP_SOMClassMgr__get_somInterfaceRepository( SOMClassMgr * );
+typedef somTP_SOMClassMgr__get_somInterfaceRepository *somTD_SOMClassMgr__get_somInterfaceRepository;
+#define __get_somInterfaceRepository( m ) SOM_Resolve( m, SOMClassMgr, _get_somInterfaceRepository )( (SOMClassMgr *)(m) )
+typedef void SOMLINK somTP_SOMClassMgr__set_somInterfaceRepository( SOMClassMgr *, SOMObject * );
+typedef somTP_SOMClassMgr__set_somInterfaceRepository *somTD_SOMClassMgr__set_somInterfaceRepository;
+#define __set_somInterfaceRepository( m, r ) \
+    SOM_Resolve( m, SOMClassMgr, _set_somInterfaceRepository )( (SOMClassMgr *)(m), (SOMObject *)(r) )
+/* SOM_SubstituteClass(Old, New): make sure both classes exist (through the
+ * _Old / _New macros the bindings define), then substitute New for Old. */
+#define SOM_SubstituteClass( o, n ) \
+    ( (void)_##o, (void)_##n, _somSubstituteClass( SOMClassMgrObject, #o, #n ) )
 
 /* Methods returning a sequence by value. OS/2's _System passes the
  * caller's result buffer as a hidden first argument and the caller removes
@@ -298,6 +320,11 @@ typedef somOffsets * SOMLINK somTP_SOMClass__get_somInstanceDataOffsets( somOffs
 typedef somTP_SOMClass__get_somInstanceDataOffsets *somTD_SOMClass__get_somInstanceDataOffsets;
 #define __get_somInstanceDataOffsets( c ) __extension__ ({ somOffsets __somr; \
         SOM_Resolve( c, SOMClass, _get_somInstanceDataOffsets )( &__somr, (SOMClass *)(c) ); __somr; })
+/* Every class registered in the process; free _buffer with SOMFree. */
+typedef SOMClassSequence * SOMLINK somTP_SOMClassMgr__get_somRegisteredClasses( SOMClassSequence *, SOMClassMgr * );
+typedef somTP_SOMClassMgr__get_somRegisteredClasses *somTD_SOMClassMgr__get_somRegisteredClasses;
+#define __get_somRegisteredClasses( m ) __extension__ ({ SOMClassSequence __somr; \
+        SOM_Resolve( m, SOMClassMgr, _get_somRegisteredClasses )( &__somr, (SOMClassMgr *)(m) ); __somr; })
 #define _somFindClass( m, id, ma, mi ) \
     SOM_Resolve( m, SOMClassMgr, somFindClass )( (SOMClassMgr *)(m), (id), (ma), (mi) )
 #define _somFindClsInFile( m, id, ma, mi, f ) \

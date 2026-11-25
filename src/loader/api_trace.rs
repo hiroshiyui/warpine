@@ -731,6 +731,11 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             3407 => "WrpSOMClassMgr_somUnloadClassFile",
             3408 => "WrpSOMClassMgr_somGetInitFunction",
             3409 => "WrpSOMClassMgr_somGetRelatedClasses",
+            3410 => "WrpSOMClassMgr_somSubstituteClass",
+            3411 => "WrpSOMClassMgr_somMergeInto",
+            3412 => "WrpSOMClassMgr__get_somRegisteredClasses",
+            3413 => "WrpSOMClassMgr__get_somInterfaceRepository",
+            3414 => "WrpSOMClassMgr__set_somInterfaceRepository",
             _ => "?",
         },
 

@@ -168,6 +168,42 @@ int main( void )
         _somFree( m );
     }
 
+    /* The class manager (SOM Programming Reference): the registered
+       classes, the interface repository, somSubstituteClass and
+       somMergeInto. Last: after the substitution CounterNew makes
+       Doublers. */
+    {
+        SOMClassSequence all = __get_somRegisteredClasses( SOMClassMgrObject );
+        SOMClassMgr     *mgr2;
+        Counter         *k;
+        unsigned long    i;
+        int              seen = 0;
+        for( i = 0; i < all._length; i++ ) {
+            if( all._buffer[i] == _Counter || all._buffer[i] == _Doubler ) seen++;
+        }
+        check( "_get_somRegisteredClasses: Counter and Doubler among them", seen == 2 );
+        SOMFree( all._buffer );
+        check( "_get_somInterfaceRepository: none", __get_somInterfaceRepository( SOMClassMgrObject ) == 0 );
+        check( "somSubstituteClass: not an immediate child, refused",
+               _somSubstituteClass( SOMClassMgrObject, "Doubler", "Counter" ) != 0 );
+        check( "somSubstituteClass: a class not registered, refused",
+               _somSubstituteClass( SOMClassMgrObject, "Counter", "Nowhere" ) != 0 );
+        check( "SOM_SubstituteClass(Counter, Doubler)", SOM_SubstituteClass( Counter, Doubler ) == 0 );
+        check( "somFindClass(Counter) gives Doubler",
+               _somFindClass( SOMClassMgrObject, somIdFromString( "Counter" ), 0, 0 ) == _Doubler );
+        k = CounterNew();
+        check( "CounterNew makes a Doubler", _somGetClass( k ) == _Doubler );
+        _somMergeInto( SOMClassMgrObject, (SOMObject *)k );
+        check( "somMergeInto: a target that is no class manager changes nothing",
+               _somGetClass( SOMClassMgrObject ) != _Doubler );
+        _somFree( k );
+        mgr2 = (SOMClassMgr *)_somNew( SOMClassMgrClassData.classObject );
+        _somMergeInto( SOMClassMgrObject, (SOMObject *)mgr2 );
+        check( "somMergeInto: the new class manager is SOMClassMgrObject", SOMClassMgrObject == mgr2 );
+        check( "... and finds the classes",
+               _somFindClass( mgr2, somIdFromString( "Doubler" ), 0, 0 ) == _Doubler );
+    }
+
     printf( "som_idl_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );
 }

@@ -1301,6 +1301,17 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3408,&a) },
     ApiEntry { ordinal: SOM_BASE + 3409, module: "SOM", name: "WrpSOMClassMgr_somGetRelatedClasses", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,3409,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3410, module: "SOM", name: "WrpSOMClassMgr_somSubstituteClass", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,3410,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3411, module: "SOM", name: "WrpSOMClassMgr_somMergeInto", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3411,&a) },
+    // A sequence returned by value: the caller's buffer comes first.
+    ApiEntry { ordinal: SOM_BASE + 3412, module: "SOM", name: "WrpSOMClassMgr__get_somRegisteredClasses", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3412,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3413, module: "SOM", name: "WrpSOMClassMgr__get_somInterfaceRepository", argc: 1,
+               handler: |l,_v,i,a| l.som_call(i,3413,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3414, module: "SOM", name: "WrpSOMClassMgr__set_somInterfaceRepository", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3414,&a) },
     // ── REXX / REXXAPI — the REXX API (rexxapi.rs, ADR-0085) ─────────────────
     ApiEntry { ordinal: REXX_BASE + 1, module: "REXX", name: "RexxStart", argc: 9,
                handler: |l,_v,i,a| l.rexx_start(i,a) },

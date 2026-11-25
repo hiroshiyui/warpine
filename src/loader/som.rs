@@ -240,7 +240,7 @@ pub const SOM_METHOD_NOT_IMPLEMENTED: u32 = 3198;
 // from 3300, SOMClassMgr's from 3400; the module has SOM_ORDINALS.
 const _: () = assert!(SOM_LAST_IBM < SOM_FIRST_PRIVATE && SOM_RESOLVE_BY_NAME >= SOM_FIRST_PRIVATE);
 /// The last ordinal of Warpine's own exports (SOMClassMgr's last method).
-pub const SOM_LAST_PRIVATE: u32 = 3409;
+pub const SOM_LAST_PRIVATE: u32 = 3414;
 const _: () = assert!(SOM_LAST_PRIVATE < super::constants::SOM_ORDINALS);
 /// A method of a root class Warpine does not implement yet: its token
 /// resolves to [`SOM_METHOD_NOT_IMPLEMENTED`].
@@ -306,10 +306,10 @@ pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
 pub const SOMCLASSMGR_METHODS: &[(u32, &str)] = &[
     (3403, "somFindClsInFile"), (3400, "somFindClass"), (3401, "somClassFromId"), (3402, "somRegisterClass"),
     (3406, "somUnregisterClass"), (3404, "somLocateClassFile"), (3405, "somLoadClassFile"),
-    (3407, "somUnloadClassFile"), (3408, "somGetInitFunction"), (NOT_IMPLEMENTED, "somMergeInto"),
-    (3409, "somGetRelatedClasses"), (NOT_IMPLEMENTED, "somSubstituteClass"),
-    (NOT_IMPLEMENTED, "_get_somInterfaceRepository"), (NOT_IMPLEMENTED, "_set_somInterfaceRepository"),
-    (NOT_IMPLEMENTED, "_get_somRegisteredClasses"), (NOT_IMPLEMENTED, "somBeginPersistentClasses"),
+    (3407, "somUnloadClassFile"), (3408, "somGetInitFunction"), (3411, "somMergeInto"),
+    (3409, "somGetRelatedClasses"), (3410, "somSubstituteClass"),
+    (3413, "_get_somInterfaceRepository"), (3414, "_set_somInterfaceRepository"),
+    (3412, "_get_somRegisteredClasses"), (NOT_IMPLEMENTED, "somBeginPersistentClasses"),
     (NOT_IMPLEMENTED, "somEndPersistentClasses"), (NOT_IMPLEMENTED, "somcmPrivate1"),
     (NOT_IMPLEMENTED, "somcmPrivate2"), (NOT_IMPLEMENTED, "somRegisterClassLibrary"),
     (NOT_IMPLEMENTED, "somJoinAffinityGroup"), (NOT_IMPLEMENTED, "somUnregisterClassLibrary"),
@@ -453,6 +453,8 @@ pub struct SomClass {
     /// The ancestors its initializers visit instead of its parents
     /// (`directinitclasses`; empty: the parents).
     pub direct_init: Vec<u32>,
+    /// Its `ClassData` structure (`somBuildClass`'s; 0: none known).
+    pub class_data: u32,
 }
 
 impl SomClass {
@@ -557,9 +559,19 @@ pub struct SomRuntime {
     pub apply: HashMap<u32, u32>,
     /// The buffers of the live `somVaBuf`s.
     pub va_buffers: HashMap<u32, u32>,
+    /// `somSubstituteClass`: the class a lookup by an old class's name
+    /// gives instead of it.
+    pub substitutes: HashMap<String, u32>,
 }
 
 impl SomRuntime {
+    /// The registered class a lookup by `name` gives (`somFindClass`,
+    /// `somFindClsInFile`, `somClassFromId`): a substitute when
+    /// `somSubstituteClass` made one, else the class of that name.
+    pub fn lookup(&self, name: &str) -> Option<u32> {
+        self.substitutes.get(name).or_else(|| self.by_name.get(name)).copied()
+    }
+
     /// Whether class `cls` is `ancestor` or descends from it.
     pub fn descends(&self, cls: u32, ancestor: u32) -> bool {
         let mut seen = HashSet::new();
@@ -1140,7 +1152,7 @@ impl Loader {
                 rt.classes.insert(obj, SomClass {
                     name: name.to_string(), name_addr, parents, meta: c, slots, own_methods: own, parts,
                     data_size: if obj == o { 4 } else { 0 }, instance_size: 4, mtab: 0, ready: false,
-                    version: ROOT_VERSION, direct_init: Vec::new(),
+                    version: ROOT_VERSION, direct_init: Vec::new(), class_data: 0,
                 });
                 rt.by_name.insert(name.to_string(), obj);
             }
@@ -1609,6 +1621,8 @@ impl Loader {
                 blocks.extend(rt.init_tables.remove(&c).map(|t| t.0));
                 let Some((name, mtab)) = rt.classes.get(&c).map(|k| (k.name.clone(), k.mtab)) else { continue };
                 if rt.by_name.get(&name) == Some(&c) { rt.by_name.remove(&name); }
+                // A substitution of or by a class that goes, goes too.
+                rt.substitutes.retain(|old, new| *old != name && *new != c);
                 if rt.mtabs.remove(&mtab).is_some() { blocks.push(mtab); }
                 rt.ready_order.retain(|&k| k != c);
             }
@@ -1711,6 +1725,7 @@ impl Loader {
         };
         // ClassData.classObject, CClassData.parentMtab / instanceDataToken.
         let _ = self.guest_write::<u32>(info.cds, cls);
+        if let Some(c) = self.shared.som.lock_or_recover().classes.get_mut(&cls) { c.class_data = info.cds; }
         if info.ccds != 0 {
             let pm = self.som_parent_mtab_struct(cls, &parents, size);
             let token = if info.instance_data_size > 0 { cls } else { 0 };
@@ -2125,7 +2140,7 @@ impl Loader {
     fn som_find_class(&self, vcpu: u32, id: u32, major: u32, minor: u32, file: Option<u32>, load: bool) -> ApiResult {
         let Some(name) = self.som_id_name(id) else { return ApiResult::Normal(0) };
         // The lock is released before the version check takes it again.
-        let registered = if load { None } else { self.shared.som.lock_or_recover().by_name.get(&name).copied() };
+        let registered = if load { None } else { self.shared.som.lock_or_recover().lookup(&name) };
         if let Some(cls) = registered {
             return ApiResult::Normal(self.som_version_checked(cls, &name, (major, minor)));
         }
@@ -2147,7 +2162,7 @@ impl Loader {
     /// the methods. `None`: no override, the kernel's own path.
     fn som_find_via_methods(&self, vcpu: u32, a: &[u32; 10], in_file: bool) -> Option<ApiResult> {
         let (mgr, id, major, minor) = (a[0], a[1], a[2], a[3]);
-        let registered = self.som_id_name(id).is_some_and(|n| self.shared.som.lock_or_recover().by_name.contains_key(&n));
+        let registered = self.som_id_name(id).is_some_and(|n| self.shared.som.lock_or_recover().lookup(&n).is_some());
         if registered { return None; }
         if in_file {
             let load = self.som_resolve(mgr, TOKEN_SOM_LOAD_CLASS_FILE);
@@ -2258,7 +2273,7 @@ impl Loader {
             }
         }
         let Some(name) = name else { return 0 };
-        let cls = self.shared.som.lock_or_recover().by_name.get(&name).copied();
+        let cls = self.shared.som.lock_or_recover().lookup(&name);
         match (loaded, cls) {
             (true, Some(cls)) => self.som_version_checked(cls, &name, version),
             (true, None) => { log::warn!("SOM: the class file of {name} did not make the class"); 0 }
@@ -2748,7 +2763,7 @@ impl Loader {
             // ── SOMClassMgr ──
             3401 => {
                 let name = self.som_id_name(a[1]).unwrap_or_default();
-                ok(self.shared.som.lock_or_recover().by_name.get(&name).copied().unwrap_or(0))
+                ok(self.shared.som.lock_or_recover().lookup(&name).unwrap_or(0))
             }
             3400 => self.som_find_via_methods(vcpu, a, false).unwrap_or_else(|| self.som_find_class(vcpu, a[1], a[2], a[3], None, false)),
             3403 => self.som_find_via_methods(vcpu, a, true).unwrap_or_else(|| self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), false)),
@@ -2778,6 +2793,19 @@ impl Loader {
                 if func == thunk(SOM_DEFAULT_CLASS_INIT_FUNC_NAME) || func == 0 { return ok(self.som_init_func_name()); }
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(func, Vec::new(), false)], false, ChainThen::ReturnLast))
             }
+            3410 => ok(self.som_substitute_class(a[1], a[2])),
+            3411 => ok(self.som_merge_into(a[0], a[1])),
+            // _get_somRegisteredClasses: every registered class, a
+            // sequence returned by value (its buffer SOMMalloc'ed).
+            3412 => {
+                let mut classes: Vec<u32> = self.shared.som.lock_or_recover().by_name.values().copied().collect();
+                classes.sort_unstable();
+                ok(self.som_write_sequence(a[0], &classes, 1))
+            }
+            // The interface repository: Warpine has none, so the attribute
+            // is NULL (as the Reference says when it is not available),
+            // and setting it does nothing.
+            3413 | 3414 => ok(0),
             // somLocateClassFile: without an interface repository, the
             // class's name.
             3404 => ok(self.som_id_name(a[1]).map_or(0, |n| self.som_string(&n))),
@@ -2798,6 +2826,46 @@ impl Loader {
     /// Write a sequence (`_maximum`, `_length`, `_buffer`) of the
     /// `words.len() / per_item` items in `words` to `seq`, its buffer
     /// SOMMalloc'ed (NULL for none); returns `seq`, as a structure return does.
+    /// `somSubstituteClass(mgr, origClassName, newClassName)`: from now on
+    /// the lookups by `origClassName` give class `newClassName`, which must
+    /// be registered, as must the original, and be its immediate child; the
+    /// original's `ClassData.classObject` becomes the new class, so
+    /// `<orig>New` makes instances of it (SOM Programming Reference). 0, or
+    /// `SOMERROR_NotRegistered` / `SOMERROR_NoParentClass` (unverified:
+    /// the Reference says only "non-zero").
+    fn som_substitute_class(&self, orig: u32, new: u32) -> u32 {
+        let (Some(orig), Some(new)) = (self.som_name(orig), self.som_name(new)) else { return SOMERROR_BAD_ARGUMENT };
+        let mut rt = self.shared.som.lock_or_recover();
+        let (Some(&old_cls), Some(&new_cls)) = (rt.by_name.get(&orig), rt.by_name.get(&new)) else {
+            return SOMERROR_NOT_REGISTERED;
+        };
+        if old_cls == new_cls || !rt.classes.get(&new_cls).is_some_and(|c| c.parents.contains(&old_cls)) {
+            return SOMERROR_NO_PARENT_CLASS;
+        }
+        rt.substitutes.insert(orig, new_cls);
+        let class_data = rt.classes.get(&old_cls).map_or(0, |c| c.class_data);
+        drop(rt);
+        if class_data != 0 { let _ = self.guest_write::<u32>(class_data, new_cls); }
+        0
+    }
+
+    /// `somMergeInto(receiver, target)`: `target`, a `SOMClassMgr`, takes
+    /// over from `receiver`. The registry is the kernel's, shared by every
+    /// class manager, so nothing is copied: when `receiver` is
+    /// `SOMClassMgrObject`, `target` becomes it (SOM Programming
+    /// Reference). A target that is no class manager changes nothing.
+    fn som_merge_into(&self, receiver: u32, target: u32) -> u32 {
+        let mgr_class = self.shared.som.lock_or_recover().som_class_mgr;
+        let is_mgr = self.som_object_class(target).is_some_and(|c| self.shared.som.lock_or_recover().descends(c, mgr_class));
+        if !is_mgr { return 0; }
+        let Some(var) = self.som_data_address(SOM_CLASS_MGR_OBJECT) else { return 0 };
+        if self.guest_read::<u32>(var) == Some(receiver) {
+            let _ = self.guest_write::<u32>(var, target);
+            self.shared.som.lock_or_recover().mgr = target;
+        }
+        0
+    }
+
     fn som_write_sequence(&self, seq: u32, words: &[u32], per_item: usize) -> u32 {
         let n = (words.len() / per_item) as u32;
         let buffer = if words.is_empty() { 0 } else {
@@ -2906,6 +2974,55 @@ mod tests {
     fn token(l: &Loader, cls: u32, name: &str) -> u32 {
         let id = ok(call(l, SOM_ID_FROM_STRING, &[put(l, 0x3900, name)]));
         ok(call(l, 3314, &[cls, id]))
+    }
+
+    /// somSubstituteClass: the lookups by the old name give the new class,
+    /// an immediate child that must be registered, and a class that goes
+    /// takes its substitution along; somMergeInto: a class manager takes
+    /// over SOMClassMgrObject, one that is none does not; the registered
+    /// classes and the (absent) interface repository (SOM Programming
+    /// Reference).
+    #[test]
+    fn class_substitution_and_a_class_manager_taking_over() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let som_class_mgr = root(&l, SOM_CLASS_MGR_CLASS_DATA);
+        let mgr = root(&l, SOM_CLASS_MGR_OBJECT);
+        let old = new_class(&l, som_class, "Old", &[som_object], 0, &[]);
+        let new = new_class(&l, som_class, "New", &[old], 0, &[]);
+        let other = new_class(&l, som_class, "Other", &[som_object], 0, &[]);
+        let id = |n: &str| ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3A00, n)]));
+        let names = |a: &str, b: &str| (put(&l, 0x3B00, a), put(&l, 0x3B40, b));
+        // (Each pair is written to the same two strings.)
+        let (x, y) = names("Other", "Nowhere");
+        assert_eq!(ok(call(&l, 3410, &[mgr, x, y])), SOMERROR_NOT_REGISTERED);
+        let (x, y) = names("Other", "New");
+        assert_eq!(ok(call(&l, 3410, &[mgr, x, y])), SOMERROR_NO_PARENT_CLASS, "not its child");
+        let (x, y) = names("Old", "New");
+        assert_eq!(ok(call(&l, 3410, &[mgr, x, y])), 0);
+        assert_eq!(ok(call(&l, 3401, &[mgr, id("Old")])), new, "somClassFromId");
+        assert_eq!(ok(call(&l, 3400, &[mgr, id("Old"), 0, 0])), new, "somFindClass");
+        assert_eq!(ok(call(&l, 3401, &[mgr, id("Other")])), other, "others as they were");
+        // The registered classes, as a sequence returned by value.
+        let seq = 0x3C00;
+        assert_eq!(ok(call(&l, 3412, &[seq, mgr])), seq);
+        let (len, buf) = (l.guest_read::<u32>(seq + 4).unwrap(), l.guest_read::<u32>(seq + 8).unwrap());
+        let listed: Vec<u32> = (0..len).map(|i| l.guest_read::<u32>(buf + 4 * i).unwrap()).collect();
+        assert!([old, new, other, som_object, som_class, som_class_mgr].iter().all(|c| listed.contains(c)), "{listed:?}");
+        assert_eq!(ok(call(&l, 3413, &[mgr])), 0, "no interface repository");
+        // The new class goes: so does its substitution.
+        finish(&l, call(&l, 3406, &[mgr, new]));
+        assert_eq!(ok(call(&l, 3401, &[mgr, id("Old")])), old);
+        // somMergeInto: an object that is no class manager changes nothing,
+        // another class manager becomes SOMClassMgrObject.
+        let not_mgr = finish(&l, call(&l, 3300, &[other]));
+        ok(call(&l, 3411, &[mgr, not_mgr]));
+        assert_eq!(root(&l, SOM_CLASS_MGR_OBJECT), mgr);
+        let mgr2 = finish(&l, call(&l, 3300, &[som_class_mgr]));
+        ok(call(&l, 3411, &[mgr, mgr2]));
+        assert_eq!(root(&l, SOM_CLASS_MGR_OBJECT), mgr2);
+        assert_eq!(ok(call(&l, SOM_ENVIRONMENT_NEW, &[])), mgr2, "the kernel's own idea too");
+        assert_eq!(ok(call(&l, 3401, &[mgr2, id("Other")])), other, "the registry is the same");
     }
 
     #[test]
