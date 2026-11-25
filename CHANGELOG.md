@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 - **SOM TypeCodes** (ADR-0128; SOM Programming Reference; Warpine's own ordinals 3109–3120, ADR-0123): `TypeCodeNew` for every kind (structs, unions, enums, sequences, arrays, pointers, self-references, foreign types, object references, bounded strings and the basic kinds), `TypeCode_alignment`, `_copy`, `_equal`, `_free`, `_kind`, `_param_count`, `_parameter` (an `any` pointing at the parameter; `TypeCode::Bounds` out of range), `_print` (the `TypeCodeNew` call that makes it), `_setAlignment` and `_size`, and the `TC_*` constants. Sizes and alignments are those of the SDK's i386 C types; the TypeCodes live in guest memory in Warpine's own layout, answered from the kernel's own records. `c_som_test` checks the sizes against each compiler's `sizeof` (36 checks). 1034 entry points.
 
+### Changed
+- **`somBuildClass` initializes the class object**: a metaclass's own `somDefaultInit` now runs on the class objects it builds, before `somClassReady`, as `somNew` on a metaclass already did.
+
 ### Security
 - **The SOM kernel's guest strings** (names, `somPrintf`'s format and `%s` arguments) stop at Warpine's protected memory, so neither `somPrintf` nor a TypeCode copies or prints it.
 

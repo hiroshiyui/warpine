@@ -1748,10 +1748,15 @@ impl Loader {
             let _ = self.guest_write::<u32>(info.ccds, pm);
             let _ = self.guest_write::<u32>(info.ccds.wrapping_add(4), token);
         }
-        // A metaclass's own somClassReady runs (the class is ready already;
-        // SOMClass's, which an override calls, then does nothing), then
-        // the class init function.
+        // A metaclass's own somDefaultInit initializes the class object
+        // (its instance data, M_WPObject's wpclsInitData; the root one,
+        // which would only call somInit, is left out), then its own
+        // somClassReady runs (the class is ready already; SOMClass's,
+        // which an override calls, then does nothing), then the class
+        // init function.
         let mut steps = Vec::new();
+        let init = self.som_resolve(cls, TOKEN_SOM_DEFAULT_INIT);
+        if init != thunk(3212) { steps.push(CallStep::hook(init, vec![cls, 0], false)); }
         let ready = self.som_resolve(cls, TOKEN_SOM_CLASS_READY);
         if ready != thunk(3313) { steps.push(CallStep::hook(ready, vec![cls], false)); }
         if info.cif != 0 { steps.push(CallStep::hook(info.cif, vec![cls], false)); }
@@ -3589,6 +3594,22 @@ mod tests {
         let ApiResult::CallChain(c) = call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]) else { panic!() };
         let built = l.guest_read::<u32>(0x5000).unwrap();
         assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0069_0000, args, .. }) if args == &vec![built]));
+        // ... after its own somDefaultInit, which initializes the class
+        // object (no control block: the walk starts there).
+        let initer = new_class(&l, som_class, "Initer", &[som_class], 0,
+                               &[("somDefaultInit", 0x006B_0000), ("somClassReady", 0x006C_0000)]);
+        assert_ne!(initer, 0);
+        let inited_id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x38E0, "Inited")]));
+        let initer_id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3900, "Initer")]));
+        let sci = put_sci(&l, 0x4100, inited_id, &[], 0x5A80, 0, 0x5080, 0, none, 0, 0, initer_id);
+        let ApiResult::CallChain(c) = call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]) else { panic!() };
+        let inited = l.guest_read::<u32>(0x5080).unwrap();
+        let procs: Vec<(u32, Vec<u32>)> = c.steps.iter().map(|s| match s {
+            CallStep::Guest { proc_addr, args, .. } => (*proc_addr, args.clone()),
+            other => panic!("{other:?}"),
+        }).collect();
+        assert_eq!(procs, vec![(0x006B_0000, vec![inited, 0]), (0x006C_0000, vec![inited])]);
+        // A metaclass without its own somDefaultInit adds no step (above).
         // A class manager's own somLocateClassFile, then its somFindClsInFile.
         let my_mgr = new_class(&l, som_class, "MyMgr", &[som_class_mgr], 0, &[("somLocateClassFile", 0x006A_0000)]);
         let m = ok(call(&l, 3301, &[my_mgr]));
