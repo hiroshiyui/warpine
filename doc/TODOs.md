@@ -4,7 +4,7 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 
 ## Security
 
-- [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): run `ci/check_desktop.sh` on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers; CI has only SDL's dummy drivers) and widen the policy where it reports a difference; namespaces only if those leave gaps.
+- [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): `ci/check_desktop.sh` passed on Wayland with PipeWire (2026-11-25: PM and VIO windows and sound, the desktop server); still to run on X11, native PulseAudio and other GPU drivers, widening the policy where it reports a difference; namespaces only if those leave gaps.
 - [ ] **Audit 2026-11-25, Medium, left**: the other host frames built on the guest's stack (window-procedure calls, `WM_CREATE`, `WM_DESTROY`, owner drawing, modal loops, exception dispatch, `INITTERM`, a chain's `DosExit`) still `expect` room there, as the call chain did; the arena's residual windows (check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU).
 - [ ] **Audit 2026-11-25, Low, left**: other calls that copy a guest-named buffer out with `guest_read` / `guest_read_bytes` rather than `guest_read_buffer` (they reach Warpine's protected memory, the process's own); a sweep of the API handlers for them.
 - [ ] **Fuzzing** (ADR-0112): font and help-file readers once Warpine reads guest-supplied ones (none today).
@@ -76,7 +76,7 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 - [ ] **VIO**: `VioGetFont` / `VioSetFont` (needs a free bitmap font of Warpine's own); `VioGetBuf` / `VioShowBuf` (stubs); `VioSetState` / `VioSetCp` in the renderer; `VioRegister` / `VioDeRegister`, `VioGlobalReg`, `VioPrtSc` / `VioPrtScToggle`, `VioModeWait` / `VioModeUndo`, `VioSavRedrawWait` / `VioSavRedrawUndo`, `VioGetPhysBuf`; several VIO sessions on one desktop; Advanced VIO (`VioCreatePS`, `VioAssociate`).
 - [ ] **MOU**: MOUCALLS for NE programs; calls passed to a registered subsystem.
 - [ ] **ANSI**: keyboard reassignment `ESC[…p`.
-- [ ] **Audio**: sound in headless runs; `MCI_RECORD` from SDL3; MIDI (deferred).
+- [ ] **Audio**: sound in headless runs; `MCI_RECORD` from SDL3; the `capability` command (`mciSendString` answers "unknown verb", as `audio_test` shows); MIDI (deferred).
 
 ## Application compatibility
 

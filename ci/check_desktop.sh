@@ -32,13 +32,19 @@ cargo build -q || exit 1
 WARPINE="$ROOT/target/debug/warpine"
 STRACE=$(command -v strace || true)
 
-# name | sample | GUI script | marker of a complete run
+# name | sample | GUI script | marker of a complete run. A VIO program
+# opens its window only when standard output is a terminal (else it
+# writes to the host's): the vio-* runs get one through util-linux's
+# script(1). Their output goes to the window, so their markers are the
+# window and the sound device opening; every check also wants the same
+# exit code confined as open.
 CHECKS=(
     "pm-window|samples/pm_bench/pm_bench.exe|5000 quit|pm_bench: done"
     "pm-audio|samples/pm_audio_test/pm_audio_test.exe|15000 quit|pm_audio_test: done"
-    "vio-window|samples/hello/hello.exe|3000 quit|Hello"
-    "vio-audio|samples/audio_test/audio_test.exe|10000 quit|Failed: 0"
+    "vio-window|samples/hello/hello.exe|3000 quit|SDL video driver"
+    "vio-audio|samples/audio_test/audio_test.exe|10000 quit|SDL audio driver"
 )
+command -v script >/dev/null || { echo "check_desktop.sh: script(1) (util-linux) is needed for the VIO checks" >&2; exit 1; }
 
 # One run of a check: its log, and (with strace) its refused calls.
 run() {
@@ -50,17 +56,22 @@ run() {
     rm -f "$OUT/$name.$mode.server.log"
     local -a env=(RUST_LOG=info NO_COLOR=1 WARPINE_GUI_SCRIPT="$script" WARPINE_DESKTOP_LOG="$OUT/$name.$mode.server.log")
     [ "$mode" = open ] && env+=(WARPINE_SANDBOX=off)
-    if [ -n "$STRACE" ]; then
-        env "${env[@]}" timeout -k 10 90 "$STRACE" -f -qq -Z -e trace=%file,%network,%desc,%ipc \
-            -o "$OUT/$name.$mode.strace" "$WARPINE" "$sample" < /dev/null > "$log" 2>&1
+    local -a cmd=("$WARPINE" "$sample")
+    [ -n "$STRACE" ] && cmd=("$STRACE" -f -qq -Z -e trace=%file,%network,%desc,%ipc -o "$OUT/$name.$mode.strace" "${cmd[@]}")
+    if [[ $name == vio-* ]]; then
+        # Under a pseudo-terminal; its output is the log.
+        env "${env[@]}" timeout -k 10 90 script -q -e -E never -c "$(printf '%q ' "${cmd[@]}")" "$log" \
+            < /dev/null > /dev/null 2>&1
     else
-        env "${env[@]}" timeout -k 10 90 "$WARPINE" "$sample" < /dev/null > "$log" 2>&1
+        env "${env[@]}" timeout -k 10 90 "${cmd[@]}" < /dev/null > "$log" 2>&1
     fi
     echo $? > "$OUT/$name.$mode.rc"
 }
 
 # A run's log and its desktop server's.
-logs() { cat "$OUT/$1.$2.log" "$OUT/$1.$2.server.log" 2>/dev/null; }
+# (The server log may be missing: cat failing would fail a pipeline under
+# pipefail.)
+logs() { cat "$OUT/$1.$2.log" "$OUT/$1.$2.server.log" 2>/dev/null || true; }
 
 # The refused calls of a strace log, one per line: call, first path, error.
 refusals() {
@@ -73,7 +84,7 @@ refusals() {
 {
     echo "Warpine desktop check, $(date -u +%Y-%m-%dT%H:%MZ), $(git rev-parse --short HEAD)"
     echo "session: ${XDG_SESSION_TYPE:-?}, WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}, DISPLAY=${DISPLAY:-}"
-    echo "sound server: $(pactl info 2>/dev/null | sed -n 's/^Server Name: //p' || true)"
+    echo "sound server: $(LC_ALL=C pactl info 2>/dev/null | sed -n 's/^Server Name: //p' || true)"
     echo "kernel: $(uname -r); strace: ${STRACE:-none}"
     echo
 } > "$SUMMARY"
@@ -89,9 +100,11 @@ for check in "${CHECKS[@]}"; do
     run "$name" "$sample" "$steps" open
     run "$name" "$sample" "$steps" confined
     verdict=PASS
+    reasons=()
+    flag() { verdict=DIFFERENT; reasons+=("$1"); }
     for mode in open confined; do
         log="$OUT/$name.$mode.log"
-        got=$(grep -c -- "$marker" "$log")
+        got=$(logs "$name" "$mode" | grep -c -- "$marker")
         drivers=$(logs "$name" "$mode" | grep -oE '(video|audio) driver [a-z0-9_]+' | sort -u | paste -sd, -)
         warns=$(logs "$name" "$mode" | grep -cE '\b(WARN|ERROR)\b')
         fails=$(grep -cE '\bFAIL' "$log")
@@ -99,23 +112,25 @@ for check in "${CHECKS[@]}"; do
     done
     o_drv=$(logs "$name" open | grep -oE '(video|audio) driver [a-z0-9_]+' | sort -u)
     c_drv=$(logs "$name" confined | grep -oE '(video|audio) driver [a-z0-9_]+' | sort -u)
-    [ "$o_drv" = "$c_drv" ] || verdict=DIFFERENT
-    grep -q -- "$marker" "$OUT/$name.confined.log" || verdict=DIFFERENT
-    grep -qE '\bFAIL' "$OUT/$name.confined.log" && verdict=DIFFERENT
+    [ "$o_drv" = "$c_drv" ] || flag "other SDL drivers"
+    # Not grep -q: with pipefail, cat's SIGPIPE would count as a miss.
+    logs "$name" confined | grep -- "$marker" > /dev/null || flag "no '$marker'"
+    [ "$(cat "$OUT/$name.open.rc")" = "$(cat "$OUT/$name.confined.rc")" ] || flag "another exit code"
+    grep -E '\bFAIL' "$OUT/$name.confined.log" > /dev/null && flag "FAIL lines"
     # Warnings only the confined run had.
     diff <(logs "$name" open | grep -E '\b(WARN|ERROR)\b' | sed -E 's/\x1b\[[0-9;]*m//g; s/^[0-9T:.Z-]+ +//' | sort -u) \
          <(logs "$name" confined | grep -E '\b(WARN|ERROR)\b' | sed -E 's/\x1b\[[0-9;]*m//g; s/^[0-9T:.Z-]+ +//' | sort -u) \
         | sed -n 's/^> /  warning when confined: /p' > "$OUT/$name.warnings"
-    [ -s "$OUT/$name.warnings" ] && verdict=DIFFERENT
+    [ -s "$OUT/$name.warnings" ] && flag "warnings only when confined"
     if [ -n "$STRACE" ]; then
         refusals "$OUT/$name.open.strace" > "$OUT/$name.open.refused"
         refusals "$OUT/$name.confined.strace" > "$OUT/$name.confined.refused"
         comm -13 "$OUT/$name.open.refused" "$OUT/$name.confined.refused" > "$OUT/$name.blocked"
-        [ -s "$OUT/$name.blocked" ] && verdict=DIFFERENT
+        [ -s "$OUT/$name.blocked" ] && flag "calls refused only when confined"
     fi
     [ "$verdict" = PASS ] || failed=1
     {
-        echo "$name: $verdict"
+        echo "$name: $verdict${reasons[*]:+ (${reasons[*]})}"
         cat "$SUMMARY.tmp"
         if [ -s "$OUT/$name.blocked" ]; then
             echo "  refused only when confined:"
@@ -124,7 +139,7 @@ for check in "${CHECKS[@]}"; do
         head -20 "$OUT/$name.warnings"
     } >> "$SUMMARY"
     rm -f "$SUMMARY.tmp"
-    echo "  $verdict"
+    echo "  $verdict${reasons[*]:+ (${reasons[*]})}"
 done
 
 echo
