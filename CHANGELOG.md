@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Security
+- **The SOM kernel's guest strings** (names, `somPrintf`'s format and `%s` arguments) stop at Warpine's protected memory, so `somPrintf` no longer copies or prints it.
+
 ## [0.0.20] - 2026-11-25
 
 ### Added

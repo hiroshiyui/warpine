@@ -1063,12 +1063,16 @@ impl Loader {
         at
     }
 
-    /// The NUL-terminated bytes at `ptr` (at most `max`).
+    /// The NUL-terminated bytes at `ptr` (at most `max`); `None` where
+    /// they reach Warpine's protected memory, which the kernel never
+    /// copies or prints.
     fn som_bytes(&self, ptr: u32, max: usize) -> Option<Vec<u8>> {
         if ptr == 0 { return None; }
         let mut out = Vec::new();
         for i in 0..=max as u32 {
-            match self.guest_read::<u8>(ptr.checked_add(i)?)? {
+            let at = ptr.checked_add(i)?;
+            if super::guest_mem::protected(at, 1) { return None; }
+            match self.guest_read::<u8>(at)? {
                 0 => return Some(out),
                 b => out.push(b),
             }
@@ -3157,6 +3161,19 @@ mod tests {
     }
 
     /// The replaceable runtime variables: somPrintf through a program's
+    /// The kernel's guest strings stop at Warpine's protected memory: a
+    /// name or `%s` there is not copied or printed.
+    #[test]
+    fn guest_strings_stop_at_protected_memory() {
+        use super::super::constants::SYSTEM_AREA_BASE;
+        let l = Loader::new_mock();
+        assert!(l.som_bytes(SYSTEM_AREA_BASE, 16).is_none(), "inside");
+        let at = super::super::paging::PAGING_EXTRA_BASE - 4;
+        l.guest_write_bytes(at, b"abcd").unwrap();
+        assert!(l.som_bytes(at, 16).is_none(), "running into it");
+        assert_eq!(l.som_bytes(put(&l, 0x3400, "ok"), 16).as_deref(), Some(&b"ok"[..]));
+    }
+
     /// SOMOutCharRoutine, somSetOutChar, SOMError's default, and their
     /// initial procedures.
     #[test]
