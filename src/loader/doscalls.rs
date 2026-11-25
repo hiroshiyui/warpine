@@ -1194,13 +1194,9 @@ impl super::Loader {
             mem_mgr.free(tib_addr);
             return ERROR_MAX_THRDS_REACHED;
         };
-        let free_memory = || {
-            let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
-            mem_mgr.free(stack_base);
-            mem_mgr.free(tib_addr);
-            drop(mem_mgr);
-            self.free_paging_block(paging);
-        };
+        // The same order as at a thread's end (a sparse stack's region may
+        // be set by then).
+        let free_memory = || self.release_thread_memory(stack_base, tib_addr, paging);
         let Some(stack_top) = stack_base.checked_add(stack_size) else {
             free_memory();
             return ERROR_NOT_ENOUGH_MEMORY;
@@ -1354,10 +1350,13 @@ impl super::Loader {
         if super::shared_arena::in_arena(pb) && let Some(r) = self.arena_free(pb) {
             return r;
         }
+        if self.shared.mem_mgr.lock_or_recover().block_size(pb).is_none() { return ERROR_INVALID_ADDRESS; }
+        // Its page states go first, while the block is still allocated: once
+        // freed, another thread may be given the same address, and writing
+        // these pages "not present" then would unmap its new block.
+        self.free_page_states(pb);
         let freed = self.shared.mem_mgr.lock_or_recover().free_block(pb);
         let Some(size) = freed else { return ERROR_INVALID_ADDRESS };
-        // Its pages are present and writable again (ADR-0114).
-        self.free_page_states(pb);
         // A shared block's name is free again.
         self.shared.shmem_mgr.lock_or_recover().remove(pb);
         // So are suballocation pools in it that were never unset.

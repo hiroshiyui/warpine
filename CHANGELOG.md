@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- **Memory just handed to a thread could lose its pages** (ADR-0114 addendum), which CI once showed as a thread created suspended that never ran after `DosResumeThread`: a thread's end and `DosFreeMem` freed memory before giving up its page states, so a block given to another thread at that address in between was written "not present"; two threads could write the allocator's pending page-table changes out of order; and a thread could look at the tables while another was still writing a batch. Page states now go first, pending changes are written in order under one lock, and a sync waits for a batch in progress.
+
 ## [0.0.18] - 2026-11-25
 
 ### Added

@@ -485,6 +485,12 @@ pub struct SharedState {
     /// Set while allocations or frees wait for the page tables
     /// (`MemoryManager::pending_flag`, `vmem.rs`).
     pub alloc_pending: Arc<AtomicBool>,
+    /// Held while the allocator's pending changes are taken and written to
+    /// the page tables (`vmem.rs`), so that two threads cannot write two
+    /// batches out of order (a free written after the allocation that
+    /// followed it would unmap the new block). Taken before `mem_mgr` and
+    /// `vmem`.
+    pub pte_sync: Mutex<()>,
     /// The read ends of children's exit reports, by host pid (`exit_report.rs`).
     pub exit_reports: Mutex<std::collections::HashMap<u32, std::fs::File>>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
@@ -631,6 +637,7 @@ impl Loader {
             vmem: Default::default(),
             tlb_epoch: Default::default(),
             alloc_pending,
+            pte_sync: Mutex::new(()),
             exit_reports: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
@@ -751,6 +758,7 @@ impl Loader {
             vmem: Default::default(),
             tlb_epoch: Default::default(),
             alloc_pending,
+            pte_sync: Mutex::new(()),
             exit_reports: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),

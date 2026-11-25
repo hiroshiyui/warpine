@@ -86,7 +86,6 @@ IBM's own SOM 3.0 FTP directory (`ftp.software.ibm.com/publications/clubod/som30
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
-- [ ] **An intermittent hang after `DosResumeThread`** (CI, 2026-11-25, the GCC job once): `thread_control_test` stopped after resuming a thread created with `CREATE_SUSPENDED`; the `DosWaitThread` for it never returned. Its re-run passed, and 104 local runs (64 under load) did not reproduce it. The suspend count is kept under the table's lock and the waits poll, so the start of a suspended thread, or `DosWaitThread`'s view of its end, is where to look.
 - [ ] **Threads per process**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; blocks from the allocator would lift the cap (weighed in ADR-0115).
 - [ ] **Profiles**:
   - the program-list calls, the `PRF16*` / `WIN16*` exports;

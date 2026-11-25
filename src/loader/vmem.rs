@@ -408,6 +408,10 @@ impl super::Loader {
     /// drops the record.
     pub(crate) fn sync_allocations(&self) {
         if !self.shared.alloc_pending.load(Ordering::Acquire) {
+            // Nothing new; but a batch another thread took (which clears
+            // the flag) may still be being written: wait for it, so the
+            // tables hold every change made before this call.
+            drop(self.shared.pte_sync.lock_or_recover());
             return;
         }
         if !self.shared.process_tables_ready.load(Ordering::Acquire) {
@@ -423,6 +427,9 @@ impl super::Loader {
     /// memory just freed; the freeing thread flushes its own
     /// (`managers::take_freed_here`).
     fn apply_pending_allocations(&self) {
+        // Taken and written as one: another thread's batch must not be
+        // written between them (`SharedState::pte_sync`).
+        let _ordered = self.shared.pte_sync.lock_or_recover();
         let pending = self.shared.mem_mgr.lock_or_recover().take_pending();
         if pending.is_empty() {
             return;
@@ -811,6 +818,73 @@ mod tests {
     /// A sparse stack: its top page committed, a guard below, the rest
     /// reserved; a touch anywhere below commits up to the committed part
     /// and moves the guard; the bottom pages raise the exhaustion once.
+    /// A thread's end gives back its sparse stack while another thread
+    /// allocates (CI once: a new thread's stack at the ended one's address
+    /// lost its pages, as the old region's page states were written "not
+    /// present" after the memory was already handed out). Page states go
+    /// first now (`release_thread_memory`, `DosFreeMem`), so a block the
+    /// other thread is given keeps its pages present.
+    #[test]
+    fn a_freed_stack_never_unmaps_a_block_given_out_meanwhile() {
+        use super::super::Loader;
+        const STACK: u32 = 8 * PAGE_SIZE;
+        let l = Loader::new_mock();
+        l.ensure_process_tables();
+        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u32>(at)).is_some_and(|e| e & 1 != 0);
+        let lost = std::sync::atomic::AtomicU32::new(0);
+        std::thread::scope(|s| {
+            s.spawn(|| for _ in 0..30000 {
+                let Some(stack) = l.shared.mem_mgr.lock().unwrap().alloc(STACK) else { continue };
+                let tib = l.shared.mem_mgr.lock().unwrap().alloc(PAGE_SIZE).unwrap();
+                l.sparse_thread_stack(stack, STACK);
+                l.release_thread_memory(stack, tib, 0);
+            });
+            s.spawn(|| for _ in 0..30000 {
+                let Some(b) = l.shared.mem_mgr.lock().unwrap().alloc(STACK) else { continue };
+                l.sync_allocations();
+                // The top page: the one a sparse stack commits, and so the one
+                // a late write of its states would unmap.
+                for _ in 0..20 {
+                    if !present(b + STACK - PAGE_SIZE) { lost.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    std::hint::spin_loop();
+                }
+                l.shared.mem_mgr.lock().unwrap().free(b);
+            });
+        });
+        assert_eq!(lost.load(std::sync::atomic::Ordering::Relaxed), 0, "a block given out lost its pages");
+    }
+
+    /// The same for `DosFreeMem`: a committed block's page states go
+    /// before the block does, so a block given out meanwhile at its
+    /// address keeps its pages.
+    #[test]
+    fn dos_free_mem_never_unmaps_a_block_given_out_meanwhile() {
+        use super::super::Loader;
+        const SIZE: u32 = 8 * PAGE_SIZE;
+        let l = Loader::new_mock();
+        l.ensure_process_tables();
+        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u32>(at)).is_some_and(|e| e & 1 != 0);
+        let lost = std::sync::atomic::AtomicU32::new(0);
+        let ppb = 0x0010_0000;
+        std::thread::scope(|s| {
+            s.spawn(|| for _ in 0..30000 {
+                if l.dos_alloc_mem(ppb, SIZE, PAG_COMMIT | PAG_READ | PAG_WRITE) != 0 { continue; }
+                let a = l.guest_read::<u32>(ppb).unwrap();
+                assert_eq!(l.dos_free_mem(a), 0);
+            });
+            s.spawn(|| for _ in 0..30000 {
+                let Some(b) = l.shared.mem_mgr.lock().unwrap().alloc(SIZE) else { continue };
+                l.sync_allocations();
+                for _ in 0..20 {
+                    if !present(b) { lost.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    std::hint::spin_loop();
+                }
+                l.shared.mem_mgr.lock().unwrap().free(b);
+            });
+        });
+        assert_eq!(lost.load(std::sync::atomic::Ordering::Relaxed), 0, "a block given out lost its pages");
+    }
+
     #[test]
     fn a_sparse_stack_grows_down_and_runs_out_once() {
         let mut map = PageMap::default();

@@ -326,6 +326,26 @@ impl super::Loader {
         self.shared.threads.wait_for_process_end(|| self.shared.exit_requested.load(Ordering::Relaxed));
     }
 
+    /// Give back what a thread was given: its stack's page states (a sparse
+    /// stack's region), then its stack and TIB, then its paging block.
+    ///
+    /// The page states go first, while the stack is still allocated: once
+    /// it is freed another thread may be given the same address
+    /// (`DosCreateThread` for a thread waiting on this one's end), and
+    /// writing the old region's pages "not present" then would unmap the
+    /// new thread's stack — it faulted at its first push and never ran
+    /// (thread_control_test's CREATE_SUSPENDED thread, CI once).
+    pub(crate) fn release_thread_memory(&self, stack: u32, tib: u32, paging: u32) {
+        self.free_page_states(stack);
+        let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
+        mem_mgr.free(stack);
+        mem_mgr.free(tib);
+        drop(mem_mgr);
+        if paging != 0 {
+            self.free_paging_block(paging);
+        }
+    }
+
     /// The end of thread `vcpu_id`'s vCPU loop (see `run_vcpu`).
     fn end_thread(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, mut end: ThreadEnd, initial_esp: u32) {
         let tid = tid_of_vcpu(vcpu_id);
@@ -386,15 +406,7 @@ impl super::Loader {
             ended
         };
         if let Some(mem) = memory {
-            let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
-            mem_mgr.free(mem.stack);
-            mem_mgr.free(mem.tib);
-            drop(mem_mgr);
-            // A sparse stack's pages are present and writable again.
-            self.free_page_states(mem.stack);
-            if mem.paging != 0 {
-                self.free_paging_block(mem.paging);
-            }
+            self.release_thread_memory(mem.stack, mem.tib, mem.paging);
         }
         super::guest_mem::set_thread_tlm_backing(0);
         // A critical section the thread was in ends with it.
