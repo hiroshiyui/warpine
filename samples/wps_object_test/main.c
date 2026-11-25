@@ -26,8 +26,12 @@
  *     (wpclsQueryObjectFromPath), its names, size, dates and types (.TYPE),
  *     its title renaming the file (.LONGNAME for a title no name can be),
  *     kept in its EAs and awakened again after somFree, refused deletion,
- *     then wpFree deleting the file; no object for a directory without
- *     WPFolder; WPTransient, never stored.
+ *     then wpFree deleting the file; WPTransient, never stored;
+ *   - WPFolder: a directory's object (wpclsQueryFolder too), new folders
+ *     and files made in it by wpclsNew, its content (wpPopulate,
+ *     wpQueryContent, wpAddToContent / wpDeleteFromContent,
+ *     wpContainsFolders), wpQueryFolder, and wpFree deleting a folder with
+ *     everything in it.
  * "save" stores a Card and has another created by WinCreateObject without
  * making it, and ends; a later "load" (another process) finds both by
  * their IDs, makes or awakens them, checks them and frees them.
@@ -40,6 +44,7 @@
 #include <string.h>
 #include <wptrans.h>
 #include <wpdataf.h>
+#include <wpfolder.h>
 #include "note.h"
 
 extern int note_inits, note_uninits, note_class_inits;
@@ -192,12 +197,59 @@ static void file_checks( void )
     check( "wpclsQueryObjectFromPath: none for a file that is not there",
            _wpclsQueryObjectFromPath( _WPFileSystem, "NOFILE.TXT" ) == NULL );
     DosCreateDir( "WPSDIR", NULL );
-    check( "wpclsQueryObjectFromPath: no object for a directory without WPFolder",
-           _wpclsQueryObjectFromPath( _WPFileSystem, "WPSDIR" ) == NULL );
-    DosDeleteDir( "WPSDIR" );
+    {
+        WPObject *dir = _wpclsQueryObjectFromPath( _WPFileSystem, "WPSDIR" );
+        check( "wpclsQueryObjectFromPath: a directory's object is a WPFolder", dir && _somIsA( dir, _WPFolder ) );
+        if( dir ) _wpFree( dir );
+    }
+    check( "wpFree: the directory deleted", !exists( "WPSDIR" ) );
     temp = _wpclsNew( _WPTransient, "Temporary", "", NULL, FALSE );
     check( "WPTransient: made, no handle, nothing stored",
            temp && _wpQueryHandle( temp ) == NULLHANDLE && _wpSaveImmediate( temp ) && _wpFree( temp ) );
+}
+
+/* WPFolder: content, new objects in a folder, deleting a whole tree. */
+static void folder_checks( void )
+{
+    char      full[CCHMAXPATH];
+    WPFolder *root, *sub;
+    WPObject *doc, *readme, *item;
+    BOOL      has;
+    int       n = 0;
+
+    DosCreateDir( "WPSROOT", NULL );
+    make_file( "WPSROOT\\readme.txt", "read me" );
+    DosQueryPathInfo( "WPSROOT", FIL_QUERYFULLNAME, full, sizeof( full ) );
+    root = _wpclsQueryFolder( _WPObject, full, FALSE );
+    check( "wpclsQueryFolder: a path's folder", root && _somIsA( root, _WPFolder ) && !_wpIsLocked( root ) );
+    if( !root ) return;
+    sub = (WPFolder *)_wpclsNew( _WPFolder, "Projects", "", root, FALSE );
+    check( "wpclsNew: a new folder makes its directory", sub && exists( "WPSROOT\\Projects" )
+           && strcmp( _wpQueryTitle( sub ), "Projects" ) == 0 && _wpQueryFolder( sub ) == root );
+    if( !sub ) return;
+    doc = _wpclsNew( _WPDataFile, "Plan: draft", "OBJECTID=<WP_PLAN>", sub, FALSE );
+    check( "wpclsNew: a new data file in it, named by its title",
+           doc && _somIsA( doc, _WPDataFile ) && exists( "WPSROOT\\Projects\\Plan_ draft" )
+           && strcmp( _wpQueryTitle( doc ), "Plan: draft" ) == 0 && _wpQueryFolder( doc ) == sub );
+    check( "wpclsNew: refused for a name the folder has", _wpclsNew( _WPDataFile, "Plan: draft", "", sub, FALSE ) == NULL );
+    check( "wpclsNew: refused without a folder", _wpclsNew( _WPDataFile, "Loose", "", NULL, FALSE ) == NULL );
+    check( "wpQueryContent: what wpclsNew added", _wpQueryContent( sub, NULL, QC_FIRST ) == doc
+           && _wpQueryContent( sub, doc, QC_NEXT ) == NULL && _wpQueryContent( sub, NULL, QC_LAST ) == doc );
+    /* The root: populated, both entries, folders first or not. */
+    _wpPopulate( root, 0, NULL, FALSE );
+    for( item = _wpQueryContent( root, NULL, QC_FIRST ); item; item = _wpQueryContent( root, item, QC_NEXT ) ) n++;
+    readme = _wpclsQueryObjectFromPath( _WPFileSystem, "WPSROOT\\readme.txt" );
+    check( "wpPopulate: the directory's two entries, flagged populated",
+           n == 2 && ( _wpQueryFldrFlags( root ) & FOI_POPULATEDWITHALL ) && readme );
+    if( readme ) _wpUnlockObject( readme );
+    check( "wpContainsFolders", _wpContainsFolders( root, &has ) && has && _wpContainsFolders( sub, &has ) && !has );
+    check( "wpDeleteFromContent / wpAddToContent",
+           _wpDeleteFromContent( root, readme ) && !_wpDeleteFromContent( root, readme ) && _wpAddToContent( root, readme )
+           && _wpQueryContent( root, NULL, QC_LAST ) == readme );
+    /* Deleting a folder deletes what is in it. */
+    check( "wpFree: a folder with its files deleted", _wpFree( sub ) && !exists( "WPSROOT\\Projects" )
+           && _wpQueryContent( root, NULL, QC_FIRST ) == readme );
+    check( "wpDelete: the whole tree", _wpDelete( root, 0 ) == OK_DELETE && !exists( "WPSROOT" ) );
 }
 
 /* "save": a Card stored for a later process. */
@@ -315,6 +367,7 @@ int main( int argc, char **argv )
     abstract_checks();
     create_checks();
     file_checks();
+    folder_checks();
 
     printf( "wps_object_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );

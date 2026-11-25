@@ -12,6 +12,10 @@
  *   (wpsint.h) in Warpine's own EA, WARPINE.WPSTATE.
  * - Changing the title of an initialized object renames the file (to the
  *   title, its unusable characters as '_'); wpFree deletes the file.
+ * - wpclsNew makes a new file (a directory, for a WPFolder class) in the
+ *   folder it is given, named by the title; wpQueryFolder gives the
+ *   directory's folder. An object leaves its folder's content list when it
+ *   is deleted or made dormant.
  */
 #define INCL_WINWORKPLACE
 #define INCL_DOSFILEMGR
@@ -20,6 +24,7 @@
 #include <string.h>
 #include "wpfsys.ih"
 #include "wpdataf.h"
+#include "wpfolder.h"
 #include "wpsint.h"
 
 /* Warpine's EA for the rest of an object's state. */
@@ -443,9 +448,26 @@ SOM_Scope BOOL SOMLINK wpfs_wpFree( WPFileSystem *somSelf )
     return( WPFileSystem_parent_WPObject_wpFree( somSelf ) );
 }
 
+/* The awake folder of the directory a qualified name is in; NULL for a
+ * root, or when that folder is not awake. */
+static WPFolder *awake_parent( const char *path )
+{
+    char         dir[MAX_PATH];
+    size_t       n = (size_t)( last_part( path ) - path );
+    WPFileSystem *parent;
+    if( n < 1 || n >= sizeof( dir ) || n == strlen( path ) ) return( 0 );
+    memcpy( dir, path, n );
+    /* "C:\X" is in "C:\"; "C:\D\X" is in "C:\D". */
+    dir[n > 3 ? n - 1 : n] = '\0';
+    parent = awake_for( dir );
+    return( parent && _somIsA( parent, _WPFolder ) ? (WPFolder *)parent : 0 );
+}
+
 SOM_Scope void SOMLINK wpfs_wpUnInitData( WPFileSystem *somSelf )
 {
     WPFileSystemData *somThis = WPFileSystemGetData( somSelf );
+    WPFolder         *parent = _realName ? awake_parent( _realName ) : 0;
+    if( parent ) _wpDeleteFromContent( parent, somSelf );
     forget( somSelf );
     if( _realName ) SOMFree( _realName );
     if( _types ) SOMFree( _types );
@@ -453,18 +475,56 @@ SOM_Scope void SOMLINK wpfs_wpUnInitData( WPFileSystem *somSelf )
     WPFileSystem_parent_WPObject_wpUnInitData( somSelf );
 }
 
+/* The folder of the file's directory, awake or awakened (not locked: the
+ * object holds no lock on it); NULL for a root. */
+SOM_Scope WPFolder *SOMLINK wpfs_wpQueryFolder( WPFileSystem *somSelf )
+{
+    PSZ      path = WPFileSystemGetData( somSelf )->realName;
+    char     dir[MAX_PATH];
+    size_t   n;
+    WPObject *folder;
+    if( !path ) return( 0 );
+    n = (size_t)( last_part( path ) - path );
+    if( n < 1 || n >= sizeof( dir ) || n == strlen( path ) ) return( 0 );
+    memcpy( dir, path, n );
+    dir[n > 3 ? n - 1 : n] = '\0';
+    if( !( folder = _wpclsQueryObjectFromPath( _WPFileSystem, dir ) ) ) return( 0 );
+    _wpUnlockObject( folder );
+    return( _somIsA( folder, _WPFolder ) ? (WPFolder *)folder : 0 );
+}
+
 /* ---- M_WPFileSystem ---- */
 
+/* A new object of class cls for the file path: its name kept, listed
+ * awake. Not yet restored, set up or initialized. */
+static WPFileSystem *make_object( SOMClass *cls, const char *path )
+{
+    WPFileSystem     *obj = (WPFileSystem *)_somNew( cls );
+    WrpFsAwake       *a;
+    WPFileSystemData *d;
+    if( !obj ) return( 0 );
+    d = WPFileSystemGetData( obj );
+    a = (WrpFsAwake *)SOMMalloc( sizeof( *a ) );
+    d->realName = copy_string( path );
+    if( !a || !d->realName ) {
+        if( a ) SOMFree( a );
+        _somFree( obj );
+        return( 0 );
+    }
+    a->obj = obj;
+    a->next = awake_files;
+    awake_files = a;
+    return( obj );
+}
+
 /* The class a file's object is of: the one its state names (registered, a
- * WPFileSystem), else WPFolder for a directory (when there is one),
- * WPDataFile for a file. */
+ * WPFileSystem), else WPFolder for a directory, WPDataFile for a file. */
 static SOMClass *class_for( const char *name, BOOL directory )
 {
     SOMClass *cls = 0;
     if( name ) cls = _somFindClass( SOMClassMgrObject, somIdFromString( (char *)name ), 0, 0 );
     if( cls && _somDescendedFrom( cls, _WPFileSystem ) ) return( cls );
-    if( directory ) return( _somFindClass( SOMClassMgrObject, somIdFromString( "WPFolder" ), 0, 0 ) );
-    return( _WPDataFile );
+    return( directory ? _WPFolder : _WPDataFile );
 }
 
 SOM_Scope WPObject *SOMLINK wpfsM_wpclsQueryObjectFromPath( M_WPFileSystem *somSelf, PSZ pszFQPath )
@@ -486,29 +546,68 @@ SOM_Scope WPObject *SOMLINK wpfsM_wpclsQueryObjectFromPath( M_WPFileSystem *somS
     rec = read_ea( path, STATE_EA, &size );
     named = rec && wrp_wps_record_parse( rec, size, name, &part, &part_len );
     cls = class_for( named ? name : 0, ( st.attrFile & FILE_DIRECTORY ) != 0 );
-    obj = cls ? (WPFileSystem *)_somNew( cls ) : 0;
+    obj = cls ? make_object( cls, path ) : 0;
+    if( obj && ( ( named && !wrp_wps_store_read( obj, part, part_len ) ) || !_wpRestoreState( obj, 0 ) ) ) {
+        _somFree( obj );
+        obj = 0;
+    }
     if( obj ) {
-        WrpFsAwake *a = (WrpFsAwake *)SOMMalloc( sizeof( *a ) );
-        WPFileSystemData *d = WPFileSystemGetData( obj );
-        d->realName = copy_string( path );
-        if( a ) { a->obj = obj; a->next = awake_files; awake_files = a; }
-        if( !a || !d->realName || ( named && !wrp_wps_store_read( obj, part, part_len ) ) || !_wpRestoreState( obj, 0 ) ) {
-            _somFree( obj );
-            obj = 0;
-        } else {
-            wrp_wps_set_initialized( obj );
-            _wpLockObject( obj );
-        }
+        wrp_wps_set_initialized( obj );
+        _wpLockObject( obj );
     }
     if( rec ) SOMFree( rec );
     return( obj );
 }
 
-/* A new file needs its folder: that comes with WPFolder; until then no
- * file object is made this way (Warpine's limit). */
+/* A new file (a directory, for a WPFolder class) in Folder, named by the
+ * title (its unusable characters as '_'), made as the Reference's
+ * wpclsNew makes an object, its state written to its EAs and the object
+ * added to the folder's content. NULL without a folder, for a name taken,
+ * or when the file cannot be made or its setup fails (the file goes). */
 SOM_Scope WPObject *SOMLINK wpfsM_wpclsNew( M_WPFileSystem *somSelf, PSZ pszTitle, PSZ pszSetupEnv,
                                             WPFolder *Folder, BOOL fLock )
 {
-    (void)somSelf; (void)pszTitle; (void)pszSetupEnv; (void)Folder; (void)fLock;
-    return( 0 );
+    char          dir[MAX_PATH], path[MAX_PATH];
+    ULONG         cb = sizeof( dir );
+    size_t        n, len, i;
+    PSZ           title;
+    WPFileSystem *obj;
+    if( !Folder || !_somIsA( Folder, _WPFolder ) || !_wpQueryRealName( Folder, dir, &cb, TRUE ) ) return( 0 );
+    title = ( pszTitle && *pszTitle ) ? pszTitle : _wpclsQueryTitle( somSelf );
+    if( !title || !*title || ( n = strlen( title ) ) >= WP_MAX_TITLE ) return( 0 );
+    len = strlen( dir );
+    if( len && dir[len - 1] == '\\' ) len--;
+    if( len + 1 + n >= sizeof( path ) ) return( 0 );
+    memcpy( path, dir, len );
+    path[len] = '\\';
+    for( i = 0; i < n; i++ ) {
+        char c = title[i];
+        path[len + 1 + i] = ( c < ' ' || strchr( "\\/:*?\"<>|", c ) ) ? '_' : c;
+    }
+    path[len + 1 + n] = '\0';
+    {
+        FILESTATUS3 st;
+        if( query_status( path, &st ) ) return( 0 );
+    }
+    if( _somDescendedFrom( somSelf, _WPFolder ) ) {
+        if( DosCreateDir( path, NULL ) != NO_ERROR ) return( 0 );
+    } else {
+        HFILE hf;
+        ULONG action;
+        if( DosOpen( path, &hf, &action, 0, FILE_NORMAL, OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_FAIL_IF_EXISTS,
+                     OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYNONE, NULL ) != NO_ERROR )
+            return( 0 );
+        DosClose( hf );
+    }
+    if( !( obj = make_object( (SOMClass *)somSelf, path ) ) ) return( 0 );
+    _wpSetTitle( obj, title );
+    if( fLock ) _wpLockObject( obj );
+    if( !_wpSetupOnce( obj, pszSetupEnv ? pszSetupEnv : (PSZ)"" ) ) {
+        _wpFree( obj );
+        return( 0 );
+    }
+    wrp_wps_set_initialized( obj );
+    _wpSaveImmediate( obj );
+    _wpAddToContent( Folder, obj );
+    return( obj );
 }

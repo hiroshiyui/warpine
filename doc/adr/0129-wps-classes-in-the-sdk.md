@@ -145,3 +145,36 @@ The following are Warpine's own choices, not verified against IBM's Workplace Sh
 - `oError` counted from the list's start;
 - EA names kept as given;
 - level 5 keeping the caller's case.
+
+## Addendum (2026-11-26): WPFolder
+
+- **`WPFolder` / `M_WPFolder`** (`wpfolder.idl`, `sdk/wps/wpfolder.c`) is a directory's object, and `wpclsQueryObjectFromPath` now gives it for a directory. Its content list holds objects in the order they came:
+  - `wpPopulate` adds the objects of the directory's entries (only its directories when asked), each locked, as the Reference says, and sets `FOI_POPULATEDWITHALL` / `FOI_POPULATEDWITHFOLDERS`;
+  - `wpAddToContent` adds an object, and `wpDeleteFromContent` takes one out;
+  - `wpQueryContent` walks the list with `QC_FIRST` / `QC_NEXT` / `QC_LAST`;
+  - `wpContainsFolders` looks for directories;
+  - `wpQueryFldrFlags` gives the population flags.
+
+  An object leaves its folder's list when it is deleted or made dormant; an object `wpPopulate` locked is unlocked then.
+- **Deleting:**
+  - `wpDeleteContents` deletes every object in the folder (`wpDelete`) and gives `NO_DELETE` when one is refused;
+  - `wpFree` calls it first, as the Reference says, then deletes the directory, so deleting a folder deletes the tree under it.
+- **New files.** `M_WPFileSystem`'s `wpclsNew(class, title, setup, folder, lock)` now makes a file, or a directory for a `WPFolder` class, in the folder it is given:
+  - it is named by the title, with unusable characters as `_`, and is refused when the name is taken or there is no folder;
+  - its object is made as `WPObject`'s `wpclsNew` makes one (title, lock, `wpSetupOnce`; the file goes when the setup fails), saved to its EAs and added to the folder's content.
+
+  `WPFolder`'s class title is "Folder", the Reference's title for its template.
+- **Queries:**
+  - `WPFileSystem`'s `wpQueryFolder` gives the folder of the file's directory, unlocked (NULL for a root);
+  - `M_WPObject`'s new `wpclsQueryFolder(location, lock)` gives the folder a path or object ID names, locked only when asked.
+
+  The system folders' object IDs (`<WP_DESKTOP>` …) name no folder yet.
+
+The following are Warpine's own choices, not verified against IBM's Workplace Shell:
+- the values of `QC_*` and `FOI_*`;
+- the order of the content list;
+- what leaves it, and when;
+- `wpDeleteContents` going on after a refusal;
+- `wpclsNew` naming a new file after its title and refusing a taken name (rather than making a name unique);
+- `wpQueryFolder` returning the folder unlocked;
+- `wpclsQueryFolder`'s lock rule.

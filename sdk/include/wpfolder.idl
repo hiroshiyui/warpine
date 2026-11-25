@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wpfolder.idl - WPFolder, the object of a directory, and its metaclass
+// (ADR-0129)
+//
+// The content methods the Workplace Shell Programming Reference documents,
+// with its signatures (OIDL): a folder's content list holds the objects of
+// its directory's files and directories once wpPopulate has made them (it
+// locks each), and the objects added since. Views, icon positions,
+// sorting and the settings pages are still to come. The constants' values
+// and the release order are Warpine's own.
+#ifndef wpfolder_idl
+#define wpfolder_idl
+
+#include <wpfsys.idl>
+
+interface M_WPFolder;
+
+// wpQueryContent's options.
+const unsigned long QC_FIRST = 0;
+const unsigned long QC_NEXT  = 1;
+const unsigned long QC_LAST  = 2;
+// wpQueryFldrFlags: how far the folder is populated.
+const unsigned long FOI_POPULATEDWITHALL     = 0x00000001;
+const unsigned long FOI_POPULATEDWITHFOLDERS = 0x00000002;
+
+interface WPFolder : WPFileSystem
+{
+    BOOL wpPopulate(in ULONG ulReserved, in PSZ pszPath, in BOOL fFoldersOnly);
+    // The objects of the directory's entries (its directories only, when
+    // fFoldersOnly) made, locked and added to the content; nothing more
+    // when the folder is populated already.
+    WPObject wpQueryContent(in WPObject Object, in ULONG ulOption);
+    // QC_FIRST, QC_LAST, or QC_NEXT after Object; NULL past the end.
+    BOOL wpAddToContent(in WPObject Object);
+    BOOL wpDeleteFromContent(in WPObject Object);
+    BOOL wpContainsFolders(in PBOOL pfSubFolders);
+    // Whether the directory has directories.
+    ULONG wpDeleteContents(in ULONG fConfirmations);
+    // Every object of the folder deleted (wpDelete); NO_DELETE when one
+    // is refused.
+    ULONG wpQueryFldrFlags();
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: wpPopulate, wpQueryContent, wpAddToContent, wpDeleteFromContent,
+                      wpContainsFolders, wpDeleteContents, wpQueryFldrFlags;
+        callstyle = oidl;
+        filestem = wpfolder;
+        functionprefix = wpfo_;
+        metaclass = M_WPFolder;
+        majorversion = 1;
+        minorversion = 2;
+        PVOID first;
+        PVOID last;
+        ULONG flags;
+        wpUnInitData: override;
+        wpFree: override;
+    };
+#endif
+};
+
+interface M_WPFolder : M_WPFileSystem
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        filestem = wpfolder;
+        functionprefix = wpfoM_;
+        majorversion = 1;
+        minorversion = 2;
+        wpclsQueryTitle: override;
+    };
+#endif
+};
+
+#endif

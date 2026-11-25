@@ -174,11 +174,14 @@ interface M_WPObject : SOMClass
     // The object a handle names: an awake one, else a stored one (a
     // WPAbstract's) awakened from the user profile; NULL when there is
     // none or its class is not registered.
+    WPFolder wpclsQueryFolder(in PSZ pLocation, in BOOL fLock);
+    // The folder a location names: a path, or an object ID; NULL when it
+    // names no folder. Locked when fLock is TRUE.
 
 #ifdef __SOMIDL__
     implementation {
         releaseorder: wpclsNew, wpclsQueryTitle, wpclsQueryStyle, wpclsQueryDefaultView,
-                      wpclsInitData, wpclsUnInitData, wpclsQueryObject;
+                      wpclsInitData, wpclsUnInitData, wpclsQueryObject, wpclsQueryFolder;
         callstyle = oidl;
         filestem = wpobject;
         functionprefix = wpobjM_;

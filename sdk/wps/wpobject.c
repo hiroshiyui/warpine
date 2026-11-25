@@ -24,6 +24,7 @@
 #include <string.h>
 #include "wpobject.ih"
 #include "wpsint.h"
+#include "wpfolder.h"
 
 /* What wpSave* kept: a list per object. */
 typedef struct WrpWpSaved {
@@ -688,6 +689,20 @@ SOM_Scope WPObject *SOMLINK wpobjM_wpclsQueryObject( M_WPObject *somSelf, HOBJEC
     else obj = wrp_wps_awaken( hObject );
     if( obj ) _wpLockObject( obj );
     return( obj );
+}
+
+/* A path's folder (wpclsQueryObjectFromPath) or an object ID's
+ * (wpclsQueryObject); NULL when it is not a folder. Locked only when asked. */
+SOM_Scope WPFolder *SOMLINK wpobjM_wpclsQueryFolder( M_WPObject *somSelf, PSZ pLocation, BOOL fLock )
+{
+    WPObject *obj;
+    if( !pLocation || !*pLocation ) return( 0 );
+    obj = pLocation[0] == '<' ? _wpclsQueryObject( somSelf, WinQueryObject( pLocation ) )
+                              : _wpclsQueryObjectFromPath( _WPFileSystem, pLocation );
+    if( !obj ) return( 0 );
+    if( !_somIsA( obj, _WPFolder ) ) { _wpUnlockObject( obj ); return( 0 ); }
+    if( !fLock ) _wpUnlockObject( obj );
+    return( (WPFolder *)obj );
 }
 
 SOM_Scope void SOMLINK wpobjM_somDefaultInit( M_WPObject *somSelf, somInitCtrl *ctrl )

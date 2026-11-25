@@ -19,5 +19,6 @@ typedef unsigned long HOBJECT;
 typedef unsigned long PFDATE;
 typedef unsigned long PFTIME;
 typedef unsigned long PFEA2LIST;
+typedef unsigned long PBOOL;
 
 #endif
