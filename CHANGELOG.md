@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Security
+- **A process could keep a shared block after letting it go** (ADR-0049 third addendum, found by a security audit of v0.0.18): a page fault on the block racing its free by another thread mapped it again for good; `recv` / `recvfrom` let the kernel write a buffer checked before a wait, by then perhaps a block another process had been given; and a look at the session's table taken before a free and stored after it put the block back among those API calls may use. The page entries, the holds and the table now change in order under the table's lock, a stale look is dropped, and sockets receive into host memory and copy out through the checked path (one receive takes at most 64 KB).
+
+### Added
+- **The resolver is fuzzed** (ADR-0112 addendum): the address and domain-name parsers move out of `tcpip_util.rs` into `inet_names.rs`, which builds alone, and the new `resolver` target feeds DNS messages, the hosts, networks and `resolv.conf` files, and names and address strings to them (a packed name must expand back to itself, `dn_skipname` must agree with `dn_expand`).
+
 ### Fixed
+- **`dn_expand` overflowed on a name that pointed backwards** (found by the `resolver` target in its first minute): the length a name takes was worked out from the end of the pointed-to name as well, even when a pointer had already set it, and underflowed when that lay before the name's start; a debug build ended the calling process. Release builds wrapped and threw the value away.
 - **Memory just handed to a thread could lose its pages** (ADR-0114 addendum), which CI once showed as a thread created suspended that never ran after `DosResumeThread`: a thread's end and `DosFreeMem` freed memory before giving up its page states, so a block given to another thread at that address in between was written "not present"; two threads could write the allocator's pending page-table changes out of order; and a thread could look at the tables while another was still writing a batch. Page states now go first, pending changes are written in order under one lock, and a sync waits for a batch in progress.
 
 ## [0.0.18] - 2026-11-25

@@ -29,7 +29,19 @@ Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, A
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111; a seccomp deny list per role, ADR-0124):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested, and so is the seccomp deny list;
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps, pointers, WAV files and the dialog / menu / accelerator / string / `PRESPARAMS` resources, CONFIG.SYS and profiles, a minute per target on each push and ten minutes weekly): the font and help-file readers once Warpine reads guest-supplied ones (it reads none today: built-in fonts, `GpiLoadFonts` a stub, help libraries named only).
+- [ ] **Findings of the 2026-11-25 security audit** (v0.0.17 to HEAD; its three High findings are fixed, ADR-0049 third addendum). Medium:
+  - `somApply` / `somDispatch` may apply themselves (their thunks pass as root methods) without end: each level keeps a host call-chain frame and writes the guest stack downwards until a write fails; limit the root path to the root classes' methods and count the nesting (`som_dispatch.rs`, `som_apply_chain`);
+  - `continue_call_chain` panics (`expect("call-chain stack OOB")`, and a `u32` underflow in debug builds) when the guest's ESP lies next to memory the host may not write: compute with `checked_sub` and raise an access violation in the guest instead (`vcpu.rs`);
+  - `getservbyname` / `getservbyport` use libc's static result without `HOST_SERVICES`' lock, so two guest threads race on host memory: take the lock, or look the name up in `host_services()` (`tcpip.rs`);
+  - OS/2 process ids wrap at 0xFFFF without a check, so a new process can take a live one's id and with it its shared blocks: skip ids with a live record or a hold in the table (`session_threads.rs`, `take_process_id`);
+  - the residual windows of ADR-0049's third addendum: a check and its copy are not atomic against a free by another thread, and TLB flushes do not wait for every vCPU.
+- [ ] **Low findings of the same audit:**
+  - copies of a guest-named buffer that read protected memory back to the guest (GDT, page tables): `somVaBuf_add`, `net_writev`, `read_guest_bytes`' byte-wise fallback; use `guest_read_buffer`;
+  - overflow panics in debug builds on guest values: `som_apply`'s `md + 12`, `somVaBuf_add`'s `used + len` / `buf + used` from a forged header, `dn_comp`'s `dnptrs` walk (`slot + 4`; also cap the entries);
+  - `DosRead` allocates the requested length before checking the buffer, and `DosWriteQueue` has no limit on items: either can fill the session's 8 GB;
+  - the `somVaBuf` header's size fields are trusted from guest memory (keep them on the host); root methods of more than six arguments (`somInitClass`, `somInitMIClass`) get the wrong ones through a call chain; `arena_alloc` zeroes a new block after the lock;
+  - the resolver: the five-second wait restarts with each stray packet (use a deadline), and query ids are sequential (use random ones for `res_query`).
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts, `lx-link`'s inputs, bitmaps, pointers, WAV files and the dialog / menu / accelerator / string / `PRESPARAMS` resources, CONFIG.SYS, profiles and the resolver's inputs, a minute per target on each push and ten minutes weekly): the font and help-file readers once Warpine reads guest-supplied ones (it reads none today: built-in fonts, `GpiLoadFonts` a stub, help libraries named only).
 
 ---
 
