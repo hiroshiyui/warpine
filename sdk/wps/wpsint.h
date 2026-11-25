@@ -47,6 +47,15 @@ WPObject *wrp_wps_awaken( HOBJECT h );
  * (wpSetup) and saved; nothing for another object. */
 void      wrp_wps_apply_pending( WPObject *obj );
 
+/* A record of the object (WRP_WPS_RECORD_MAGIC, version, class name, its
+ * saved values), SOMMalloc'd, its size at *size; NULL when it cannot be
+ * made or is larger than WRP_WPS_MAX_RECORD. */
+unsigned char *wrp_wps_record_make( WPObject *obj, ULONG *size );
+/* A record's class name (into name, WP_MAX_TITLE bytes) and its saved
+ * values' part; FALSE when the record is not well formed. */
+BOOL wrp_wps_record_parse( const unsigned char *rec, ULONG size, char *name,
+                           const unsigned char **part, ULONG *part_len );
+
 /* The bytes the object's saved values take as a record's part; written
  * to buf only when cap is enough. */
 ULONG wrp_wps_store_write( WPObject *obj, unsigned char *buf, ULONG cap );

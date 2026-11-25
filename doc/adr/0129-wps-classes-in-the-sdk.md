@@ -111,3 +111,37 @@ The following are Warpine's own choices, not verified against IBM's Workplace Sh
 - awakening only registered classes;
 - the dormant/free split (`somFree` keeps the record, `wpFree` removes it);
 - `WinQueryObject` checking that the record exists.
+
+## Addendum (2026-11-26): WPTransient, WPFileSystem and WPDataFile
+
+- **`WPTransient`** (`wptrans.idl`) is the storage class without a storage medium: its `wpSaveImmediate` writes nothing, so its objects last as long as the process.
+- **`WPFileSystem` / `M_WPFileSystem`** (`wpfsys.idl`, `sdk/wps/wpfsys.c`) is the object of a file or directory, which it knows by its fully qualified name (`DosQueryPathInfo` level 5). The awake objects are listed by that name in any case, so a file has one object. The Reference says such an object's state lives in its file's extended attributes:
+  - its title in `.LONGNAME`, when the title differs from the file's name (a title the filesystem cannot hold as a name);
+  - its types in `.TYPE` (`EAT_MVMT` of `EAT_ASCII`); `wpQueryType` joins them with line feeds, as the Reference shows;
+  - the rest of its state, the class name and the saved values, in a record of the `WPAbstract` format, kept in Warpine's own EA, `WARPINE.WPSTATE`. IBM's own EA format for this is not public.
+
+  The EAs are written and read through `DosSetPathInfo` level 2 and `DosQueryPathInfo` level 3, so they land wherever the drive keeps EAs.
+- **Title, rename and delete:**
+  - a title change on an initialized object renames the file (`wpSetTitle` → `wpSetTitleAndRenameFile` → `wpSetRealName`), with characters a name cannot hold as `_`;
+  - while the object is being made or restored, the title is only set;
+  - `wpFree` deletes the file (or the empty directory) first, as the Reference's "destroys the persistent form" says, then the object.
+- **Methods so far:** `wpQueryRealName`, `wpQueryFilename`, `wpSetRealName`, `wpQueryAttr` / `wpSetAttr`, `wpQueryFileSize`, `wpQueryEASize`, the three date queries, `wpQueryType` / `wpSetType`, `wpSetTitleAndRenameFile`, `wpQueryEASupport` (`NO_ERROR`: every drive keeps EAs) and `wpRefresh`.
+- **`wpclsQueryObjectFromPath`** gives the object of a path, or of an object ID:
+  - the awake object if there is one, otherwise a new one of the class named in `WARPINE.WPSTATE` (registered, and a `WPFileSystem`);
+  - failing that, `WPFolder` for a directory once it exists (no object until then), and `WPDataFile` for a file.
+
+  The object comes back locked, as it does from `wpclsQueryObject` too (both per the Reference). `M_WPFileSystem`'s `wpclsNew` gives NULL until `WPFolder` gives a new file its folder.
+- **`WPDataFile`** (`wpdataf.idl`) is the class of a file without another; its `wpclsQueryTitle` is "Data file", the Reference's title for the class's template.
+- **Supporting changes in DOSCALLS:** `DosSetPathInfo` level 2 now sets the `FEA2LIST`'s EAs; before, it returned success and set nothing. A list that is not well formed sets nothing and gives `ERROR_EA_LIST_INCONSISTENT`, with `oError` naming the bad entry. The parser is pure (`ea_list.rs`) and has a fuzz target, `fea2_list`. `DosQueryPathInfo` level 5 (`FIL_QUERYFULLNAME`) now gives the qualified name; it used to give `ERROR_INVALID_LEVEL`.
+
+The following are Warpine's own choices, not verified against IBM's Workplace Shell:
+- the `WARPINE.WPSTATE` EA;
+- an initialized object's title change renaming its file, with `_` for unusable characters;
+- `wpQueryEASupport` always giving `NO_ERROR`;
+- `wpSetAttr` leaving the dates as they are;
+- the class order of `wpclsQueryObjectFromPath`;
+- `WPFileSystem`'s `wpclsNew` giving NULL;
+- `wpQueryRealName`'s buffer-size rules;
+- `oError` counted from the list's start;
+- EA names kept as given;
+- level 5 keeping the caller's case.

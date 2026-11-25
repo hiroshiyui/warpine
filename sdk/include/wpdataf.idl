@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wpdataf.idl - WPDataFile, the class of data files, and its metaclass
+// (ADR-0129): a file's object when nothing names another class. Its own
+// methods (associations, clipboard, printing) are still to come.
+#ifndef wpdataf_idl
+#define wpdataf_idl
+
+#include <wpfsys.idl>
+
+interface M_WPDataFile;
+
+interface WPDataFile : WPFileSystem
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        filestem = wpdataf;
+        functionprefix = wpdf_;
+        metaclass = M_WPDataFile;
+        majorversion = 1;
+        minorversion = 2;
+    };
+#endif
+};
+
+interface M_WPDataFile : M_WPFileSystem
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        filestem = wpdataf;
+        functionprefix = wpdfM_;
+        majorversion = 1;
+        minorversion = 2;
+        wpclsQueryTitle: override;
+    };
+#endif
+};
+
+#endif

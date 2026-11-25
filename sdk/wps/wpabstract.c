@@ -85,9 +85,8 @@ SOM_Scope void SOMLINK wpab_wpUnInitData( WPAbstract *somSelf )
 SOM_Scope BOOL SOMLINK wpab_wpSaveImmediate( WPAbstract *somSelf )
 {
     WPAbstractData *somThis = WPAbstractGetData( somSelf );
-    const char     *cls;
     PSZ             id;
-    ULONG           name, part, size;
+    ULONG           size;
     unsigned char  *rec;
     char            key[9];
     BOOL            ok;
@@ -97,20 +96,7 @@ SOM_Scope BOOL SOMLINK wpab_wpSaveImmediate( WPAbstract *somSelf )
         if( !h || !wrp_wps_register( h, somSelf ) ) return( FALSE );
         _handle = h;
     }
-    cls = _somGetClassName( somSelf );
-    name = (ULONG)strlen( cls );
-    part = wrp_wps_store_write( somSelf, 0, 0 );
-    size = 12 + name + part;
-    if( size > WRP_WPS_MAX_RECORD || !( rec = (unsigned char *)SOMMalloc( size ) ) ) return( FALSE );
-    {
-        ULONG head[3];
-        head[0] = WRP_WPS_RECORD_MAGIC;
-        head[1] = WRP_WPS_RECORD_VERSION;
-        head[2] = name;
-        memcpy( rec, head, sizeof( head ) );
-    }
-    memcpy( rec + 12, cls, name );
-    wrp_wps_store_write( somSelf, rec + 12 + name, part );
+    if( !( rec = wrp_wps_record_make( somSelf, &size ) ) ) return( FALSE );
     handle_key( _handle, key );
     ok = PrfWriteProfileData( HINI_USERPROFILE, WRP_WPS_APP_OBJECTS, key, rec, size );
     SOMFree( rec );
@@ -204,7 +190,8 @@ void wrp_wps_apply_pending( WPObject *obj )
 WPObject *wrp_wps_awaken( HOBJECT h )
 {
     char           key[9], name[WP_MAX_TITLE], *pending = 0;
-    ULONG          size = 0, head[3], count = 0;
+    ULONG          size = 0, count = 0, part_len;
+    const unsigned char *part;
     unsigned char *rec;
     SOMClass      *cls;
     WPObject      *obj = 0;
@@ -213,21 +200,18 @@ WPObject *wrp_wps_awaken( HOBJECT h )
     if( !PrfQueryProfileSize( HINI_USERPROFILE, WRP_WPS_APP_OBJECTS, key, &size ) || size < 12 || size > WRP_WPS_MAX_RECORD )
         return( 0 );
     if( !( rec = (unsigned char *)SOMMalloc( size ) ) ) return( 0 );
-    if( !PrfQueryProfileData( HINI_USERPROFILE, WRP_WPS_APP_OBJECTS, key, rec, &size ) || size < 12 ) goto done;
-    memcpy( head, rec, sizeof( head ) );
-    if( head[0] != WRP_WPS_RECORD_MAGIC || head[1] != WRP_WPS_RECORD_VERSION || head[2] >= sizeof( name ) || head[2] > size - 12 )
+    if( !PrfQueryProfileData( HINI_USERPROFILE, WRP_WPS_APP_OBJECTS, key, rec, &size )
+        || !wrp_wps_record_parse( rec, size, name, &part, &part_len ) )
         goto done;
-    memcpy( name, rec + 12, head[2] );
-    name[head[2]] = '\0';
     /* Only a registered class that stores its objects here. */
     cls = _somFindClass( SOMClassMgrObject, somIdFromString( name ), 0, 0 );
     if( !cls || !_somDescendedFrom( cls, _WPAbstract ) ) goto done;
     /* No saved values: WinCreateObject's, not made by any process yet. */
-    if( size - 12 - head[2] >= 4 ) memcpy( &count, rec + 12 + head[2], 4 );
+    if( part_len >= 4 ) memcpy( &count, part, 4 );
     fresh = ( count == 0 );
     if( !( obj = (WPObject *)_somNew( cls ) ) ) goto done;
     WPAbstractGetData( obj )->handle = h;
-    if( !wrp_wps_register( h, obj ) || !wrp_wps_store_read( obj, rec + 12 + head[2], size - 12 - head[2] ) ) {
+    if( !wrp_wps_register( h, obj ) || !wrp_wps_store_read( obj, part, part_len ) ) {
         WPAbstractGetData( obj )->handle = NULLHANDLE;
         _somFree( obj );
         obj = 0;

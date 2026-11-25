@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wptrans.idl - WPTransient, the storage class without a storage medium
+// (ADR-0129): its objects are never stored, so they last only as long as
+// the process (Workplace Shell Programming Reference).
+#ifndef wptrans_idl
+#define wptrans_idl
+
+#include <wpobject.idl>
+
+interface WPTransient : WPObject
+{
+#ifdef __SOMIDL__
+    implementation {
+        callstyle = oidl;
+        filestem = wptrans;
+        functionprefix = wptr_;
+        majorversion = 1;
+        minorversion = 2;
+        wpSaveImmediate: override;
+    };
+#endif
+};
+
+#endif

@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// wpfsys.idl - WPFileSystem, the storage class of files and directories,
+// and its metaclass M_WPFileSystem (ADR-0129)
+//
+// The methods are the Workplace Shell Programming Reference's, with its
+// signatures (OIDL); this is their first part: names, attributes, sizes,
+// dates, types and the object for a path. An object's state is kept in its
+// file's extended attributes: its title in .LONGNAME when it differs from
+// the file name, its types in .TYPE (as the Reference says), the rest in
+// Warpine's own WARPINE.WPSTATE (the class name and the saved values).
+// Changing the title renames the file; wpFree deletes it. The release
+// order is Warpine's own.
+#ifndef wpfsys_idl
+#define wpfsys_idl
+
+#include <wpobject.idl>
+
+interface M_WPFileSystem;
+
+interface WPFileSystem : WPObject
+{
+    BOOL wpQueryRealName(in PSZ pszFilename, in PULONG pcb, in BOOL fQualified);
+    // The file's name (fully qualified or not) into pszFilename (*pcb
+    // bytes; the size needed back in *pcb).
+    BOOL wpSetRealName(in PSZ pszName);
+    // Renames the file (a name in its directory).
+    PSZ wpQueryFilename(in PSZ pszFilename, in BOOL fQualified);
+    // The name into pszFilename (CCHMAXPATH bytes); pszFilename back.
+    ULONG wpQueryAttr();
+    BOOL wpSetAttr(in ULONG attrFile);
+    ULONG wpQueryFileSize();
+    ULONG wpQueryEASize();
+    ULONG wpQueryCreation(in PFDATE fdate, in PFTIME ftime);
+    ULONG wpQueryLastAccess(in PFDATE fdate, in PFTIME ftime);
+    ULONG wpQueryLastWrite(in PFDATE fdate, in PFTIME ftime);
+    PSZ wpQueryType();
+    // The .TYPE types, separated by '\n' ("" for none).
+    BOOL wpSetType(in PSZ pszTypes, in PFEA2LIST pfeal);
+    // .TYPE from '\n'-separated types; pfeal, when given, more EAs to set.
+    BOOL wpSetTitleAndRenameFile(in PSZ pszNewTitle, in ULONG fConfirmations);
+    ULONG wpQueryEASupport();
+    BOOL wpRefresh(in ULONG ulView, in PVOID pReserved);
+    // The title read again from the file.
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: wpQueryRealName, wpSetRealName, wpQueryFilename, wpQueryAttr, wpSetAttr,
+                      wpQueryFileSize, wpQueryEASize, wpQueryCreation, wpQueryLastAccess,
+                      wpQueryLastWrite, wpQueryType, wpSetType, wpSetTitleAndRenameFile,
+                      wpQueryEASupport, wpRefresh;
+        callstyle = oidl;
+        filestem = wpfsys;
+        functionprefix = wpfs_;
+        metaclass = M_WPFileSystem;
+        majorversion = 1;
+        minorversion = 2;
+        PSZ realName;
+        PSZ types;
+        wpUnInitData: override;
+        wpSetTitle: override;
+        wpRestoreState: override;
+        wpSaveImmediate: override;
+        wpFree: override;
+    };
+#endif
+};
+
+interface M_WPFileSystem : M_WPObject
+{
+    WPObject wpclsQueryObjectFromPath(in PSZ pszFQPath);
+    // The object of a file or directory (or of an object ID), awake or
+    // awakened, locked; NULL when there is none or no class for it.
+
+#ifdef __SOMIDL__
+    implementation {
+        releaseorder: wpclsQueryObjectFromPath;
+        callstyle = oidl;
+        filestem = wpfsys;
+        functionprefix = wpfsM_;
+        majorversion = 1;
+        minorversion = 2;
+        wpclsNew: override;
+    };
+#endif
+};
+
+#endif

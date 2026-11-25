@@ -16,5 +16,8 @@ typedef unsigned long PULONG;
 typedef unsigned long PBYTE;
 typedef unsigned long PVOID;
 typedef unsigned long HOBJECT;
+typedef unsigned long PFDATE;
+typedef unsigned long PFTIME;
+typedef unsigned long PFEA2LIST;
 
 #endif

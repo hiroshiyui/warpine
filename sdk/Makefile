@@ -53,7 +53,7 @@ $(OS2_LIBCXX): $(CXX_OBJS)
 # The Workplace Shell classes: each one's IDL in include/, its C in wps/;
 # usage bindings into $(OS2_BUILD)/include, implementation bindings into
 # $(OS2_BUILD)/wps, then the library.
-WPS_CLASSES = wpobject wpabstract
+WPS_CLASSES = wpobject wpabstract wptrans wpfsys wpdataf
 WPS_IDLS    = $(WPS_CLASSES:%=include/%.idl) include/wptypes.idl $(wildcard include/som*.idl)
 WPS_HEADERS = $(WPS_CLASSES:%=$(OS2_BUILD)/include/%.h)
 WPS_CFLAGS  = $(OS2_CFLAGS) -std=gnu11 -Wall -Wextra -Werror -I$(OS2_BUILD)/wps

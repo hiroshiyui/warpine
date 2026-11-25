@@ -21,7 +21,13 @@
  *   - WinCreateObject (ADR-0130): a Card made when it is first asked for,
  *     its title and setup applied; an ID taken (CO_FAILIFEXISTS,
  *     CO_UPDATEIFEXISTS, CO_REPLACEIFEXISTS); WinSetObjectData, applied
- *     also to an awake object; WinDestroyObject.
+ *     also to an awake object; WinDestroyObject;
+ *   - WPFileSystem / WPDataFile: the object of a file the program wrote
+ *     (wpclsQueryObjectFromPath), its names, size, dates and types (.TYPE),
+ *     its title renaming the file (.LONGNAME for a title no name can be),
+ *     kept in its EAs and awakened again after somFree, refused deletion,
+ *     then wpFree deleting the file; no object for a directory without
+ *     WPFolder; WPTransient, never stored.
  * "save" stores a Card and has another created by WinCreateObject without
  * making it, and ends; a later "load" (another process) finds both by
  * their IDs, makes or awakens them, checks them and frees them.
@@ -32,6 +38,8 @@
 #include <os2.h>
 #include <stdio.h>
 #include <string.h>
+#include <wptrans.h>
+#include <wpdataf.h>
 #include "note.h"
 
 extern int note_inits, note_uninits, note_class_inits;
@@ -114,6 +122,84 @@ static void create_checks( void )
            && _wpclsQueryObject( _WPObject, h ) == NULL && WinDestroyObject( h ) );
 }
 
+/* A file of `text`, created. */
+static BOOL make_file( const char *name, const char *text )
+{
+    HFILE  hf;
+    ULONG  action, written;
+    if( DosOpen( name, &hf, &action, 0, FILE_NORMAL, OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS,
+                 OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYNONE, NULL ) != NO_ERROR )
+        return( FALSE );
+    DosWrite( hf, text, strlen( text ), &written );
+    DosClose( hf );
+    return( TRUE );
+}
+
+static BOOL exists( const char *name )
+{
+    FILESTATUS3 st;
+    return( DosQueryPathInfo( name, FIL_STANDARD, &st, sizeof( st ) ) == NO_ERROR );
+}
+
+/* WPFileSystem, WPDataFile and WPTransient. */
+static void file_checks( void )
+{
+    char          full[CCHMAXPATH], buf[CCHMAXPATH];
+    ULONG         cb;
+    FDATE         date;
+    WPFileSystem *file, *again;
+    WPObject     *temp;
+
+    if( !make_file( "WPSFILE.TXT", "hello" ) || DosQueryPathInfo( "WPSFILE.TXT", FIL_QUERYFULLNAME, full, sizeof( full ) ) ) {
+        check( "files: a file written", FALSE );
+        return;
+    }
+    file = (WPFileSystem *)_wpclsQueryObjectFromPath( _WPFileSystem, full );
+    check( "wpclsQueryObjectFromPath: a WPDataFile, locked, titled by its name",
+           file && _somIsA( file, _WPDataFile ) && _wpIsLocked( file ) && strcmp( _wpQueryTitle( file ), "WPSFILE.TXT" ) == 0 );
+    if( !file ) return;
+    check( "wpclsQueryObjectFromPath: one object per file, any case",
+           _wpclsQueryObjectFromPath( _WPFileSystem, "wpsfile.txt" ) == file );
+    cb = sizeof( buf );
+    check( "wpQueryRealName: qualified and not",
+           _wpQueryRealName( file, buf, &cb, TRUE ) && strcmp( buf, full ) == 0
+           && _wpQueryFilename( file, buf, FALSE ) && strcmp( buf, "WPSFILE.TXT" ) == 0 );
+    cb = 2;
+    check( "wpQueryRealName: a buffer too small gives the size", !_wpQueryRealName( file, buf, &cb, FALSE ) && cb == 12 );
+    check( "wpQueryFileSize / wpQueryLastWrite / wpQueryEASupport",
+           _wpQueryFileSize( file ) == 5 && _wpQueryLastWrite( file, &date, NULL ) == NO_ERROR && date.year > 0
+           && _wpQueryEASupport( file ) == NO_ERROR );
+    check( "wpSetType / wpQueryType: .TYPE, line feeds between types",
+           _wpSetType( file, "Plain Text\nC Code", NULL ) && strcmp( _wpQueryType( file ), "Plain Text\nC Code" ) == 0 );
+    /* A title is the file's name: setting it renames the file. */
+    check( "wpSetTitle: the file renamed", _wpSetTitle( file, "Notes.txt" ) && exists( "Notes.txt" ) && !exists( "WPSFILE.TXT" )
+           && _wpQueryFilename( file, buf, FALSE ) && strcmp( buf, "Notes.txt" ) == 0 );
+    check( "wpSetTitle: a title no file name can be, in .LONGNAME",
+           _wpSetTitle( file, "Plans: 2026/27" ) && exists( "Plans_ 2026_27" ) && strcmp( _wpQueryTitle( file ), "Plans: 2026/27" ) == 0 );
+    _wpSetStyle( file, _wpQueryStyle( file ) | OBJSTYLE_NODELETE );
+    /* Dormant, then awakened from its EAs. */
+    cb = sizeof( full );
+    _wpQueryRealName( file, full, &cb, TRUE );
+    _somFree( file );
+    again = (WPFileSystem *)_wpclsQueryObjectFromPath( _WPFileSystem, full );
+    check( "wpclsQueryObjectFromPath: awakened from the file's EAs",
+           again && again != NULL && strcmp( _wpQueryTitle( again ), "Plans: 2026/27" ) == 0
+           && strcmp( _wpQueryType( again ), "Plain Text\nC Code" ) == 0 && ( _wpQueryStyle( again ) & OBJSTYLE_NODELETE ) );
+    if( !again ) return;
+    check( "wpDelete: refused for OBJSTYLE_NODELETE, the file stays", _wpDelete( again, 0 ) == NO_DELETE && exists( full ) );
+    _wpSetStyle( again, _wpQueryStyle( again ) & ~OBJSTYLE_NODELETE );
+    check( "wpDelete: the file deleted", _wpDelete( again, 0 ) == OK_DELETE && !exists( full ) );
+    check( "wpclsQueryObjectFromPath: none for a file that is not there",
+           _wpclsQueryObjectFromPath( _WPFileSystem, "NOFILE.TXT" ) == NULL );
+    DosCreateDir( "WPSDIR", NULL );
+    check( "wpclsQueryObjectFromPath: no object for a directory without WPFolder",
+           _wpclsQueryObjectFromPath( _WPFileSystem, "WPSDIR" ) == NULL );
+    DosDeleteDir( "WPSDIR" );
+    temp = _wpclsNew( _WPTransient, "Temporary", "", NULL, FALSE );
+    check( "WPTransient: made, no handle, nothing stored",
+           temp && _wpQueryHandle( temp ) == NULLHANDLE && _wpSaveImmediate( temp ) && _wpFree( temp ) );
+}
+
 /* "save": a Card stored for a later process. */
 static int save_mode( void )
 {
@@ -157,6 +243,8 @@ int main( int argc, char **argv )
      * order of _wpclsNew( _Card, ... )'s parts open). */
     NoteNewClass( Note_MajorVersion, Note_MinorVersion );
     CardNewClass( Card_MajorVersion, Card_MinorVersion );
+    WPDataFileNewClass( WPDataFile_MajorVersion, WPDataFile_MinorVersion );
+    WPTransientNewClass( WPTransient_MajorVersion, WPTransient_MinorVersion );
     if( argc > 1 && strcmp( argv[1], "save" ) == 0 ) return( save_mode() );
     if( argc > 1 && strcmp( argv[1], "load" ) == 0 ) return( load_mode() );
     check( "wpclsNew: no object of WPObject itself",
@@ -226,6 +314,7 @@ int main( int argc, char **argv )
 
     abstract_checks();
     create_checks();
+    file_checks();
 
     printf( "wps_object_test: done %d/%d\n", passed, total );
     return( passed == total ? 0 : 1 );

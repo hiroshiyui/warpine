@@ -439,6 +439,37 @@ ULONG wrp_wps_store_write( WPObject *obj, unsigned char *buf, ULONG cap )
     return( need );
 }
 
+unsigned char *wrp_wps_record_make( WPObject *obj, ULONG *size )
+{
+    const char    *cls = _somGetClassName( obj );
+    ULONG          name = (ULONG)strlen( cls ), part = wrp_wps_store_write( obj, 0, 0 ), head[3];
+    unsigned char *rec;
+    *size = 12 + name + part;
+    if( *size > WRP_WPS_MAX_RECORD || !( rec = (unsigned char *)SOMMalloc( *size ) ) ) return( 0 );
+    head[0] = WRP_WPS_RECORD_MAGIC;
+    head[1] = WRP_WPS_RECORD_VERSION;
+    head[2] = name;
+    memcpy( rec, head, sizeof( head ) );
+    memcpy( rec + 12, cls, name );
+    wrp_wps_store_write( obj, rec + 12 + name, part );
+    return( rec );
+}
+
+BOOL wrp_wps_record_parse( const unsigned char *rec, ULONG size, char *name,
+                           const unsigned char **part, ULONG *part_len )
+{
+    ULONG head[3];
+    if( !rec || size < 12 ) return( FALSE );
+    memcpy( head, rec, sizeof( head ) );
+    if( head[0] != WRP_WPS_RECORD_MAGIC || head[1] != WRP_WPS_RECORD_VERSION || head[2] >= WP_MAX_TITLE || head[2] > size - 12 )
+        return( FALSE );
+    memcpy( name, rec + 12, head[2] );
+    name[head[2]] = '\0';
+    *part = rec + 12 + head[2];
+    *part_len = size - 12 - head[2];
+    return( TRUE );
+}
+
 static BOOL get_word( const unsigned char **p, const unsigned char *end, ULONG *v )
 {
     if( end - *p < 4 ) return( FALSE );
@@ -651,12 +682,12 @@ SOM_Scope WPObject *SOMLINK wpobjM_wpclsQueryObject( M_WPObject *somSelf, HOBJEC
     WPObject *obj;
     (void)somSelf;
     if( !hObject ) return( 0 );
+    /* Locked, as the Reference says: the caller unlocks it. */
     obj = wrp_wps_lookup( hObject );
-    if( obj ) {
-        wrp_wps_apply_pending( obj );
-        return( obj );
-    }
-    return( wrp_wps_awaken( hObject ) );
+    if( obj ) wrp_wps_apply_pending( obj );
+    else obj = wrp_wps_awaken( hObject );
+    if( obj ) _wpLockObject( obj );
+    return( obj );
 }
 
 SOM_Scope void SOMLINK wpobjM_somDefaultInit( M_WPObject *somSelf, somInitCtrl *ctrl )
