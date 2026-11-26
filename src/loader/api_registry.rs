@@ -242,7 +242,7 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_size(a[0],a[1])) },
     // DosOpen: pszName, phf, pulAction, [cbFile@16 unused], [ulAttr@20 unused], fsOpenFlags, fsOpenMode
     ApiEntry { ordinal: 273, module: "DOSCALLS", name: "DosOpen",          argc: 7,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open(a[0],a[1],a[2],a[5],a[6])) },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open_with_eas(a[0],a[1],a[2],a[5],a[6],a[7])) },
     ApiEntry { ordinal: 274, module: "DOSCALLS", name: "DosQueryCurrentDir",  argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_current_dir(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 275, module: "DOSCALLS", name: "DosQueryCurrentDisk", argc: 2,
@@ -465,7 +465,7 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 636, module: "DOSCALLS", name: "DosProtectEnumAttribute", argc: 8,
                handler: |l,_v,_i,a| ApiResult::Normal(if a[0] == 0 { l.dos_protect(l.guest_read::<u32>(a[1]).unwrap_or(0),a[7],|| l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) } else { l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6]) }) },
     ApiEntry { ordinal: 637, module: "DOSCALLS", name: "DosProtectOpen", argc: 9,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_open(a[0],a[1],a[2],a[5],a[6],a[8])) },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_open(a[0],a[1],a[2],a[5],a[6],a[7],a[8])) },
     ApiEntry { ordinal: 638, module: "DOSCALLS", name: "DosProtectClose", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[1],|| l.dos_close(a[0]))) },
     ApiEntry { ordinal: 639, module: "DOSCALLS", name: "DosProtectSetFileLocks", argc: 6,
@@ -493,9 +493,9 @@ static REGISTRY: &[ApiEntry] = &[
 
     // ── DOSCALLS — large files (LONGLONG arguments take two stack words) ──
     ApiEntry { ordinal: 981, module: "DOSCALLS", name: "DosOpenL",          argc: 9,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open(a[0],a[1],a[2],a[6],a[7])) },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open_with_eas(a[0],a[1],a[2],a[6],a[7],a[8])) },
     ApiEntry { ordinal: 982, module: "DOSCALLS", name: "DosProtectOpenL",   argc: 10,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_open(a[0],a[1],a[2],a[6],a[7],a[9])) },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_open(a[0],a[1],a[2],a[6],a[7],a[8],a[9])) },
     ApiEntry { ordinal: 983, module: "DOSCALLS", name: "DosProtectSetFileLocksL", argc: 6,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[5],|| l.dos_protect_set_file_locks_l(a[0],a[1],a[2],a[3],a[4],a[5]))) },
     ApiEntry { ordinal: 984, module: "DOSCALLS", name: "DosProtectSetFilePtrL", argc: 6,

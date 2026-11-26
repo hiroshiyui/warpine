@@ -141,6 +141,21 @@ impl super::Loader {
     // ── File I/O (via DriveManager → VfsBackend) ──
 
     pub fn dos_open(&self, psz_name_ptr: u32, phf_ptr: u32, pul_action_ptr: u32, fs_open_flags: u32, fs_open_mode: u32) -> u32 {
+        self.dos_open_with_eas(psz_name_ptr, phf_ptr, pul_action_ptr, fs_open_flags, fs_open_mode, 0)
+    }
+
+    /// DosOpen / DosOpenL with their `EAOP2` (`peaop2`, 0 for none): its
+    /// `FEA2LIST` is checked before anything is opened (a list not well
+    /// formed: `ERROR_EA_LIST_INCONSISTENT`, `oError` naming the entry) and
+    /// set on the file when the open created, replaced or truncated it, not
+    /// when it opened one that existed (Warpine's reading of the Reference,
+    /// unverified). A named pipe keeps none.
+    pub fn dos_open_with_eas(&self, psz_name_ptr: u32, phf_ptr: u32, pul_action_ptr: u32,
+                             fs_open_flags: u32, fs_open_mode: u32, peaop2: u32) -> u32 {
+        let eas = match peaop2 {
+            0 => None,
+            p => match self.read_set_eas(p, EAOP2_SIZE) { Ok(eas) => Some(eas), Err(e) => return e },
+        };
         let name = self.read_guest_string(psz_name_ptr);
         if super::npipe::is_pipe_name(&name) {
             // The client end of a named pipe (`npipe_api.rs`).
@@ -154,16 +169,23 @@ impl super::Loader {
         let flags = OpenFlags::from_raw(fs_open_flags);
 
         let mut dm = self.shared.drive_mgr.lock_or_recover();
-        match dm.open_file(&name, mode, sharing, flags, FileAttribute::NORMAL) {
-            Ok((handle, action)) => {
-                self.guest_write::<u32>(phf_ptr, handle);
-                if pul_action_ptr != 0 {
-                    self.guest_write::<u32>(pul_action_ptr, action as u32);
-                }
-                0
-            }
-            Err(e) => e.0,
+        let (handle, action) = match dm.open_file(&name, mode, sharing, flags, FileAttribute::NORMAL) {
+            Ok(r) => r,
+            Err(e) => return e.0,
+        };
+        let target = dm.file_path(handle).ok();
+        drop(dm);
+        self.guest_write::<u32>(phf_ptr, handle);
+        if pul_action_ptr != 0 {
+            self.guest_write::<u32>(pul_action_ptr, action as u32);
         }
+        let rc = match eas {
+            Some(eas) if action as u32 != FILE_EXISTED => self.apply_eas(target, eas, peaop2),
+            _ => NO_ERROR,
+        };
+        // EAs that could not be set: the program gets no handle.
+        if rc != NO_ERROR { self.dos_close(handle); }
+        rc
     }
 
     pub fn dos_close(&self, hf: u32) -> u32 {
@@ -897,7 +919,7 @@ impl super::Loader {
                 }
                 debug!("  DosFindFirst -> {} entries, first='{}'", entries.len(),
                        entries.first().map(|e| e.name.as_str()).unwrap_or("?"));
-                self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, level)
+                self.write_filefindbuf3_multi(&dm, hdir, &entries, buf_ptr, buf_len, pc_found_ptr, level)
             }
             Err(e) => { debug!("  DosFindFirst -> error {}", e.0); e.0 },
         }
@@ -919,7 +941,7 @@ impl super::Loader {
         if entries.is_empty() {
             return 18; // ERROR_NO_MORE_FILES
         }
-        self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, dm.find_level(hdir))
+        self.write_filefindbuf3_multi(&dm, hdir, &entries, buf_ptr, buf_len, pc_found_ptr, dm.find_level(hdir))
     }
 
     pub fn dos_find_close(&self, hdir: u32) -> u32 {
@@ -1109,9 +1131,13 @@ impl super::Loader {
     /// (24):
     /// oNextEntryOffset(4) + status [+ cbList(4)] + cchName(1) + achName(var+1)
     ///
+    /// `cbList` is the size of the entry's EA list (`ea_list_size`), found
+    /// through search `hdir`'s directory.
+    ///
     /// Returns 0 on success, or an OS/2 error code.
-    fn write_filefindbuf3_multi(&self, entries: &[DirEntry], buf_ptr: u32, buf_len: u32,
-                                pc_found_ptr: u32, level: u32) -> u32 {
+    #[allow(clippy::too_many_arguments)]
+    fn write_filefindbuf3_multi(&self, dm: &super::vfs::DriveManager, hdir: u32, entries: &[DirEntry],
+                                buf_ptr: u32, buf_len: u32, pc_found_ptr: u32, level: u32) -> u32 {
         let Some(layout) = FindLayout::of(level) else { return ERROR_INVALID_LEVEL };
         let mut offset = 0u32;
         let mut count = 0u32;
@@ -1139,7 +1165,8 @@ impl super::Loader {
                 self.write_filestatus3_from_vfs(&entry.status, entry_ptr + 4);
             }
             if layout.ea_size {
-                self.guest_write::<u32>(entry_ptr + 4 + status_size, 4); // cbList: 4 = empty EA list
+                let target = dm.find_entry_path(hdir, &entry.name);
+                self.guest_write::<u32>(entry_ptr + 4 + status_size, self.ea_list_size(dm, target.as_ref()));
             }
             self.guest_write::<u8>(entry_ptr + name_offset, name_len as u8);
             self.guest_write_bytes(entry_ptr + name_offset + 1, &name_bytes[..name_len]);

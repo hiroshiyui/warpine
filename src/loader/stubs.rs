@@ -767,38 +767,44 @@ impl super::Loader {
     /// base, the list's start, is Warpine's reading). EA names are kept as
     /// given (unverified: OS/2 may upper-case them).
     fn set_eas(&self, target: Option<(u8, String)>, p_info: u32, cb_info: u32) -> u32 {
-        const EAOP2_SIZE: u32 = 12;
-        const EAOP2_FEA2LIST: u32 = 4;
-        const EAOP2_ERROR: u32 = 8;
-        if cb_info < EAOP2_SIZE { return ERROR_BUFFER_OVERFLOW; }
-        let Some(p_fea) = self.guest_read::<u32>(p_info.wrapping_add(EAOP2_FEA2LIST)).filter(|&p| p != 0) else {
-            return ERROR_INVALID_PARAMETER;
-        };
+        match self.read_set_eas(p_info, cb_info) {
+            Ok(eas) => self.apply_eas(target, eas, p_info),
+            Err(e) => e,
+        }
+    }
+
+    /// The entries of the `FEA2LIST` the `EAOP2` at `p_info` names, checked;
+    /// one not well formed puts its offset in `oError` and gives
+    /// `ERROR_EA_LIST_INCONSISTENT`.
+    pub(crate) fn read_set_eas(&self, p_info: u32, cb_info: u32) -> Result<Vec<super::ea_list::Fea2>, u32> {
+        if cb_info < EAOP2_SIZE { return Err(ERROR_BUFFER_OVERFLOW); }
+        let p_fea = self.guest_read::<u32>(p_info.wrapping_add(EAOP2_FEA2LIST)).filter(|&p| p != 0)
+            .ok_or(ERROR_INVALID_PARAMETER)?;
         // cbList first, then that many bytes (never from protected memory).
-        let Some(head) = self.guest_read_buffer(p_fea, 4) else { return ERROR_INVALID_PARAMETER };
+        let head = self.guest_read_buffer(p_fea, 4).ok_or(ERROR_INVALID_PARAMETER)?;
         let cb_list = (u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize).min(super::ea_list::MAX_FEA2_LIST);
-        let Some(list) = self.guest_read_buffer(p_fea, cb_list.max(4)) else { return ERROR_INVALID_PARAMETER };
-        let eas = match super::ea_list::parse_fea2_list(&list) {
-            Ok(eas) => eas,
-            Err(offset) => {
-                let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), offset);
-                return ERROR_EA_LIST_INCONSISTENT;
-            }
-        };
+        let list = self.guest_read_buffer(p_fea, cb_list.max(4)).ok_or(ERROR_INVALID_PARAMETER)?;
+        super::ea_list::parse_fea2_list(&list).map_err(|offset| {
+            let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), offset);
+            ERROR_EA_LIST_INCONSISTENT
+        })
+    }
+
+    /// Set `eas` on `target` in order (an empty value deletes; `None`, a
+    /// pipe, keeps nothing) and clear the `EAOP2`'s `oError`.
+    pub(crate) fn apply_eas(&self, target: Option<(u8, String)>, eas: Vec<super::ea_list::Fea2>, p_info: u32) -> u32 {
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-        let Some((drive, rel)) = target else {
-            let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), 0);
-            return NO_ERROR;
-        };
-        let dm = self.shared.drive_mgr.lock_or_recover();
-        let backend = match dm.backend(drive) {
-            Ok(b) => b,
-            Err(e) => return e.0,
-        };
-        for ea in eas {
-            let flags = if ea.value.is_empty() { 0 } else { ea.flags };
-            let entry = super::vfs::EaEntry { name: super::codepage::cp_decode(&ea.name, cp), value: ea.value, flags };
-            if let Err(e) = backend.set_ea(&rel, &entry) { return e.0; }
+        if let Some((drive, rel)) = target {
+            let dm = self.shared.drive_mgr.lock_or_recover();
+            let backend = match dm.backend(drive) {
+                Ok(b) => b,
+                Err(e) => return e.0,
+            };
+            for ea in eas {
+                let flags = if ea.value.is_empty() { 0 } else { ea.flags };
+                let entry = super::vfs::EaEntry { name: super::codepage::cp_decode(&ea.name, cp), value: ea.value, flags };
+                if let Err(e) = backend.set_ea(&rel, &entry) { return e.0; }
+            }
         }
         let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), 0);
         NO_ERROR
@@ -1536,6 +1542,72 @@ mod tests {
         l.guest_write::<u32>(pcount, 10).unwrap();
         assert_eq!(l.dos_enum_attribute(ENUMEA_REFTYPE_PATH, path, 1, buf, 12, pcount, 1), NO_ERROR);
         assert_eq!(l.guest_read::<u32>(pcount), Some(1), "only what fits");
+    }
+
+    /// DosOpen's EAOP2 sets the EAs of a file it creates or replaces, not
+    /// of one it opens; a list not well formed opens nothing. DosFindFirst
+    /// at level 2 reports each entry's own EA list size.
+    #[test]
+    fn open_sets_eas_and_find_reports_their_size() {
+        use super::super::vfs::DriveConfig;
+        use super::super::vfs_hostdir::HostDirBackend;
+        use super::super::ea_list::{build_fea2_list, Fea2};
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let l = Loader::new_mock();
+        {
+            let mut dm = l.shared.drive_mgr.lock_or_recover();
+            dm.set_drive_config(2, DriveConfig { host_path: tmp.path().to_path_buf(), label: "T".into(), read_only: false });
+            dm.mount(2, Box::new(HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
+        }
+        let path = put(&l, 0x0030_0000, "C:\\SUB\\NEW.TXT");
+        let (phf, pact, eaop, fea) = (0x0030_0100u32, 0x0030_0104u32, 0x0031_0000u32, 0x0031_0100u32);
+        let set_list = |eas: &[Fea2]| {
+            let list = build_fea2_list(eas);
+            l.guest_write_bytes(fea, &list).unwrap();
+            for (at, v) in [(eaop, 0), (eaop + 4, fea), (eaop + 8, 0xFFFF)] { l.guest_write::<u32>(at, v).unwrap(); }
+            list.len() as u32
+        };
+        let one = Fea2 { flags: 0, name: b"MADE".to_vec(), value: b"at open".to_vec() };
+        let size = set_list(std::slice::from_ref(&one));
+        let get = |name: &str| l.shared.drive_mgr.lock_or_recover().backend(2).unwrap().get_ea("sub/NEW.TXT", name).ok().map(|e| e.value);
+        // OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_FAIL_IF_EXISTS
+        assert_eq!(l.dos_open_with_eas(path, phf, pact, 0x10, OPEN_ACCESS_READWRITE | 0x40, eaop), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(pact), Some(FILE_CREATED));
+        assert_eq!(get("MADE").as_deref(), Some(&b"at open"[..]));
+        assert_eq!(l.guest_read::<u32>(eaop + 8), Some(0), "oError cleared");
+        assert_eq!(l.dos_close(l.guest_read::<u32>(phf).unwrap()), NO_ERROR);
+        // Opening it again (OPEN_ACTION_OPEN_IF_EXISTS) sets nothing.
+        set_list(&[Fea2 { flags: 0, name: b"MADE".to_vec(), value: b"later".to_vec() }]);
+        assert_eq!(l.dos_open_with_eas(path, phf, pact, 0x01, OPEN_ACCESS_READWRITE | 0x40, eaop), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(pact), Some(FILE_EXISTED));
+        assert_eq!(get("MADE").as_deref(), Some(&b"at open"[..]), "an existing file keeps its EAs");
+        assert_eq!(l.dos_close(l.guest_read::<u32>(phf).unwrap()), NO_ERROR);
+        // A list not well formed: nothing opened.
+        let other = put(&l, 0x0030_0200, "C:\\SUB\\NONE.TXT");
+        l.guest_write::<u8>(fea + 4 + 5, 0).unwrap();
+        assert_eq!(l.dos_open_with_eas(other, phf, pact, 0x10, OPEN_ACCESS_READWRITE | 0x40, eaop), ERROR_EA_LIST_INCONSISTENT);
+        assert!(!tmp.path().join("sub/NONE.TXT").exists() && !tmp.path().join("sub/none.txt").exists());
+        // DosFindFirst level 2: this file's list, 4 for none.
+        std::fs::write(tmp.path().join("sub/plain.txt"), b"").unwrap();
+        let (pdir, pcount, buf) = (0x0030_0400u32, 0x0030_0404u32, 0x0032_0000u32);
+        let spec = put(&l, 0x0030_0410, "C:\\SUB\\*.TXT");
+        l.guest_write::<u32>(pdir, 0xFFFF_FFFF).unwrap();
+        l.guest_write::<u32>(pcount, 10).unwrap();
+        assert_eq!(l.dos_find_first(spec, pdir, 0, buf, 0x400, pcount, FIL_QUERYEASIZE), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(pcount), Some(2));
+        let mut sizes = std::collections::HashMap::new();
+        let mut at = buf;
+        loop {
+            let name_len = l.guest_read::<u8>(at + 32).unwrap() as usize;
+            let name = String::from_utf8(l.guest_read_bytes(at + 33, name_len).unwrap()).unwrap();
+            sizes.insert(name.to_ascii_uppercase(), l.guest_read::<u32>(at + 28).unwrap());
+            let next = l.guest_read::<u32>(at).unwrap();
+            if next == 0 { break; }
+            at += next;
+        }
+        assert_eq!(sizes.get("NEW.TXT"), Some(&size), "{sizes:?}");
+        assert_eq!(sizes.get("PLAIN.TXT"), Some(&4));
     }
 
     /// The large-file calls: a sparse file past 4 GB sized, sought and

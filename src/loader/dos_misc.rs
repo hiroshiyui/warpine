@@ -150,8 +150,9 @@ impl super::Loader {
 
     /// DosProtectOpen(…, pfhFileHandleLockID): DosOpen, and the handle's
     /// FHLOCK.
-    pub fn dos_protect_open(&self, name: u32, phf: u32, paction: u32, flags: u32, mode: u32, plock: u32) -> u32 {
-        let rc = self.dos_open(name, phf, paction, flags, mode);
+    #[allow(clippy::too_many_arguments)]
+    pub fn dos_protect_open(&self, name: u32, phf: u32, paction: u32, flags: u32, mode: u32, peaop2: u32, plock: u32) -> u32 {
+        let rc = self.dos_open_with_eas(name, phf, paction, flags, mode, peaop2);
         if rc == NO_ERROR {
             let hf = self.guest_read::<u32>(phf).unwrap_or(0);
             if plock == 0 || self.guest_write::<u32>(plock, fh_lock(hf)).is_none() { return ERROR_INVALID_PARAMETER; }

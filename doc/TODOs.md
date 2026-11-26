@@ -30,9 +30,9 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 - [ ] **Signals** (ADR-0035, 0093): interrupting anonymous-pipe writes and host I/O on FIFOs and devices; signal focus across the session; `ERROR_INVALID_PROCID` for PM programs.
 - [ ] **Pipes**: muxwait semaphores as pipe semaphores and a real `NPSS_WAIT` (on hold: the reference names muxwait pipe semaphores without saying what posting one means, and `NPSS_WAIT` needs to know of a thread waiting at the other end, maybe in another process; no public description found); echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.
-- [ ] **Extended attributes**: `DosOpen`'s `EAOP2`; the EAs of a file renamed while open (calls by handle use the name it was opened by).
+- [ ] **Extended attributes**: the EAs of a file renamed while open (calls by handle use the name it was opened by).
 - [ ] **Threads**: the paging arena caps a process at 736 threads (ADR-0115), below `THREADS=`'s 4095; allocator blocks would lift it.
-- [ ] **Large files**: `DosListIOL`; `DosFindFirst` level 2 / 12's `cbList` (always 4, the empty list).
+- [ ] **Large files**: `DosListIOL`.
 - [ ] **Asynchronous I/O**: a completion-based interface (like io_uring or completion ports) as `Wrp*` calls in `WARPINE.DLL`, over threads and event semaphores.
 - [ ] **UTF-8 for new programs**: an opt-in per program making codepage 1208 its process codepage, so text passes through as UTF-8 (ADR-0008); old programs keep theirs.
 - [ ] **Services**: a service manager (start on demand, restart on failure, ordered dependencies) in place of `CONFIG.SYS`'s `RUN=` lines; needs an ADR.

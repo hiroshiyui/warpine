@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **Extended attributes by handle**: `DosSetFileInfo` level 2 sets them and `DosQueryFileInfo` level 3 returns them (the VFS remembers the path each file was opened by); level 2 of both queries reports the true size of the file's EA list. New sample `ea_test` (30 checks, GCC and clang).
 
+- **`DosOpen`'s `EAOP2`** sets the extended attributes of a file it creates, replaces or truncates (a list not well formed opens nothing), and **`DosFindFirst`**'s `FIL_QUERYEASIZE` / `FIL_QUERYEASIZEL` entries report each file's EA list size instead of always 4. `ea_test` has 36 checks.
 - **Large files** (DOSCALLS 981–989): `DosOpenL`, `DosSetFilePtrL`, `DosSetFileSizeL`, `DosSetFileLocksL`, `DosCancelLockRequestL` and the `DosProtect*L` forms; 64-bit sizes at levels 11–13 of the file-information calls and in `DosFindFirst`'s `FILEFINDBUF3L` / `4L`. The SDK declares them, with `FILESTATUS4L` and `FILELOCKL`. New sample `largefile_test` (40 checks, GCC and clang). 1047 entry points.
 
 ### Fixed

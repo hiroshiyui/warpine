@@ -4138,14 +4138,15 @@ fn test_file_attributes() {
 
 /// ea_test: extended attributes set by handle (DosSetFileInfo level 2),
 /// sizes at level 2, level 3 queries by handle and by path that never write
-/// past the FEA2LIST's cbList, and DosEnumAttribute by handle and by path.
+/// past the FEA2LIST's cbList, DosEnumAttribute by handle and by path,
+/// DosOpen's EAOP2 on a new file and DosFindFirst's cbList.
 #[test]
 fn test_extended_attributes_by_handle_and_path() {
     const SAMPLE: &str = "samples/ea_test/ea_test.exe";
     if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 60);
     assert!(!out.contains("FAIL"), "{out}");
-    assert!(out.contains("ea_test: done 30/30"), "{out}");
+    assert!(out.contains("ea_test: done 36/36"), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 

@@ -1004,6 +1004,11 @@ pub const FIL_QUERYEASIZEL:           u32 = 12;
 pub const FIL_QUERYEASFROMLISTL:      u32 = 13;
 /// Size of the OS/2 `FILESTATUS3L` structure (`<bsedos.h>`).
 pub const FILESTATUS3L_SIZE:          u32 = 32;
+/// The `EAOP2` structure (`<bsedos.h>`): its size and the offsets of
+/// `fpFEA2List` and `oError`.
+pub const EAOP2_SIZE:                 u32 = 12;
+pub const EAOP2_FEA2LIST:             u32 = 4;
+pub const EAOP2_ERROR:                u32 = 8;
 /// `DosEnumAttribute` reference types (`<bsedos.h>`).
 pub const ENUMEA_REFTYPE_FHANDLE:     u32 = 0;
 pub const ENUMEA_REFTYPE_PATH:        u32 = 1;
@@ -1088,6 +1093,8 @@ pub const OPEN_FLAGS_FAIL_ON_ERROR: u32 = 0x2000;
 pub const OPEN_FLAGS_WRITE_THROUGH: u32 = 0x4000;
 /// `DosOpen` action: the file (pipe) existed.
 pub const FILE_EXISTED: u32 = 1;
+/// `DosOpen` action: the file was created.
+pub const FILE_CREATED: u32 = 2;
 
 /// `DosExecPgm` execution flags.
 pub const EXEC_SYNC: u32 = 0;

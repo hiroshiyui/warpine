@@ -1719,7 +1719,7 @@ Checked against IBM's OS/2 *SOM Programming Reference* on 2026-11-23: of its 130
 
 `ea_list.rs` holds the lists programs pass and get, with no `Loader` (the `fea2_list` fuzz target reads it alone): `parse_fea2_list` / `parse_gea2_list` (bounded by `cbList` and `MAX_FEA2_LIST` / `MAX_FEA2_ENTRIES`; `Err(offset)` for `oError`), `build_fea2_list` and `build_dena2` (entries padded to four bytes, linked by `oNextEntryOffset`).
 - **Targets.** `ea_path` resolves a name; `ea_handle` gives the drive and path a file was opened by (`DriveManager::file_path`, kept in its `FileEntry`), or `None` for a pipe.
-- **Calls.** `set_eas` (`stubs.rs`) serves `DosSetPathInfo` / `DosSetFileInfo` level 2; `query_eas` (`doscalls.rs`) serves level 3 of both queries: it reads `cbList` first, then that many bytes, builds the whole `FEA2LIST` and writes it only if it fits in the caller's `cbList`. `ea_list_size` (level 2's `cbList`) is the length of the list `build_fea2_list` makes, so the two agree. `dos_enum_attribute` takes `ENUMEA_REFTYPE_FHANDLE` / `_PATH`.
+- **Calls.** `set_eas` (`stubs.rs`) serves `DosSetPathInfo` / `DosSetFileInfo` level 2; `query_eas` (`doscalls.rs`) serves level 3 of both queries: it reads `cbList` first, then that many bytes, builds the whole `FEA2LIST` and writes it only if it fits in the caller's `cbList`. `ea_list_size` (level 2's `cbList`) is the length of the list `build_fea2_list` makes, so the two agree. `dos_enum_attribute` takes `ENUMEA_REFTYPE_FHANDLE` / `_PATH`. `dos_open_with_eas` (DosOpen, DosOpenL and their protected forms) checks the list with `read_set_eas` before opening and applies it (`apply_eas`) when the action is not `FILE_EXISTED`; `write_filefindbuf3_multi` finds each entry's EAs through `DriveManager::find_entry_path` (the search's directory, kept in its `FindEntry`).
 - **Tests:** `ea_list.rs` (parsing, junk, building back); `stubs.rs` (`set_path_info_level_2_sets_extended_attributes`, `extended_attributes_by_handle_and_bounded_queries`: a one-byte-short buffer left untouched, both reference types); `samples/ea_test` + `test_extended_attributes_by_handle_and_path`.
 
 ### Large files
@@ -2221,7 +2221,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2506: 2389 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 20 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
+The unit tests (2507: 2390 warpine + 23 `gen_api` + 39 `lx_link` + 12 `os2rc` + 20 `somidl` + 6 `os2msg` + 5 `gen_arch` + 12 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2557,7 +2557,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2506 unit tests (2389 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 20 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 242 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2507 unit tests (2390 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 20 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat), 242 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

@@ -487,6 +487,9 @@ struct FindEntry {
     vfs_handle: VfsFindHandle,
     /// Info level from DosFindFirst (1=FIL_STANDARD, 2=FIL_QUERYEASIZE).
     level: u32,
+    /// The directory searched, relative to the drive's root (`/`
+    /// separators): where the entries' EAs are.
+    dir: String,
     /// Original search pattern (kept for diagnostics/logging).
     #[allow(dead_code)]
     pattern: String,
@@ -991,9 +994,17 @@ impl DriveManager {
         self.next_find_handle += 1;
         self.find_handles.insert(
             os2_handle,
-            FindEntry { drive, vfs_handle, level, pattern: os2_path.to_string() },
+            FindEntry { drive, vfs_handle, level, dir: parent_dir(&rel_path), pattern: os2_path.to_string() },
         );
         Ok((os2_handle, entry))
+    }
+
+    /// The drive and drive-relative path of entry `name` of search `handle`
+    /// (`.` and `..` resolved; `None` above the root or for no search).
+    pub fn find_entry_path(&self, handle: u32, name: &str) -> Option<(u8, String)> {
+        let e = self.find_handles.get(&handle)?;
+        let joined = if e.dir.is_empty() { name.to_string() } else { format!("{}/{name}", e.dir) };
+        Some((e.drive, normalize_rel_path(&joined)?))
     }
 
     /// Get the info level for a find handle (1=FIL_STANDARD, 2=FIL_QUERYEASIZE).
@@ -1180,6 +1191,12 @@ impl DriveManager {
         }
         map
     }
+}
+
+/// The directory part of drive-relative `rel_path` (`/` separators), empty
+/// for the root.
+fn parent_dir(rel_path: &str) -> String {
+    rel_path.rsplit_once('/').map_or(String::new(), |(dir, _)| dir.to_string())
 }
 
 /// `rel_path` (`/` separators) with `.` and `..` collapsed and empty parts
