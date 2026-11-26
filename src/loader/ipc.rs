@@ -385,21 +385,7 @@ impl SemaphoreManager {
     /// `existing` records of `kind`, or why they cannot.
     fn check_records(&self, kind: Option<SemKind>, existing: &[MuxWaitRecord], records: &[MuxWaitRecord])
         -> Result<Option<SemKind>, u32> {
-        if existing.len() + records.len() > MAX_MUXWAIT_SEMS {
-            return Err(ERROR_TOO_MANY_SEMAPHORES);
-        }
-        let mut kind = kind;
-        for (i, rec) in records.iter().enumerate() {
-            let k = self.kind_of(rec.hsem).ok_or(ERROR_INVALID_HANDLE)?;
-            if k == SemKind::MuxWait || kind.is_some_and(|kind| kind != k) {
-                return Err(ERROR_WRONG_TYPE);
-            }
-            kind = Some(k);
-            if existing.iter().chain(&records[..i]).any(|r| r.hsem == rec.hsem) {
-                return Err(ERROR_DUPLICATE_HANDLE);
-            }
-        }
-        Ok(kind)
+        check_mux_records(kind, existing, records, |h| self.kind_of(h))
     }
 
     pub fn kind_of(&self, h: u32) -> Option<SemKind> {
@@ -691,6 +677,29 @@ impl SemaphoreManager {
         let died = take(&mut members[i], m);
         Ok(Some((mux.records[i].user, died)))
     }
+}
+
+/// The kind of the semaphores of `records` once they join a list of
+/// `existing` records of `kind`, or why they cannot: at most
+/// `MAX_MUXWAIT_SEMS`, each a known event or mutex (`kind_of`), all of one
+/// kind, each once.
+pub fn check_mux_records(kind: Option<SemKind>, existing: &[MuxWaitRecord], records: &[MuxWaitRecord],
+                         kind_of: impl Fn(u32) -> Option<SemKind>) -> Result<Option<SemKind>, u32> {
+    if existing.len() + records.len() > MAX_MUXWAIT_SEMS {
+        return Err(ERROR_TOO_MANY_SEMAPHORES);
+    }
+    let mut kind = kind;
+    for (i, rec) in records.iter().enumerate() {
+        let k = kind_of(rec.hsem).ok_or(ERROR_INVALID_HANDLE)?;
+        if k == SemKind::MuxWait || kind.is_some_and(|kind| kind != k) {
+            return Err(ERROR_WRONG_TYPE);
+        }
+        kind = Some(k);
+        if existing.iter().chain(&records[..i]).any(|r| r.hsem == rec.hsem) {
+            return Err(ERROR_DUPLICATE_HANDLE);
+        }
+    }
+    Ok(kind)
 }
 
 /// `DosCreateMuxWaitSem` flags: whether the list waits for all its

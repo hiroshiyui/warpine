@@ -14,7 +14,9 @@
  * waits on a muxwait list of shared events, posts the unnamed event and
  * ends still owning the mutex: the parent's next request gets
  * ERROR_SEM_OWNER_DIED. A semaphore only the child had open is gone with
- * it.
+ * it. The parent's named muxwait list is shared too: the child opens it,
+ * reads it and adds the unnamed event, and the parent's wait on it ends
+ * with the record the child added.
  *
  * Each check is written to stdout:
  *
@@ -36,6 +38,8 @@
 #define GO_NAME    "\\SEM32\\SHTEST\\GO"
 #define MTX_NAME   "\\SEM32\\SHTEST\\MTX"
 #define LONE_NAME  "\\SEM32\\SHTEST\\CHILDONLY"
+#define DONE_NAME  "\\SEM32\\SHTEST\\DONE"
+#define LIST_NAME  "\\SEM32\\SHTEST\\LIST"
 #define WAIT_MS    10000
 
 static int n_checks = 0, n_passed = 0;
@@ -70,11 +74,11 @@ static int child_main( const char *args )
     HEV       ready = 0, go = 0, lone;
     HEV       anon = (HEV)strtoul( args, NULL, 16 );
     HMTX      mtx = 0, wrong = 0;
-    HMUX      mux;
-    SEMRECORD recs[2];
+    HMUX      mux, list = 0;
+    SEMRECORD recs[2], got[4];
     PID       pid;
     TID       tid;
-    ULONG     count, user;
+    ULONG     count, user, attr;
 
     prefix = "child: ";
     DosGetInfoBlocks( &ptib, &ppib );
@@ -98,6 +102,15 @@ static int child_main( const char *args )
     check( "DosWaitMuxWaitSem", DosWaitMuxWaitSem( mux, WAIT_MS, &user ), NO_ERROR );
     check( "-> the posted one", user, 2 );
     DosCloseMuxWaitSem( mux );
+    check( "DosOpenMuxWaitSem(the parent's, by name)", DosOpenMuxWaitSem( (PSZ)LIST_NAME, &list ), NO_ERROR );
+    count = 4;
+    check( "DosQueryMuxWaitSem", DosQueryMuxWaitSem( list, &count, got, &attr ), NO_ERROR );
+    check( "-> one record", count, 1 );
+    check( "-> the parent's user value", got[0].ulUser, 7 );
+    recs[0].hsemCur = (HSEM)anon; recs[0].ulUser = 8;
+    check( "DosAddMuxWaitSem(to the parent's list)", DosAddMuxWaitSem( list, &recs[0] ), NO_ERROR );
+    check( "DosWaitMuxWaitSem(nothing posted yet)", DosWaitMuxWaitSem( list, 0, &user ), ERROR_TIMEOUT );
+    DosCloseMuxWaitSem( list );
     check( "DosCreateEventSem(left open at the end)",
            DosCreateEventSem( (PSZ)LONE_NAME, &lone, 0, FALSE ), NO_ERROR );
     check( "DosPostEventSem(by handle)", DosPostEventSem( anon ), NO_ERROR );
@@ -130,7 +143,10 @@ int main( void )
     const char *args = command_args();
     PTIB        ptib;
     PPIB        ppib;
-    HEV         ready, go, anon, other;
+    HEV         ready, go, anon, other, done;
+    HMUX        list;
+    SEMRECORD   rec;
+    ULONG       user;
     HMTX        mtx;
     PID         pid, ended, owner;
     TID         tid;
@@ -148,6 +164,11 @@ int main( void )
     check( "a name of another kind", DosCreateMutexSem( (PSZ)READY_NAME, (PHMTX)&other, 0, FALSE ), ERROR_DUPLICATE_NAME );
     check( "a name outside \\SEM32\\", DosCreateEventSem( (PSZ)"\\SEM\\X", &other, 0, FALSE ), ERROR_INVALID_NAME );
 
+    check( "DosCreateEventSem(DONE)", DosCreateEventSem( (PSZ)DONE_NAME, &done, 0, FALSE ), NO_ERROR );
+    rec.hsemCur = (HSEM)done; rec.ulUser = 7;
+    check( "DosCreateMuxWaitSem(named)",
+           DosCreateMuxWaitSem( (PSZ)LIST_NAME, &list, 1, &rec, DCMW_WAIT_ANY ), NO_ERROR );
+
     check( "DosExecPgm(child)", start_child( anon, &pid ), NO_ERROR );
     check( "DosWaitEventSem(READY, posted by the child)", DosWaitEventSem( ready, WAIT_MS ), NO_ERROR );
     check( "DosQueryEventSem", DosQueryEventSem( ready, &count ), NO_ERROR );
@@ -161,6 +182,10 @@ int main( void )
     check( "DosQueryMutexSem", DosQueryMutexSem( mtx, &owner, &tid, &count ), NO_ERROR );
     check( "-> this process owns it now", owner, ppib->pib_ulpid );
     check( "DosReleaseMutexSem(again)", DosReleaseMutexSem( mtx ), NO_ERROR );
+    check( "DosWaitMuxWaitSem(the child's record)", DosWaitMuxWaitSem( list, WAIT_MS, &user ), NO_ERROR );
+    check( "-> the record the child added", user, 8 );
+    check( "DosCloseMuxWaitSem", DosCloseMuxWaitSem( list ), NO_ERROR );
+    check( "DosCloseEventSem(DONE)", DosCloseEventSem( done ), NO_ERROR );
     check( "a semaphore only the child had open is gone",
            DosOpenEventSem( (PSZ)LONE_NAME, &other ), ERROR_SEM_NOT_FOUND );
     check( "DosCloseEventSem(READY)", DosCloseEventSem( ready ), NO_ERROR );

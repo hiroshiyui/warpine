@@ -228,7 +228,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - `ERROR_TOO_MANY_SEMAPHORES` before a duplicate;
   - muxwait flags with neither or both `DCMW_*`;
   - a closed member giving `ERROR_INVALID_HANDLE`;
-  - wait-all returning the last record's user value.
+  - wait-all returning the last record's user value;
+  - a shared muxwait list (ADR-0050 addendum): private members `ERROR_WRONG_TYPE`; members waited on by a process that never opened them; `DC_SEM_SHARED` in `DosQueryMuxWaitSem` for every shared list.
 - **The Landlock sandbox** (ADR-0111): the display and sound paths (tested with SDL's dummy drivers only); the whole runtime directory and `/dev` writable; the library directories executable; the program's directory readable.
 - **Shared memory access** (ADR-0049 addenda): `ERROR_INVALID_PARAMETER` from `DosRead` / `DosWrite` for a buffer in a block not held; a get or give without `PAG_WRITE` is read-only to that process; asking again keeps the larger access; `DosQueryMem` reports an arena page the process does not hold as `PAG_FREE`.
 - **No address randomisation in the guest** (ADR-0125): whether OS/2 itself randomised anything is not known.

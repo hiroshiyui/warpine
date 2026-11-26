@@ -1449,6 +1449,12 @@ impl super::Loader {
     /// process's muxwait names), the handle stored at `ph`.
     fn create_shared_sem(&self, sems: &super::shared_sem::SharedSems, name: Option<String>, attr: u32,
                          state: super::shared_sem::State, ph: u32) -> u32 {
+        self.create_shared_with(name, ph, |name| sems.create_sem(name, attr, state))
+    }
+
+    /// `create_shared_sem` with `create` making the semaphore.
+    fn create_shared_with(&self, name: Option<String>, ph: u32,
+                          create: impl FnOnce(Option<String>) -> Result<u32, u32>) -> u32 {
         let name = match name.map(|n| canonical_sem_name(&n)).transpose() {
             Ok(n) => n,
             Err(e) => return e,
@@ -1457,7 +1463,16 @@ impl super::Loader {
             return ERROR_DUPLICATE_NAME;
         }
         if self.guest_ptr(ph, 4).is_none() { return ERROR_INVALID_PARAMETER; }
-        self.store_sem_handle(sems.create_sem(name, attr, state), ph)
+        self.store_sem_handle(create(name), ph)
+    }
+
+    /// A shared muxwait list takes shared semaphores only: a private one of
+    /// this process is `ERROR_WRONG_TYPE` (unverified), any other handle
+    /// without the shared bit `ERROR_INVALID_HANDLE`.
+    fn private_record_error(&self, records: &[MuxWaitRecord]) -> Option<u32> {
+        let sm = self.shared.sem_mgr.lock_or_recover();
+        records.iter().find(|r| !super::shared_sem::is_shared(r.hsem))
+            .map(|r| if sm.kind_of(r.hsem).is_some() { ERROR_WRONG_TYPE } else { ERROR_INVALID_HANDLE })
     }
 
     /// Wait for shared semaphore `h` until `attempt` succeeds or `msec` ms
@@ -1652,6 +1667,11 @@ impl super::Loader {
         if count as usize > MAX_MUXWAIT_SEMS { return ERROR_TOO_MANY_SEMAPHORES; }
         let Some(records) = self.read_sem_records(records_ptr, count) else { return ERROR_INVALID_PARAMETER };
         let name = self.sem_name(psz_name_ptr);
+        if let Some(sems) = self.shared_sems_for(fl_attr, name.is_some()) {
+            if let Err(e) = check_mux_attr(fl_attr) { return e; }
+            if let Some(e) = self.private_record_error(&records) { return e; }
+            return self.create_shared_with(name, phmux_ptr, |name| sems.create_mux(name, fl_attr, &records));
+        }
         let created = self.shared.sem_mgr.lock_or_recover().create_mux(name.as_deref(), fl_attr, &records);
         self.store_sem_handle(created, phmux_ptr)
     }
@@ -1670,15 +1690,13 @@ impl super::Loader {
             h
         };
         debug!("  open {:?} semaphore name={:?} handle={}", kind, name, h);
-        if kind != SemKind::MuxWait && let Some(sems) = self.shared.shared_sems.get() {
+        if let Some(sems) = self.shared.shared_sems.get() {
             let canonical = match name.as_deref().map(canonical_sem_name).transpose() {
                 Ok(n) => n,
                 Err(e) => return e,
             };
             if super::shared_sem::is_shared(h) || canonical.is_some() {
                 let opened = sems.open(kind, canonical.as_deref(), h);
-                // A name of this process's own muxwait semaphores is not
-                // the kind asked for either.
                 return self.store_sem_handle(opened, ph);
             }
         }
@@ -1694,6 +1712,7 @@ impl super::Loader {
 
     /// DosCloseMuxWaitSem (ordinal 339).
     pub fn dos_close_mux_wait_sem(&self, hmux: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmux) { return sems.close(SemKind::MuxWait, hmux); }
         self.shared.sem_mgr.lock_or_recover().close(SemKind::MuxWait, hmux)
     }
 
@@ -1705,6 +1724,16 @@ impl super::Loader {
     /// `SemaphoreManager::wake_all`; the process end is looked at every
     /// `SEM_POLL` as in `wait_sem`.
     pub fn dos_wait_mux_wait_sem(&self, vcpu_id: u32, hmux: u32, msec: u32, pul_user_ptr: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmux) {
+            let tid = super::threads::tid_of_vcpu(vcpu_id);
+            return match self.wait_shared_sem(sems, hmux, msec, || sems.try_mux(hmux, tid)) {
+                Ok((user, died)) => {
+                    if pul_user_ptr != 0 { self.guest_write::<u32>(pul_user_ptr, user); }
+                    if died { ERROR_SEM_OWNER_DIED } else { NO_ERROR }
+                }
+                Err(e) => e,
+            };
+        }
         let deadline = sem_deadline(msec);
         let (mux, signal) = {
             let sm = self.shared.sem_mgr.lock_or_recover();
@@ -1747,18 +1776,27 @@ impl super::Loader {
     /// DosAddMuxWaitSem (ordinal 341).
     pub fn dos_add_mux_wait_sem(&self, hmux: u32, psem_record: u32) -> u32 {
         let Some(rec) = self.read_sem_records(psem_record, 1) else { return ERROR_INVALID_PARAMETER };
+        if let Some(sems) = self.shared_handle(hmux) {
+            if let Some(e) = self.private_record_error(&rec) { return e; }
+            return sems.add_mux_record(hmux, rec[0]);
+        }
         self.shared.sem_mgr.lock_or_recover().add_mux_record(hmux, rec[0])
     }
 
     /// DosDeleteMuxWaitSem (ordinal 342).
     pub fn dos_delete_mux_wait_sem(&self, hmux: u32, hsem: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmux) { return sems.delete_mux_record(hmux, hsem); }
         self.shared.sem_mgr.lock_or_recover().delete_mux_record(hmux, hsem)
     }
 
     /// DosQueryMuxWaitSem (ordinal 343): `*pcSemRec` records fit at
     /// `pSemRec`; too few → `ERROR_PARAM_TOO_SMALL` with the number needed.
     pub fn dos_query_mux_wait_sem(&self, hmux: u32, pc_sem_rec: u32, p_sem_rec: u32, pfl_attr: u32) -> u32 {
-        let (records, attr) = match self.shared.sem_mgr.lock_or_recover().query_mux(hmux) {
+        let queried = match self.shared_handle(hmux) {
+            Some(sems) => sems.query_mux(hmux),
+            None => self.shared.sem_mgr.lock_or_recover().query_mux(hmux),
+        };
+        let (records, attr) = match queried {
             Ok(q) => q,
             Err(e) => return e,
         };

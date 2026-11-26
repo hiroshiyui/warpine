@@ -1652,7 +1652,8 @@ fn test_shared_memory_between_processes() {
 /// DC_SEM_SHARED events and mutexes opened by name and by handle, waits
 /// woken from the other process, a muxwait list of shared events, a mutex
 /// left owned by the ended child (ERROR_SEM_OWNER_DIED), a semaphore only
-/// the child had open gone with it (ADR-0050).
+/// the child had open gone with it, and a named muxwait list the child
+/// opens, reads and adds to (ADR-0050 and its addendum).
 #[test]
 fn test_shared_semaphores_between_processes() {
     const SAMPLE: &str = "samples/shsem_test/shsem_test.exe";
@@ -1660,10 +1661,10 @@ fn test_shared_semaphores_between_processes() {
     let (out, code) = run_sample(SAMPLE, 60);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("shsem_test: ") && !l.contains(": done")).collect();
-    assert!(checks.iter().filter(|l| l.contains(": child: ")).count() >= 18, "the child's checks:\n{out}");
+    assert!(checks.iter().filter(|l| l.contains(": child: ")).count() >= 24, "the child's checks:\n{out}");
     let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
-    assert!(out.contains("shsem_test: done 27/27"), "{out}");
+    assert!(out.contains("shsem_test: done 33/33"), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 

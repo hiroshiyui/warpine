@@ -25,8 +25,8 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 
 ## Kernel and processes
 
-- [ ] **Shared memory** (ADR-0049): `DosAllocShrSeg` / `DosGetShrSeg`; blocks of a killed process whose parent never waits, swept at the next table use.
-- [ ] **Semaphores** (ADR-0050): named and shared muxwait semaphores across processes; limits of 512 per session, 28 processes per semaphore.
+- [ ] **Shared memory** (ADR-0049): the 16-bit `DosAllocShrSeg` / `DosGetShrSeg` (deferred: they need a 16-bit segment allocator first, LDT selectors over the shared arena — see 16-bit (NE) below); blocks of a killed process whose parent never waits, swept at the next table use.
+- [ ] **Semaphores** (ADR-0050): limits of 512 per session, 28 processes per semaphore.
 - [ ] **Signals** (ADR-0035, 0093): interrupting anonymous-pipe writes and host I/O on FIFOs and devices; signal focus across the session; `ERROR_INVALID_PROCID` for PM programs.
 - [ ] **Pipes**: muxwait semaphores as pipe semaphores, a real `NPSS_WAIT`; echo of piped standard input.
 - [ ] **Suballocation**: shared pools between processes.

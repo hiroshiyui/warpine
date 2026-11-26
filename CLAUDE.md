@@ -19,7 +19,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2: 32-bit (LX
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2498 unit tests (2381 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 20 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 240 integration tests
+cargo test                                 # 2502 unit tests (2385 warpine + 23 gen_api + 39 lx_link + 12 os2rc + 20 somidl + 6 os2msg + 5 gen_arch + 12 gen_compat) + 240 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); then `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change

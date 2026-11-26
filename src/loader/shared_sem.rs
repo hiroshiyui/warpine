@@ -2,8 +2,8 @@
 //
 //! Shared semaphores across the Warpine processes of a session (ADR-0050).
 //!
-//! Event and mutex semaphores that are named (`\SEM32\…`) or created with
-//! `DC_SEM_SHARED` live in a segment all processes of a session map: a
+//! Event, mutex and muxwait semaphores that are named (`\SEM32\…`) or
+//! created with `DC_SEM_SHARED` live in a segment all processes of a session map: a
 //! sealed `memfd` of `SEGMENT_BYTES` (the first process makes it, children
 //! inherit it through `WARPINE_SEM_FD`, as the shared arena,
 //! `shared_arena.rs`). Unlike the arena it is **not** in guest memory: only
@@ -11,8 +11,8 @@
 //!
 //! - The segment is a header (magic, version, the generation word) and
 //!   `MAX_SHARED_SEMS` fixed slots. A slot holds one semaphore: kind,
-//!   generation, flags, name, event post count or mutex owner, and the
-//!   processes that opened it with their counts.
+//!   generation, flags, name, event post count, mutex owner or muxwait
+//!   list, and the processes that opened it with their counts.
 //! - A shared semaphore's handle is `SHARED_SEM_BIT | generation_no << 16 | slot`, the
 //!   same value in every process (a handle passed to another process opens
 //!   it there). Freeing a slot moves its generation on, so an old handle
@@ -38,8 +38,11 @@
 //! segment; that can make semaphores misbehave but never makes Warpine
 //! read or write outside it.
 //!
-//! Muxwait semaphores stay within their process, but their lists can hold
-//! shared semaphores (`ipc.rs`).
+//! A shared muxwait list holds shared events or mutexes only, by handle; a
+//! member is looked up whoever has it open, so a process that opened the
+//! list waits on members it never opened itself (Warpine's reading,
+//! unverified). A private muxwait list can hold shared semaphores too
+//! (`ipc.rs`).
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -50,7 +53,7 @@ use std::time::Duration;
 use log::warn;
 
 use super::constants::*;
-use super::ipc::{EventSemaphore, SemKind};
+use super::ipc::{check_mux_attr, check_mux_records, EventSemaphore, MuxWaitRecord, SemKind};
 use super::mutex_ext::MutexExt;
 use super::session_threads::Identity;
 
@@ -62,11 +65,12 @@ pub const SHARED_SEM_BIT: u32 = 0x8000_0000;
 pub const MAX_SHARED_SEMS: usize = 512;
 /// Processes one semaphore records as having it open.
 pub const MAX_OPENERS: usize = 28;
-const SLOT_BYTES: usize = 1024;
+const SLOT_BYTES: usize = 2048;
 const HEADER_BYTES: usize = 4096;
 pub const SEGMENT_BYTES: usize = HEADER_BYTES + MAX_SHARED_SEMS * SLOT_BYTES;
 const MAGIC: u32 = 0x4D45_5357; // "WSEM"
-const VERSION: u32 = 1;
+/// 2: 2 KB slots with muxwait lists.
+const VERSION: u32 = 2;
 /// Offset of the generation word in the header.
 const GENERATION_AT: usize = 8;
 /// The longest semaphore name, `\SEM32\` included.
@@ -74,10 +78,15 @@ const MAX_NAME: usize = 255;
 const NAME_AT: usize = 56;
 const OPENERS_AT: usize = NAME_AT + 256;
 const OPENER_BYTES: usize = 24;
-const _: () = assert!(OPENERS_AT + MAX_OPENERS * OPENER_BYTES <= SLOT_BYTES);
+const _: () = assert!(OPENERS_AT + MAX_OPENERS * OPENER_BYTES <= RECORDS_AT);
+/// A muxwait list's `SEMRECORD`s: handle and user value.
+const RECORDS_AT: usize = 1024;
+const RECORD_BYTES: usize = 8;
+const _: () = assert!(RECORDS_AT + MAX_MUXWAIT_SEMS * RECORD_BYTES <= SLOT_BYTES);
 const KIND_FREE: u32 = 0;
 const KIND_EVENT: u32 = 1;
 const KIND_MUTEX: u32 = 2;
+const KIND_MUXWAIT: u32 = 3;
 
 /// A process of the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +113,9 @@ pub enum State {
         /// The owner ended without releasing it: its OS/2 process and thread.
         died: Option<(u32, u32)>,
     },
+    /// A muxwait list of shared semaphores of one kind (`None` while it is
+    /// empty); `DCMW_WAIT_ALL` is in the slot's flags.
+    MuxWait { records: Vec<MuxWaitRecord>, list: Option<SemKind> },
 }
 
 /// One semaphore of the segment.
@@ -149,6 +161,25 @@ impl Slot {
                 let died = (get_u32(b, 40) != 0).then(|| (get_u32(b, 40), get_u32(b, 44)));
                 if owner.is_some() != (count > 0) || (owner.is_some() && died.is_some()) { return None; }
                 State::Mutex { owner, count, died }
+            }
+            KIND_MUXWAIT => {
+                check_mux_attr(attr).ok()?;
+                let n = get_u32(b, 12) as usize;
+                let list = match get_u32(b, 16) {
+                    0 => None,
+                    KIND_EVENT => Some(SemKind::Event),
+                    KIND_MUTEX => Some(SemKind::Mutex),
+                    _ => return None,
+                };
+                if n > MAX_MUXWAIT_SEMS || (n == 0) != list.is_none() { return None; }
+                let records: Vec<MuxWaitRecord> = (0..n).map(|i| {
+                    let at = RECORDS_AT + i * RECORD_BYTES;
+                    MuxWaitRecord { hsem: get_u32(b, at), user: get_u32(b, at + 4) }
+                }).collect();
+                let bad = |(i, r): (usize, &MuxWaitRecord)| slot_of(r.hsem).is_none()
+                    || records[..i].iter().any(|o| o.hsem == r.hsem);
+                if records.iter().enumerate().any(bad) { return None; }
+                State::MuxWait { records, list }
             }
             _ => return None,
         };
@@ -200,6 +231,19 @@ impl Slot {
                     put_u32(&mut b, 44, *tid);
                 }
             }
+            State::MuxWait { records, list } => {
+                put_u32(&mut b, 0, KIND_MUXWAIT);
+                put_u32(&mut b, 12, records.len() as u32);
+                put_u32(&mut b, 16, match list {
+                    Some(SemKind::Event) => KIND_EVENT,
+                    Some(SemKind::Mutex) => KIND_MUTEX,
+                    _ => 0,
+                });
+                for (i, r) in records.iter().enumerate() {
+                    put_u32(&mut b, RECORDS_AT + i * RECORD_BYTES, r.hsem);
+                    put_u32(&mut b, RECORDS_AT + i * RECORD_BYTES + 4, r.user);
+                }
+            }
         }
         if let Some(n) = &self.name {
             put_u32(&mut b, 48, n.len() as u32);
@@ -217,7 +261,11 @@ impl Slot {
     }
 
     pub fn kind(&self) -> SemKind {
-        match self.state { State::Event { .. } => SemKind::Event, State::Mutex { .. } => SemKind::Mutex }
+        match self.state {
+            State::Event { .. } => SemKind::Event,
+            State::Mutex { .. } => SemKind::Mutex,
+            State::MuxWait { .. } => SemKind::MuxWait,
+        }
     }
 
     fn opens_of(&self, os2pid: u32) -> u32 {
@@ -251,7 +299,7 @@ impl Slot {
     pub fn mutex_available(&self, who: Owner) -> bool {
         match &self.state {
             State::Mutex { owner, died, .. } => died.is_some() || owner.is_none_or(|o| o == who),
-            State::Event { .. } => false,
+            State::Event { .. } | State::MuxWait { .. } => false,
         }
     }
 
@@ -273,6 +321,9 @@ impl Slot {
         false
     }
 }
+
+/// The kinds a slot can hold.
+const ALL_KINDS: [SemKind; 3] = [SemKind::Event, SemKind::Mutex, SemKind::MuxWait];
 
 /// The handle of slot `i` with generation `generation_no`.
 pub fn handle(i: usize, generation_no: u32) -> u32 {
@@ -618,8 +669,7 @@ impl SharedSems {
     }
 
     pub fn kind_of(&self, h: u32) -> Option<SemKind> {
-        [SemKind::Event, SemKind::Mutex].into_iter()
-            .find(|&k| self.with_mine(h, k, |_| ()).is_ok())
+        ALL_KINDS.into_iter().find(|&k| self.with_mine(h, k, |_| ()).is_ok())
     }
 
     pub fn post(&self, h: u32) -> u32 {
@@ -674,7 +724,7 @@ impl SharedSems {
 
     /// The flags and name of `h` (any kind this process has open).
     pub fn attr(&self, h: u32) -> Option<u32> {
-        [SemKind::Event, SemKind::Mutex].into_iter().find_map(|k| self.with_mine(h, k, |s| s.attr).ok())
+        ALL_KINDS.into_iter().find_map(|k| self.with_mine(h, k, |s| s.attr).ok())
     }
 
     /// Thread `tid` of this process ended: its mutexes are owner-died.
@@ -714,6 +764,109 @@ impl SharedSems {
         });
     }
 
+    // ── Shared muxwait lists ──
+
+    /// The kind `records` join a list of `existing` ones as: each a shared
+    /// event or mutex this process has open (the caller turns away private
+    /// handles first).
+    fn check_records(&self, l: &Locked, list: Option<SemKind>, existing: &[MuxWaitRecord],
+                     records: &[MuxWaitRecord]) -> Result<Option<SemKind>, u32> {
+        let mine = |h: u32| ALL_KINDS.into_iter().find(|&k| {
+            l.by_handle(h, k).is_some_and(|(_, s)| s.opens_of(self.me.os2pid) > 0)
+        });
+        check_mux_records(list, existing, records, mine)
+    }
+
+    /// `DosCreateMuxWaitSem` of a shared list: its handle.
+    pub fn create_mux(&self, name: Option<String>, attr: u32, records: &[MuxWaitRecord]) -> Result<u32, u32> {
+        check_mux_attr(attr)?;
+        let list = self.with_lock(|l| self.check_records(l, None, &[], records))?;
+        self.create_sem(name, attr, State::MuxWait { records: records.to_vec(), list })
+    }
+
+    /// `DosAddMuxWaitSem` to a shared list.
+    pub fn add_mux_record(&self, h: u32, rec: MuxWaitRecord) -> u32 {
+        self.with_lock(|l| {
+            let Some((i, mut s)) = l.by_handle(h, SemKind::MuxWait) else { return ERROR_INVALID_HANDLE };
+            if s.opens_of(self.me.os2pid) == 0 { return ERROR_INVALID_HANDLE; }
+            let State::MuxWait { records, list } = &mut s.state else { return ERROR_INVALID_HANDLE };
+            match self.check_records(l, *list, records, &[rec]) {
+                Ok(k) => {
+                    *list = k;
+                    records.push(rec);
+                    l.put(i, &s);
+                    NO_ERROR
+                }
+                Err(e) => e,
+            }
+        })
+    }
+
+    /// `DosDeleteMuxWaitSem` from a shared list.
+    pub fn delete_mux_record(&self, h: u32, hsem: u32) -> u32 {
+        self.with_mine(h, SemKind::MuxWait, |s| {
+            let State::MuxWait { records, list } = &mut s.state else { return ERROR_INVALID_HANDLE };
+            if records.is_empty() { return ERROR_EMPTY_MUXWAIT; }
+            let Some(at) = records.iter().position(|r| r.hsem == hsem) else { return ERROR_INVALID_HANDLE };
+            records.remove(at);
+            if records.is_empty() { *list = None; }
+            NO_ERROR
+        }).unwrap_or_else(|e| e)
+    }
+
+    /// `DosQueryMuxWaitSem` of a shared list: the records and the flags.
+    pub fn query_mux(&self, h: u32) -> Result<(Vec<MuxWaitRecord>, u32), u32> {
+        self.with_mine(h, SemKind::MuxWait, |s| match &s.state {
+            State::MuxWait { records, .. } => (records.clone(), s.attr | DC_SEM_SHARED),
+            _ => (Vec::new(), s.attr),
+        })
+    }
+
+    /// One look for thread `tid` waiting on shared list `h`, as
+    /// `SemaphoreManager::try_mux`: the user value of the record that ends
+    /// the wait and whether a mutex it took had lost its owner, or `None`.
+    /// A member nobody has open any more is `ERROR_INVALID_HANDLE`.
+    pub fn try_mux(&self, h: u32, tid: u32) -> Result<Option<(u32, bool)>, u32> {
+        let who = Owner { proc: self.me, tid };
+        self.with_lock(|l| {
+            let (_, mux) = l.by_handle(h, SemKind::MuxWait).ok_or(ERROR_INVALID_HANDLE)?;
+            if mux.opens_of(self.me.os2pid) == 0 { return Err(ERROR_INVALID_HANDLE); }
+            let State::MuxWait { records, list } = &mux.state else { return Err(ERROR_INVALID_HANDLE) };
+            let (Some(last), Some(want)) = (records.last(), *list) else { return Err(ERROR_EMPTY_MUXWAIT) };
+            let wait_all = mux.attr & DCMW_WAIT_ALL != 0;
+            let mut members = Vec::with_capacity(records.len());
+            for r in records {
+                let (i, s) = l.by_handle(r.hsem, want).ok_or(ERROR_INVALID_HANDLE)?;
+                let mut swept = s.clone();
+                swept.sweep(&*self.alive);
+                members.push((i, s, swept));
+            }
+            let ready = |s: &Slot| match &s.state {
+                State::Event { post_count } => *post_count > 0,
+                _ => s.mutex_available(who),
+            };
+            let take = |s: &mut Slot| match s.state {
+                State::Event { .. } => { s.with_event(|e| e.consume()); false }
+                _ => s.mutex_acquire(who),
+            };
+            let chosen: Vec<usize> = if wait_all {
+                if !members.iter().all(|(_, _, s)| ready(s)) { return Ok(None); }
+                (0..members.len()).collect()
+            } else {
+                match members.iter().position(|(_, _, s)| ready(s)) {
+                    Some(i) => vec![i],
+                    None => return Ok(None),
+                }
+            };
+            let died = chosen.iter().fold(false, |d, &k| take(&mut members[k].2) | d);
+            for (i, before, after) in &members {
+                if after != before { l.put(*i, after); }
+            }
+            let user = if wait_all { last.user } else { records[chosen[0]].user };
+            Ok(Some((user, died)))
+        })
+    }
+
     /// Run `f` on several semaphores at once, all under the lock (muxwait
     /// lists): `f` gets a reader/changer for this process's semaphores.
     pub fn with_many<R>(&self, f: impl FnOnce(&mut Many) -> R) -> R {
@@ -740,7 +893,7 @@ impl Many<'_, '_> {
     }
 
     pub fn kind_of(&self, h: u32) -> Option<SemKind> {
-        [SemKind::Event, SemKind::Mutex].into_iter().find(|&k| self.get(h, k).is_some())
+        ALL_KINDS.into_iter().find(|&k| self.get(h, k).is_some())
     }
 
     pub fn event_posted(&self, h: u32) -> Option<bool> {
@@ -1056,6 +1209,142 @@ mod tests {
         assert_eq!(l.dos_release_mutex_sem(1, m), ERROR_NOT_OWNER);
         assert_eq!(l.dos_close_mutex_sem(m), NO_ERROR);
         assert_eq!(l.dos_close_mutex_sem(m), ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn muxwait_slots_round_trip_and_reject_junk() {
+        let rec = |hsem, user| MuxWaitRecord { hsem, user };
+        let m = Slot {
+            generation_no: 1, attr: DC_SEM_SHARED | DCMW_WAIT_ALL, name: Some("\\SEM32\\MUX".into()),
+            state: State::MuxWait { records: vec![rec(handle(3, 0), 7), rec(handle(4, 2), 8)], list: Some(SemKind::Mutex) },
+            openers: vec![(proc(1, 100), 1)],
+        };
+        assert_eq!(Slot::decode(&m.encode()), Some(m.clone()));
+        let empty = Slot { state: State::MuxWait { records: vec![], list: None }, attr: DCMW_WAIT_ANY, ..m.clone() };
+        assert_eq!(Slot::decode(&empty.encode()), Some(empty.clone()));
+        let mut b = m.encode();
+        put_u32(&mut b, 12, MAX_MUXWAIT_SEMS as u32 + 1);
+        assert_eq!(Slot::decode(&b), None, "too many records");
+        let mut b = m.encode();
+        put_u32(&mut b, 16, 0);
+        assert_eq!(Slot::decode(&b), None, "records without a kind");
+        let mut b = m.encode();
+        put_u32(&mut b, 16, KIND_MUXWAIT);
+        assert_eq!(Slot::decode(&b), None, "a muxwait list in a list");
+        let mut b = m.encode();
+        put_u32(&mut b, RECORDS_AT, 5);
+        assert_eq!(Slot::decode(&b), None, "a private handle");
+        let mut b = m.encode();
+        put_u32(&mut b, RECORDS_AT + RECORD_BYTES, handle(3, 0));
+        assert_eq!(Slot::decode(&b), None, "a handle twice");
+        let mut b = m.encode();
+        put_u32(&mut b, 8, DCMW_WAIT_ALL | DCMW_WAIT_ANY);
+        assert_eq!(Slot::decode(&b), None, "both waits");
+    }
+
+    #[test]
+    fn processes_share_muxwait_lists() {
+        let (a, b) = pair();
+        let rec = |hsem, user| MuxWaitRecord { hsem, user };
+        let e1 = a.create_sem(None, DC_SEM_SHARED, State::Event { post_count: 0 }).unwrap();
+        let e2 = a.create_sem(None, DC_SEM_SHARED, State::Event { post_count: 0 }).unwrap();
+        let mux = a.create_mux(Some("\\SEM32\\ANY".into()), DCMW_WAIT_ANY, &[rec(e1, 1), rec(e2, 2)]).unwrap();
+        assert_eq!(a.kind_of(mux), Some(SemKind::MuxWait));
+        assert_eq!(a.create_mux(None, DCMW_WAIT_ANY, &[rec(mux, 1)]), Err(ERROR_WRONG_TYPE), "no muxwait in a list");
+        assert_eq!(a.create_mux(None, DCMW_WAIT_ANY, &[rec(e1, 1), rec(e1, 2)]), Err(ERROR_DUPLICATE_HANDLE));
+        assert_eq!(b.create_mux(None, DCMW_WAIT_ANY, &[rec(e1, 1)]), Err(ERROR_INVALID_HANDLE), "b has not opened e1");
+        assert_eq!(a.create_mux(None, 0, &[rec(e1, 1)]), Err(ERROR_INVALID_PARAMETER));
+        assert_eq!(b.try_mux(mux, 1), Err(ERROR_INVALID_HANDLE), "not opened by b yet");
+        assert_eq!(b.open(SemKind::MuxWait, Some("\\SEM32\\ANY"), 0), Ok(mux));
+        assert_eq!(b.open(SemKind::Event, Some("\\SEM32\\ANY"), 0), Err(ERROR_SEM_NOT_FOUND));
+        // b waits on members only a has open.
+        assert_eq!(b.try_mux(mux, 1), Ok(None));
+        let seen = b.generation();
+        assert_eq!(a.post(e2), NO_ERROR);
+        assert_ne!(b.generation(), seen);
+        assert_eq!(b.try_mux(mux, 1), Ok(Some((2, false))));
+        assert_eq!(b.query_mux(mux), Ok((vec![rec(e1, 1), rec(e2, 2)], DCMW_WAIT_ANY | DC_SEM_SHARED)));
+        // The list changes for every process.
+        assert_eq!(a.delete_mux_record(mux, e2), NO_ERROR);
+        assert_eq!(a.delete_mux_record(mux, e2), ERROR_INVALID_HANDLE);
+        assert_eq!(b.try_mux(mux, 1), Ok(None), "e2 left the list");
+        assert_eq!(a.delete_mux_record(mux, e1), NO_ERROR);
+        assert_eq!(b.try_mux(mux, 1), Err(ERROR_EMPTY_MUXWAIT));
+        assert_eq!(a.delete_mux_record(mux, e1), ERROR_EMPTY_MUXWAIT);
+        assert_eq!(a.add_mux_record(mux, rec(e1, 5)), NO_ERROR);
+        assert_eq!(a.add_mux_record(mux, rec(e1, 5)), ERROR_DUPLICATE_HANDLE);
+        assert_eq!(b.add_mux_record(mux, rec(e2, 6)), ERROR_INVALID_HANDLE, "b has not opened e2");
+        // A member closed by its last opener ends the wait.
+        assert_eq!(a.close(SemKind::Event, e1), NO_ERROR);
+        assert_eq!(b.try_mux(mux, 1), Err(ERROR_INVALID_HANDLE));
+        assert_eq!(a.close(SemKind::MuxWait, mux), NO_ERROR);
+        assert_eq!(b.close(SemKind::MuxWait, mux), NO_ERROR);
+        assert_eq!(b.open(SemKind::MuxWait, None, mux), Err(ERROR_INVALID_HANDLE), "deleted with the last close");
+    }
+
+    #[test]
+    fn a_shared_muxwait_takes_every_mutex_and_sees_dead_owners() {
+        let (a, b) = pair();
+        let rec = |hsem, user| MuxWaitRecord { hsem, user };
+        let held = State::Mutex { owner: Some(Owner { proc: proc(1, 100), tid: 1 }), count: 1, died: None };
+        let m1 = a.create_sem(None, DC_SEM_SHARED, held).unwrap();
+        let m2 = a.create_sem(None, DC_SEM_SHARED, State::Mutex { owner: None, count: 0, died: None }).unwrap();
+        let mux = a.create_mux(None, DC_SEM_SHARED | DCMW_WAIT_ALL, &[rec(m1, 1), rec(m2, 2)]).unwrap();
+        assert_eq!(b.open(SemKind::MuxWait, None, mux), Ok(mux));
+        assert_eq!(b.try_mux(mux, 4), Ok(None), "a owns m1");
+        assert_eq!(a.try_mux(mux, 1), Ok(Some((2, false))), "the owner takes both");
+        assert_eq!(a.query_mutex(m1), Ok((1, 1, 2, NO_ERROR)));
+        assert_eq!(a.query_mutex(m2), Ok((1, 1, 1, NO_ERROR)));
+        assert_eq!(b.try_mux(mux, 4), Ok(None));
+        assert_eq!(a.release(m2, 1), NO_ERROR);
+        assert_eq!(b.try_mux(mux, 4), Ok(None), "all of them, not just m2");
+        a.owner_ended(1);
+        assert_eq!(b.try_mux(mux, 4), Ok(Some((2, true))), "m1's owner died");
+        assert_eq!(a.query_mutex(m1), Ok((2, 4, 1, NO_ERROR)));
+        assert_eq!(a.query_mutex(m2), Ok((2, 4, 1, NO_ERROR)));
+    }
+
+    #[test]
+    fn the_api_calls_route_shared_muxwait_lists() {
+        let l = loader_with_sems();
+        let ph = DYNAMIC_ALLOC_BASE;
+        assert_eq!(l.dos_create_event_sem(0, ph, DC_SEM_SHARED, 0), NO_ERROR);
+        let shared = l.guest_read::<u32>(ph).unwrap();
+        assert_eq!(l.dos_create_event_sem(0, ph + 4, 0, 0), NO_ERROR);
+        let private = l.guest_read::<u32>(ph + 4).unwrap();
+        l.guest_write::<u32>(ph + 16, shared);
+        l.guest_write::<u32>(ph + 20, 10);
+        l.guest_write::<u32>(ph + 24, private);
+        l.guest_write::<u32>(ph + 28, 11);
+        let name = ph + 64;
+        l.guest_write_bytes(name, b"\\SEM32\\LIST\0");
+        assert_eq!(l.dos_create_mux_wait_sem(name, ph + 8, 2, ph + 16, DCMW_WAIT_ANY), ERROR_WRONG_TYPE,
+                   "a shared list holds shared semaphores only");
+        l.guest_write::<u32>(ph + 24, 0x1234);
+        assert_eq!(l.dos_create_mux_wait_sem(name, ph + 8, 2, ph + 16, DCMW_WAIT_ANY), ERROR_INVALID_HANDLE);
+        assert_eq!(l.dos_create_mux_wait_sem(name, ph + 8, 1, ph + 16, DCMW_WAIT_ANY), NO_ERROR);
+        let mux = l.guest_read::<u32>(ph + 8).unwrap();
+        assert!(is_shared(mux), "a named muxwait list is the session's");
+        assert_eq!(l.dos_create_mux_wait_sem(name, ph + 12, 1, ph + 16, DCMW_WAIT_ANY), ERROR_DUPLICATE_NAME);
+        assert_eq!(l.dos_wait_mux_wait_sem(1, mux, 0, ph + 40), ERROR_TIMEOUT);
+        assert_eq!(l.dos_post_event_sem(shared), NO_ERROR);
+        assert_eq!(l.dos_wait_mux_wait_sem(1, mux, 0, ph + 40), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(ph + 40), Some(10));
+        l.guest_write::<u32>(ph + 24, private);
+        assert_eq!(l.dos_add_mux_wait_sem(mux, ph + 24), ERROR_WRONG_TYPE);
+        l.guest_write::<u32>(ph + 48, 4);
+        assert_eq!(l.dos_query_mux_wait_sem(mux, ph + 48, ph + 80, ph + 52), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(ph + 48), Some(1));
+        assert_eq!(l.guest_read::<u32>(ph + 80), Some(shared));
+        assert_eq!(l.guest_read::<u32>(ph + 52), Some(DCMW_WAIT_ANY | DC_SEM_SHARED));
+        l.guest_write::<u32>(ph + 12, 0);
+        assert_eq!(l.dos_open_mux_wait_sem(name, ph + 12), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(ph + 12), Some(mux));
+        assert_eq!(l.dos_delete_mux_wait_sem(mux, shared), NO_ERROR);
+        assert_eq!(l.dos_wait_mux_wait_sem(1, mux, 0, ph + 40), ERROR_EMPTY_MUXWAIT);
+        assert_eq!(l.dos_close_mux_wait_sem(mux), NO_ERROR);
+        assert_eq!(l.dos_close_mux_wait_sem(mux), NO_ERROR);
+        assert_eq!(l.dos_close_mux_wait_sem(mux), ERROR_INVALID_HANDLE);
     }
 
     #[test]

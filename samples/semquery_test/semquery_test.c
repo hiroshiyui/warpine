@@ -193,7 +193,7 @@ static void mutex_query( void )
 
 static void muxwait_lists( void )
 {
-    HEV       ev[MAX_MUX + 1];
+    HEV       ev[MAX_MUX + 1], priv;
     HMTX      m1, m2;
     HMUX      hmux, opened, mmux;
     SEMRECORD rec[MAX_MUX + 1], got[4];
@@ -201,8 +201,9 @@ static void muxwait_lists( void )
     PID       pid;
     TID       tid;
 
+    /* Shared events: a named (so shared) list holds shared semaphores only. */
     for( i = 0; i <= MAX_MUX; i++ ) {
-        DosCreateEventSem( NULL, &ev[i], 0, FALSE );
+        DosCreateEventSem( NULL, &ev[i], DC_SEM_SHARED, FALSE );
         rec[i].hsemCur = (HSEM)ev[i];
         rec[i].ulUser = 100 + i;
     }
@@ -233,6 +234,11 @@ static void muxwait_lists( void )
     check( "-> DCMW_WAIT_ANY", ( attr & ( DCMW_WAIT_ANY | DCMW_WAIT_ALL ) ), DCMW_WAIT_ANY );
     check( "-> named: shared", ( attr & DC_SEM_SHARED ), DC_SEM_SHARED );
 
+    DosCreateEventSem( NULL, &priv, 0, FALSE );
+    got[0].hsemCur = (HSEM)priv; got[0].ulUser = 7;
+    check( "DosAddMuxWaitSem(a private event to a shared list)", DosAddMuxWaitSem( hmux, &got[0] ),
+           ERROR_WRONG_TYPE );
+    DosCloseEventSem( priv );
     check( "DosAddMuxWaitSem(already in the list)", DosAddMuxWaitSem( hmux, &rec[1] ), ERROR_DUPLICATE_HANDLE );
     got[0].hsemCur = (HSEM)m1; got[0].ulUser = 7;
     check( "DosAddMuxWaitSem(a mutex to an event list)", DosAddMuxWaitSem( hmux, &got[0] ), ERROR_WRONG_TYPE );

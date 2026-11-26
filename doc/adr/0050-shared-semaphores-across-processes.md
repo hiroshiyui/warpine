@@ -2,7 +2,7 @@
 
 - **Status:** Accepted; extends ADR-0035 and ADR-0049
 - **Date:** 2026-11-19
-- **Sources:** `src/loader/shared_sem.rs`, `src/loader/ipc.rs` (`SemaphoreManager::shared`, `try_mixed_mux`), `src/loader/doscalls.rs` (the `Dos*Sem` calls), `src/loader/session_threads.rs`, `src/loader/inherit.rs`; `samples/shsem_test`; IBM *Control Program Programming Reference* (`DosCreateEventSem`, `DosOpenEventSem`, `DosCreateMutexSem`, `DosRequestMutexSem`, `DosQueryMutexSem`, `DosCreateMuxWaitSem`), as on EDM/2
+- **Sources:** `src/loader/shared_sem.rs`, `src/loader/ipc.rs` (`SemaphoreManager::shared`, `try_mixed_mux`, `check_mux_records`), `src/loader/doscalls.rs` (the `Dos*Sem` calls), `src/loader/session_threads.rs`, `src/loader/inherit.rs`; `samples/shsem_test`; IBM *Control Program Programming Reference* (`DosCreateEventSem`, `DosOpenEventSem`, `DosCreateMutexSem`, `DosRequestMutexSem`, `DosQueryMutexSem`, `DosCreateMuxWaitSem`, `DosOpenMuxWaitSem`, `DosAddMuxWaitSem`), as on EDM/2
 
 ## Context
 
@@ -61,3 +61,15 @@ The shared-memory table of ADR-0049 is a file read under a directory lock, which
 ## Addendum (2026-11-24): a reaped child's semaphores swept at once
 
 Every path that reaps a child (`SharedState::child_exit_code`) sweeps the segment (`Locked::sweep`) as well as the shared-memory table (ADR-0049 addendum): a semaphore only a killed child had open is deleted, and a mutex it owned is in the owner-died state, as soon as its parent has seen it end, not at the next look by any process.
+
+## Addendum (2026-11-26): shared muxwait semaphores
+
+Named and `DC_SEM_SHARED` muxwait semaphores now live in the segment too, lifting the limit above.
+
+- **Slots.** A third slot kind, `KIND_MUXWAIT`: the flags (`DCMW_WAIT_ANY` / `DCMW_WAIT_ALL`, checked on decode), the list's kind (event, mutex or none while empty) and up to 64 `SEMRECORD`s (handle, user value) at offset 1024. Slots grow from 1 KB to 2 KB, so the segment is 1 MB + 4 KB, still sparse; the header's version goes to 2, and a child refuses a segment of another version. Decoding checks the count, that the kind matches it, that every handle is a shared one and that none repeats.
+- **Members.** A shared list holds shared events or mutexes only; a handle of a private semaphore is `ERROR_WRONG_TYPE` (unverified: which error a private member gets). Creating a list or adding to it checks the members against the semaphores the calling process has open, with the same rules as private lists (`ipc::check_mux_records`).
+- **Waiting.** `DosWaitMuxWaitSem` on a shared list goes through `wait_shared_sem`. Each look (`SharedSems::try_mux`) finds the members by handle whoever has them open, sweeps them for dead owners, and takes them, all under the segment's lock. A process that opened only the list can therefore wait on members it never opened itself (Warpine's reading, unverified). A member that no process has open any more ends the wait with `ERROR_INVALID_HANDLE`, as for private lists.
+- **Changes.** `DosAddMuxWaitSem` / `DosDeleteMuxWaitSem` by any process that has the list open change it for all of them; every change wakes the session's waiters. `DosQueryMuxWaitSem` reports `DC_SEM_SHARED` for every shared list (unverified).
+- **Without a session** named muxwait lists stay within their process, as before.
+
+Tests: `shared_sem.rs` (muxwait slots and junk, lists of events and of mutexes across two simulated processes, owner death through a list, the API routing); `samples/shsem_test` (the child opens, reads and adds to the parent's named list, and the parent's wait ends with the record the child added).
