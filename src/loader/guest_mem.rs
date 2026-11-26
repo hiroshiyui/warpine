@@ -161,10 +161,18 @@ impl GuestMemory {
     /// the KVM guest physical address space.
     ///
     /// Panics if `mmap` fails (unrecoverable — no guest memory → no execution).
+    ///
+    /// The mapping starts on a 2 MB boundary, so the host can back the
+    /// guest's 2 MB pages (PAE, ADR-0131) with large pages of its own; an
+    /// unaligned mapping is suspected in the random triple faults of PAE
+    /// guests on some nested hosts (ADR-0131 addendum).
     pub fn alloc(size: usize) -> Self {
+        const ALIGN: usize = 2 << 20;
+        let span = size + ALIGN;
+        // SAFETY: a new anonymous mapping; the result is checked.
         let raw = unsafe {
             libc::mmap(
-                ptr::null_mut(), size,
+                ptr::null_mut(), span,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
                 -1, 0,
@@ -177,7 +185,16 @@ impl GuestMemory {
                 std::io::Error::last_os_error()
             );
         }
-        let p = raw as *mut u8;
+        let start = raw as usize;
+        let head = start.next_multiple_of(ALIGN) - start;
+        let tail = span - head - size;
+        // SAFETY: both ranges lie inside the mapping just made, outside the
+        // `size` bytes kept from `start + head`; nothing refers to them.
+        unsafe {
+            if head > 0 { libc::munmap(raw, head); }
+            if tail > 0 { libc::munmap((start + head + size) as *mut libc::c_void, tail); }
+        }
+        let p = (start + head) as *mut u8;
         unsafe { ptr::write_bytes(p, 0, size); }
         GuestMemory { ptr: p, size, arena: std::sync::RwLock::new(None) }
     }
