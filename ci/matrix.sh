@@ -48,20 +48,6 @@ fuzz_all() {
     done
 }
 
-# The integration tests (`cargo test --test integration ...`). On GitHub's
-# runners only, a run that failed because guests triple-faulted (some of
-# them cannot run PAE guests, ADR-0131 addendum) is a warning on the run's
-# page, not a failure; any other failure still fails the job.
-integration_tests() {
-    local log="$CARGO_TARGET_DIR/integration.log"
-    if "$@" 2>&1 | tee "$log"; then return 0; fi
-    if [ -n "${GITHUB_ACTIONS:-}" ] && grep -q "Triple Fault (guest shutdown" "$log"; then
-        echo "::warning::Guests triple-faulted on this runner (it cannot run PAE guests, ADR-0131); the integration tests' failures are not counted"
-        return 0
-    fi
-    return 1
-}
-
 # The host's processor and KVM settings, for runners that cannot run PAE
 # guests (ADR-0131 addendum): is nested paging (npt / ept) on?
 step "host"
@@ -81,10 +67,8 @@ case "$MODE" in
         step "Open Watcom (pinned snapshot) and its samples"
         ./vendor/setup_watcom.sh
         make -C samples
-        step "unit tests"
-        cargo test --bins -- --test-threads="$JOBS"
-        step "integration tests"
-        integration_tests cargo test --test integration -- --test-threads="$JOBS"
+        step "unit and integration tests"
+        cargo test -- --test-threads="$JOBS"
         step "clippy"
         cargo clippy --all-targets -- -D warnings
         step "generators"
@@ -126,7 +110,7 @@ case "$MODE" in
         # Under their own tag, apart from a workstation's own builds.
         OUT_TAG="ci-$MODE" samples/build_sdk.sh "$MODE"
         step "integration tests on the $MODE builds"
-        WARPINE_SAMPLES="ci-$MODE" integration_tests cargo test --test integration -- --test-threads="$JOBS"
+        WARPINE_SAMPLES="ci-$MODE" cargo test --test integration -- --test-threads="$JOBS"
         ;;
     *)
         echo "ci/matrix.sh: unknown entry $MODE (watcom, gcc, clang, fuzz or probe)" >&2
