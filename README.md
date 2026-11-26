@@ -268,7 +268,7 @@ crates/                Standalone guest crates (NOT part of the host workspace)
   warpine-os2/         High-level wrappers: file::write_stdout, process::exit
 ```
 
-See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals documentation, [doc/reference_manual.md](doc/reference_manual.md) for the user reference manual, and [doc/adr/](doc/adr/README.md) for the architecture decision records — why Warpine is built the way it is.
+See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals documentation, [doc/reference_manual.md](doc/reference_manual.md) for the user reference manual, [doc/adr/](doc/adr/README.md) for the architecture decision records — why Warpine is built the way it is — and [doc/glossary.md](doc/glossary.md) for the OS/2 and Warpine terms they use.
 
 ## Prerequisites
 

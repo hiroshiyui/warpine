@@ -1,0 +1,51 @@
+# Glossary
+
+The OS/2 and Warpine terms these documents use, in alphabetical order. OS/2 terms follow IBM's public references; Warpine's own terms point to the ADR that introduced them.
+
+- **ADR** — architecture decision record: a short document in `doc/adr/` recording one decision, its context and its consequences (Nygard format).
+- **API thunk** — the stub at `MAGIC_API_BASE` + ordinal that an imported OS/2 call jumps to; its `INT 3` leaves the guest so that Warpine runs the call (`api_dispatch.rs`).
+- **Call chain** — Warpine running guest code from the host (a window procedure, a hook, an exception handler) on the guest's own thread, and continuing when it returns (ADR-0026).
+- **Cell** — in an INF / HLP file, a block of encoded panel text with its own local dictionary (ADR-0132).
+- **CMD** — Warpine's built-in command processor, OS/2's `CMD.EXE` work-alike (ADR-0075–0080).
+- **Codepage** — the character set a process's text is in (437, 850, 932 …); Warpine converts between it and the host's UTF-8.
+- **Desktop server** — the one process per session that composites every PM program's windows and routes input (ADR-0052).
+- **DLL** — dynamic link library: an OS/2 module of shared code and data, loaded at start or by `DosLoadModule`.
+- **EA** — extended attribute: named data attached to a file beside its contents (`.LONGNAME`, `.TYPE`); Warpine keeps EAs in host xattrs or sidecar files.
+- **EAOP2, FEA2LIST, GEA2LIST** — the structures EA calls take: an operation block naming a list of EAs with values (FEA2) or of names only (GEA2).
+- **FHLOCK** — the lock ID that the `DosProtect*` calls require to touch a protected file handle.
+- **GPI** — Graphics Programming Interface: PM's drawing calls (`Gpi*`).
+- **Guard page** — a page whose first touch raises `XCPT_GUARD_PAGE_VIOLATION`, used to grow stacks and buffers (ADR-0114).
+- **Guest** — the OS/2 program Warpine runs inside a KVM virtual machine; the **host** is Warpine itself and Linux.
+- **HLP, INF, IPF** — OS/2's help formats: IPF is the tagged source language; an INF file is a compiled book read with `VIEW`, an HLP file is a compiled help library a program shows through the Help Manager (ADR-0132).
+- **KBD, MOU, VIO** — the OS/2 keyboard, mouse and video subsystems for text-mode programs (`Kbd*`, `Mou*`, `Vio*`).
+- **KVM** — Linux's kernel virtual machine, which runs guest code natively on the processor.
+- **Landlock** — the Linux security module each Warpine process uses to confine its own file access (ADR-0111).
+- **LIBPATH** — the list of directories searched for DLLs, set in `CONFIG.SYS`.
+- **lx-link** — Warpine's linker: builds LX programs and DLLs from i386 ELF objects made by GCC or clang (ADR-0095).
+- **LX, NE** — the executable formats: LX ("linear executable") for 32-bit OS/2 programs, NE ("new executable") for 16-bit OS/2 1.x ones.
+- **Muxwait semaphore** — a semaphore that waits on a list of event or mutex semaphores, for any or all of them.
+- **NX** — no-execute: a processor feature that keeps stacks, heaps and data from running as code; Warpine requires it (ADR-0131).
+- **Ordinal** — the number by which a DLL exports a function; OS/2 programs import most system calls by ordinal (ADR-0123).
+- **os2rc, os2msg, somidl** — Warpine's resource compiler, message-file compiler and SOM IDL compiler (ADR-0099, ADR-0105, ADR-0122).
+- **Owner died** — the state of a mutex semaphore whose owning thread or process ended without releasing it (`ERROR_SEM_OWNER_DIED`).
+- **PAE** — Physical Address Extension: the 64-bit page-table format of 32-bit x86 that carries the NX bit (ADR-0131).
+- **Paging block** — the four pages a thread's page tables, thread-local page, TSS and ring-0 stack take in Warpine's paging arena (ADR-0088, ADR-0115).
+- **Panel** — one page of an INF / HLP file, listed in its table of contents (ADR-0132).
+- **PIB, TIB** — the process and thread information blocks OS/2 gives every process and thread (`DosGetInfoBlocks`).
+- **PM** — Presentation Manager: OS/2's graphical user interface and its window calls (`Win*`).
+- **Process tables** — the page tables all threads of a process share, which hold the page states of its memory (ADR-0114, ADR-0131).
+- **Protected memory** — Warpine's own structures in guest memory (GDT, IDT, stubs, page tables), which no API call writes through a guest's pointer (ADR-0113).
+- **REXX** — OS/2's scripting language; Warpine has its own interpreter and the REXX API (ADR-0081).
+- **Ring 0, ring 3** — the processor's most and least privileged levels; every guest runs at ring 3 (ADR-0113).
+- **SDK** — Warpine's C / C++ headers, runtime and tools for building OS/2 programs with GCC or clang (ADR-0096).
+- **seccomp** — the Linux system-call filter each Warpine process installs behind Landlock (ADR-0124).
+- **Session** — the Warpine processes started from one first program, which share one desktop, semaphores and shared memory (ADR-0020, ADR-0052).
+- **Shared arena** — the 32 MB of guest memory at the same address in every process of a session, holding shared memory blocks (ADR-0049).
+- **SOM** — System Object Model: IBM's language-neutral object system, on which the Workplace Shell is built (ADR-0122).
+- **Thread-local memory (TLM)** — the per-thread words that `DosAllocThreadLocalMemory` hands out, at the same address in every thread (ADR-0088).
+- **TSS** — task state segment: the processor structure giving each thread its ring-0 stack (ADR-0113).
+- **Unverified** — a behaviour Warpine chose where public documentation is silent; each is listed in `doc/unverified.md`.
+- **vCPU** — a virtual processor; each OS/2 thread runs on its own, in a host thread of its own.
+- **VFS** — Warpine's virtual file system, which maps OS/2 drives to host directories (`vfs.rs`).
+- **wipfc** — Open Watcom's IPF compiler, the public specification and test oracle for Warpine's INF / HLP reader (ADR-0132).
+- **WPS** — Workplace Shell: OS/2's object-oriented desktop, whose classes Warpine provides as SOM code in the SDK (ADR-0129).

@@ -12,7 +12,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2: 32-bit (LX
   - no IBM binaries, ROM dumps or disassembly of OS/2 system libraries;
   - Warpine's own choices are marked unverified, in their ADR and [`doc/unverified.md`](doc/unverified.md);
   - the test oracle is the observable behaviour of Open Watcom-built programs.
-- **Docs:** [`doc/developer_guide.md`](doc/developer_guide.md) (how it is built), [`doc/reference_manual.md`](doc/reference_manual.md) (what the APIs do; architecture diagram at its head), [`doc/adr/`](doc/adr/README.md) (why), [`doc/TODOs.md`](doc/TODOs.md) (open work), [`CHANGELOG.md`](CHANGELOG.md), [`samples/README.md`](samples/README.md).
+- **Docs:** [`doc/developer_guide.md`](doc/developer_guide.md) (how it is built), [`doc/reference_manual.md`](doc/reference_manual.md) (what the APIs do; architecture diagram at its head), [`doc/adr/`](doc/adr/README.md) (why), [`doc/TODOs.md`](doc/TODOs.md) (open work), [`doc/glossary.md`](doc/glossary.md) (terms), [`CHANGELOG.md`](CHANGELOG.md), [`samples/README.md`](samples/README.md).
 
 ## Build & test
 
