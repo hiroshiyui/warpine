@@ -8,7 +8,7 @@ Open work only, highest priority first. Finished work is in the [CHANGELOG](../C
 - [ ] **Per-application permissions**: a manifest per program naming the drives, network and devices it gets (and whether it needs execute protection off, ADR-0131), narrowing Landlock / seccomp per process (ADR-0066, 0111, 0124); the desktop server asking the user when a program reaches for more.
 - [ ] **Host confinement** (Landlock ADR-0111, seccomp ADR-0124): `ci/check_desktop.sh` passed on Wayland with PipeWire and NVIDIA (2026-11-25: PM and VIO windows and sound, the desktop server; the shader cache and `/proc` thread naming stay refused, ADR-0111 addendum); still to run on X11, native PulseAudio and other GPU drivers, widening the policy where it reports a difference; namespaces only if those leave gaps.
 - [ ] **Audit 2026-11-25, left**: the shared arena's residual windows (check-then-copy against a free on another thread; TLB flushes do not wait for every vCPU); single-value `guest_read`s of guest-named addresses still reach Warpine's protected memory (Warpine's own reads need them), so a call that echoes one back can leak a word of it.
-- [ ] **Fuzzing** (ADR-0112): font and help-file readers once Warpine reads guest-supplied ones (none today).
+- [ ] **Fuzzing** (ADR-0112): font readers once Warpine reads guest-supplied ones (none today); the `ipf_file` target grows with the INF / HLP reader (ADR-0132).
 - [ ] **Guest ASLR**, opt-in (`WARPINE_ASLR`): a random start of each process's allocator region, when Warpine hosts network servers (ADR-0125's revisit condition).
 
 ## SOM / Workplace Shell
@@ -133,7 +133,7 @@ Each waits on a permissive public source; where none turns up and the original c
 
 - **Unpublished formats**: binary OS/2 INI, `ERRINFO`, the `select` family's ordinals and layouts.
 - **Missing export lists**: DIVE, OpenGL / PGL, the SO32DLL / TCP32DLL split, dates of `unknown` exports, SOM.DLL 48+ (and with them IBM-built SOM classes, Stage B2/B3, and WPS compatibility).
-- **Undocumented behaviour**: `DB_RAISED` / `DB_DEPRESSED`; `THREADS=` (`CMDREF.INF` needs an INF reader); `WinQueryWindowPos` / `WinCreateWindow` errors.
+- **Undocumented behaviour**: `DB_RAISED` / `DB_DEPRESSED`; `THREADS=` (`CMDREF.INF` needs the INF reader's panel text, ADR-0132); `WinQueryWindowPos` / `WinCreateWindow` errors.
 - **Third-party binaries**: bitwiseworks GCC / LIBCn / LIBCx (licences).
 
 ## Long-term: Warpine as a Wayland compositor
