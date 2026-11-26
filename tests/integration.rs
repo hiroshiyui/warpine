@@ -51,30 +51,7 @@ fn sample_exists(path: impl AsRef<Path>) -> bool {
 
 /// Return `true` if KVM is accessible on this machine.
 fn kvm_available() -> bool {
-    static USABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *USABLE.get_or_init(|| Path::new("/dev/kvm").exists() && (std::env::var_os("GITHUB_ACTIONS").is_none() || guests_start()))
-}
-
-/// On GitHub's runners only: whether a guest starts at all. Some of their
-/// hosts (an AMD EPYC under Hyper-V, nested) triple-fault every PAE guest
-/// at its first instruction (ADR-0131 addendum); there the KVM tests are
-/// skipped, with a warning, instead of all failing. Elsewhere a guest that
-/// cannot start fails the tests as it should.
-fn guests_start() -> bool {
-    const PROBE: &str = "samples/hello/hello.exe";
-    if !Path::new(PROBE).exists() { return true; }
-    let out = Command::new(warpine()).arg(PROBE).envs(PINNED_ENV.iter().copied())
-        .env("SDL_VIDEODRIVER", "dummy").env("SDL_AUDIODRIVER", "dummy")
-        .stdin(Stdio::null()).output();
-    let ok = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Hello from Warpine"));
-    if !ok {
-        eprintln!("WARNING: this host's KVM cannot start a PAE guest (ADR-0131); skipping every KVM test");
-        // A marker the workflow turns into a warning on the run's page.
-        if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
-            let _ = std::fs::write(Path::new(&dir).join("kvm-tests-skipped"), "");
-        }
-    }
-    ok
+    Path::new("/dev/kvm").exists()
 }
 
 /// Whether a test of `sample` can run: KVM is there and the sample is

@@ -66,12 +66,3 @@ jobs:
           CI_IMAGE_PULL: "1"
         run: ci/run.sh "$SAMPLES"
 
-      # A runner that cannot start PAE guests skips the KVM tests
-      # (ADR-0131 addendum); say so on the run's page.
-      - name: Report skipped KVM tests
-        if: always()
-        run: |
-          if [ -f target/ci/kvm-tests-skipped ]; then
-            echo "::warning::This runner cannot start a PAE guest; the KVM tests were skipped (ADR-0131)"
-            echo "**KVM tests skipped:** this runner cannot start a PAE guest (ADR-0131)." >> "$GITHUB_STEP_SUMMARY"
-          fi
