@@ -75,6 +75,7 @@ _The menu and circular-slider screenshots captured from commit `0f27fce` on 2026
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `~/.local/state/warpine/warpine-crash-<pid>.txt` (`$XDG_STATE_HOME/warpine`).
 - **Ring 3 (ADR-0113):** programs run at ring 3, as on OS/2, 32-bit and 16-bit alike: privileged instructions raise `XCPT_PRIVILEGED_INSTRUCTION`, and the processor keeps programs out of their page tables, their TSS and Warpine's descriptor tables (supervisor-only pages), and the API thunks are read-only. Each thread has its own TSS and ring-0 stack, and no API call writes Warpine's protected memory for a program.
 - **A cgroup per session:** a session's processes share a systemd scope with a memory and a task limit (ADR-0116; 8 GB and 8192 tasks by default, `WARPINE_SESSION_MEMORY_MAX` / `WARPINE_SESSION_TASKS_MAX`, `WARPINE_CGROUP=off`), so one program cannot take the machine's memory or tasks.
+- **No-execute memory:** a program's stack, heap and data cannot run as code (PAE paging with the execute-disable bit, ADR-0131); only its code objects and memory it allocates with `PAG_EXECUTE` can. `WARPINE_NX=off` turns it off for a legacy program that runs code from its data.
 - **Landlock sandbox:** every Warpine process confines its own file access (ADR-0111): the drives and the session read-write, the system's files read-only, the rest of the home directory out of reach. `WARPINE_SANDBOX=off` turns it off; `warpine --sandbox-check <path>` shows whether a path is reachable.
 - **System-call filter:** behind Landlock, a seccomp filter per process role (ADR-0124) refuses debugging other processes, new namespaces, `bpf` / `io_uring` / `userfaultfd` and similar kernel interfaces, administration calls and typing into the terminal; the desktop server cannot start programs or use KVM. `WARPINE_SANDBOX=off` turns it off too; `warpine --syscall-check guest|desktop-server` reports it.
 - **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom required. It follows OS/2's CMD syntax: `%name%` variables, `&` / `&&` / `||` on return codes, `^` escapes, pipes and `<` / `>` / `>>` (inside the drives) that OS/2 programs read and write too, and a `PATH` search; programs start in the shell's directory. Built-in commands: `DIR`, `CD`, `SET`, `PATH`, `PROMPT` (OS/2's `$` codes, ANSI colours), `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `COPY`, `REN`, `MOVE`, `START`, `DETACH`, `HELP`, `EXIT`; commands group with `( … )`, and the programs of a pipeline run at the same time. Line editor with history (↑/↓). `.CMD` scripts in REXX (a first line starting with `/*`; Warpine's own interpreter: the language, conditions, streams on the drives, TRACE and common REXXUTIL functions; OS/2 programs embed it through `RexxStart` and the REXX API) or with OS/2's batch control: `ECHO ON` / `OFF` and `@`, `%0`–`%9` and `SHIFT`, `IF`, `FOR`, `GOTO`, `CALL`, `SETLOCAL` / `ENDLOCAL`, `PAUSE`.
@@ -195,6 +196,7 @@ samples/               OS/2 sample applications and build scripts
   pm_stddlg_test/      Standard file and font dialogs, printing stubs
   pm_switch_dde_test/  WinStartApp, switch list, atom tables, DDE, MSG calls
   nest_test/           A program that starts itself, stopped at the nesting limit
+  nx_test/             Execute protection: code on the stack, in data, in memory without PAG_EXECUTE traps
   threads_limit_test/  CONFIG.SYS THREADS= bounds threads and child processes of a session
   argv_test/           argc / argv / environment and session-unique process ids across children
   kill_test/           DosKillProcess, exit lists on kill, interrupted waits, Ctrl+C and Ctrl+Break as signals
@@ -417,7 +419,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2507 unit tests (no KVM required)
+cargo test                        # 2510 unit tests (no KVM required)
 cargo test --test integration     # 239 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

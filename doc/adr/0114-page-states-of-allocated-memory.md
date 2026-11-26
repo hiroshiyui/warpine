@@ -1,6 +1,6 @@
 # ADR-0114: Page states of allocated memory, held by the page tables
 
-- **Status:** Accepted (phase 1: the memory calls and guard pages; phase 2: sparse thread stacks; phase 3: read-only objects; phase 4: free memory not present)
+- **Status:** Accepted (phase 1: the memory calls and guard pages; phase 2: sparse thread stacks; phase 3: read-only objects; phase 4: free memory not present); its tables' format and place superseded by ADR-0131 (64-bit entries, the process tables in their own large page, execute permission)
 - **Date:** 2026-11-22
 - **Sources:**
   - IBM's *Control Program Programming Reference*: `DosAllocMem`, `DosSetMem`, `DosQueryMem`, `DosFreeMem`, `DosCreateThread` (`STACK_SPARSE`, `STACK_COMMITTED`), and the exceptions `XCPT_GUARD_PAGE_VIOLATION`, `XCPT_ACCESS_VIOLATION`, `XCPT_UNABLE_TO_GROW_STACK`.

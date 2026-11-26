@@ -1,6 +1,6 @@
 # ADR-0088: Guest paging for thread-local memory
 
-- **Status:** Accepted; its addresses amended by ADR-0094 (`TLM_PAGE` moved into the system area, the page table covering that 4 MB) and ADR-0110 (a four-page block: the low 64 KB not present, the FS window to the thread's TIB); its security measures against a guest at ring 0 (item 5: the watch, `paging_violation`, the repair) superseded by ADR-0113, whose step 5 removed them once every guest ran at ring 3
+- **Status:** Accepted; its addresses amended by ADR-0094 (`TLM_PAGE` moved into the system area, the page table covering that 4 MB) and ADR-0110 (a four-page block: the low 64 KB not present, the FS window to the thread's TIB); its security measures against a guest at ring 0 (item 5: the watch, `paging_violation`, the repair) superseded by ADR-0113, whose step 5 removed them once every guest ran at ring 3; its page-table format (32-bit paging, 4 MB pages) superseded by ADR-0131 (PAE, 2 MB pages, execute-disable), the mappings unchanged
 - **Date:** 2026-11-20
 - **Sources:**
   - IBM's *Control Program Programming Reference*: `DosAllocThreadLocalMemory` and `DosFreeThreadLocalMemory`. A thread-local memory area of 32 DWORDs; up to 8 DWORDs per call; one pointer that is the same for every thread, each thread seeing its own words through it.

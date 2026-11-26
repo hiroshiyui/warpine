@@ -56,6 +56,9 @@ impl VmBackend for KvmVmBackend {
 
     fn create_vcpu(&self, id: u64) -> Result<Box<dyn VcpuBackend>, String> {
         let mut fd = self.vm.create_vcpu(id).map_err(|e| e.to_string())?;
+        // KVM accepts EFER.NXE only when the guest's CPUID reports NX
+        // (ADR-0131): that leaf alone, so CPUID shows programs nothing else.
+        fd.set_cpuid2(&nx_cpuid()?).map_err(|e| format!("set_cpuid2: {e}"))?;
         // Only the address is taken here; the byte is accessed atomically
         // through `KvmKick` (see its safety argument).
         let immediate_exit = std::ptr::addr_of_mut!(fd.get_kvm_run().immediate_exit);
@@ -65,6 +68,19 @@ impl VmBackend for KvmVmBackend {
         });
         Ok(Box::new(KvmVcpu { fd, kick }))
     }
+}
+
+/// The guest's CPUID table: the extended leaves up to `0x80000001`, whose
+/// EDX reports NX (ADR-0131); nothing else.
+fn nx_cpuid() -> Result<kvm_bindings::CpuId, String> {
+    const EXT_MAX: u32 = 0x8000_0000;
+    const EXT_FEATURES: u32 = 0x8000_0001;
+    const EDX_NX: u32 = 1 << 20;
+    let entries = [
+        kvm_bindings::kvm_cpuid_entry2 { function: EXT_MAX, eax: EXT_FEATURES, ..Default::default() },
+        kvm_bindings::kvm_cpuid_entry2 { function: EXT_FEATURES, edx: EDX_NX, ..Default::default() },
+    ];
+    kvm_bindings::CpuId::from_entries(&entries).map_err(|e| format!("CPUID table: {e:?}"))
 }
 
 // ── vCPU kick ────────────────────────────────────────────────────────────────
@@ -203,7 +219,7 @@ impl VcpuBackend for KvmVcpu {
             tr: kseg_to_guest(s.tr),
             gdt_base:  s.gdt.base,  gdt_limit: s.gdt.limit as u32,
             idt_base:  s.idt.base,  idt_limit: s.idt.limit as u32,
-            cr0: s.cr0, cr2: s.cr2, cr3: s.cr3, cr4: s.cr4,
+            cr0: s.cr0, cr2: s.cr2, cr3: s.cr3, cr4: s.cr4, efer: s.efer,
         })
     }
 
@@ -217,7 +233,7 @@ impl VcpuBackend for KvmVcpu {
         s.tr = guest_to_kseg(&g.tr);
         s.gdt.base  = g.gdt_base;  s.gdt.limit = g.gdt_limit as u16;
         s.idt.base  = g.idt_base;  s.idt.limit = g.idt_limit as u16;
-        s.cr0 = g.cr0; s.cr3 = g.cr3; s.cr4 = g.cr4;
+        s.cr0 = g.cr0; s.cr3 = g.cr3; s.cr4 = g.cr4; s.efer = g.efer;
         self.fd.set_sregs(&s).map_err(|e| e.to_string())
     }
 

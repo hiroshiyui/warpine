@@ -195,16 +195,15 @@ impl ArenaBlock {
 
     /// What process `pid`'s guest code may do with the block's pages
     /// (ADR-0049 addendum): nothing unless it holds it; write when the
-    /// block allows it and `pid` did not get it read-only; read otherwise
-    /// (`PAG_EXECUTE` alone reads too: 32-bit paging cannot tell them apart).
+    /// block allows it and `pid` did not get it read-only; read otherwise;
+    /// execute when the block was allocated with `PAG_EXECUTE` (ADR-0131;
+    /// `PAG_EXECUTE` alone reads too).
     pub fn access_of(&self, pid: u32) -> PageAccess {
         if !self.held_by(pid) {
-            PageAccess::None
-        } else if self.flags & PAG_WRITE != 0 && self.read_only.binary_search(&pid).is_err() {
-            PageAccess::ReadWrite
-        } else {
-            PageAccess::Read
+            return PageAccess::None;
         }
+        let write = self.flags & PAG_WRITE != 0 && self.read_only.binary_search(&pid).is_err();
+        PageAccess::of(true, write, self.flags & PAG_EXECUTE != 0)
     }
 }
 
@@ -531,7 +530,7 @@ impl super::SharedState {
             for page in (offset..offset.saturating_add(size)).step_by(PAGE as usize) {
                 let addr = SHARED_ARENA_BASE + page;
                 if let Some(at) = process_pte_at(addr) {
-                    self.guest_mem.write_system::<u32>(at, process_pte(addr, PageAccess::None));
+                    self.guest_mem.write_system::<u64>(at, process_pte(addr, PageAccess::None));
                 }
             }
         }
@@ -601,7 +600,7 @@ fn lost_blocks(before: &ArenaTable, after: &ArenaTable, pid: u32) -> Vec<(u32, u
 fn held_blocks(table: &ArenaTable, pid: u32) -> Vec<HeldBlock> {
     table.blocks.iter()
         .filter(|b| b.held_by(pid))
-        .map(|b| (b.addr(), b.addr() + b.size, b.access_of(pid) == PageAccess::ReadWrite))
+        .map(|b| (b.addr(), b.addr() + b.size, b.access_of(pid).writable()))
         .collect()
 }
 
@@ -708,7 +707,7 @@ impl super::Loader {
     /// its tables with the access it holds it with, and the instruction
     /// runs again; anything else is an access violation. None: not in the
     /// arena, or no session table.
-    pub(crate) fn arena_fault(&self, addr: u32, write: bool) -> Option<super::vmem::FaultKind> {
+    pub(crate) fn arena_fault(&self, addr: u32, write: bool, fetch: bool) -> Option<super::vmem::FaultKind> {
         use super::vmem::FaultKind;
         if !in_arena(addr) { return None; }
         let me = self.shared.process_id();
@@ -723,18 +722,19 @@ impl super::Loader {
                 .filter(|&(_, _, a)| a != PageAccess::None) else {
                 return FaultKind::Violation;
             };
-            let present = self.guest_read::<u32>(pte).is_some_and(|e| e & 1 != 0);
-            if present && (!write || access == PageAccess::ReadWrite) {
+            let present = self.guest_read::<u64>(pte).is_some_and(|e| e & 1 != 0);
+            let allows = (!write || access.writable()) && (!fetch || access.executable());
+            if present && allows {
                 // Mapped meanwhile by another thread, or a stale TLB entry.
                 return FaultKind::Retry;
             }
-            if write && access != PageAccess::ReadWrite {
+            if !allows {
                 return FaultKind::Violation;
             }
             for page in (base..base + size).step_by(PAGE as usize) {
                 let a = SHARED_ARENA_BASE + page;
                 if let Some(at) = process_pte_at(a) {
-                    self.system_write::<u32>(at, process_pte(a, access));
+                    self.system_write::<u64>(at, process_pte(a, access));
                 }
             }
             FaultKind::Retry
@@ -756,7 +756,7 @@ impl super::Loader {
         let limit = cb.div_ceil(PAGE).max(1).saturating_mul(PAGE);
         Some(match held {
             Some((base, end, flags, access)) if access != PageAccess::None => {
-                let write = if access == PageAccess::ReadWrite { PAG_WRITE } else { 0 };
+                let write = if access.writable() { PAG_WRITE } else { 0 };
                 let first = if page == base { PAG_BASE } else { 0 };
                 ((end - page).min(limit), PAG_COMMIT | PAG_SHARED | PAG_READ | write | (flags & PAG_EXECUTE) | first)
             }
@@ -1031,7 +1031,7 @@ mod tests {
         impl Drop for Stop<'_> { fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); } }
         std::thread::scope(|s| {
             s.spawn(|| while !done.load(Ordering::Relaxed) {
-                let _ = l.arena_fault(SHARED_ARENA_BASE, true);
+                let _ = l.arena_fault(SHARED_ARENA_BASE, true, false);
             });
             let _stop = Stop(&done);
             for i in 0..300 {
@@ -1039,7 +1039,7 @@ mod tests {
                 assert_eq!(l.guest_read::<u32>(DYNAMIC_ALLOC_BASE), Some(SHARED_ARENA_BASE), "the lowest block");
                 std::thread::yield_now();
                 assert_eq!(l.arena_free(SHARED_ARENA_BASE), Some(NO_ERROR));
-                let e = l.guest_read::<u32>(pte).unwrap();
+                let e = l.guest_read::<u64>(pte).unwrap();
                 assert_eq!(e & 1, 0, "iteration {i}: a block let go stays unmapped");
             }
         });

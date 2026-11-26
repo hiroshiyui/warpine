@@ -98,6 +98,8 @@ pub struct GuestSregs {
     /// (`paging.rs`).
     pub cr3: u64,
     pub cr4: u64,
+    /// The extended feature enable register (`EFER.NXE`, ADR-0131).
+    pub efer: u64,
 }
 
 // ── vCPU kick ────────────────────────────────────────────────────────────────

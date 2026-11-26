@@ -229,7 +229,9 @@ impl super::Loader {
 
         // A page fault's access violation says how the address was
         // accessed and which address it was (ExceptionInfo[0], [1]).
-        let access = if error_code & PF_ERROR_WRITE != 0 { XCPT_WRITE_ACCESS } else { XCPT_READ_ACCESS };
+        // An instruction fetch from a no-execute page (ADR-0131).
+        let access = if error_code & PF_ERROR_FETCH != 0 { XCPT_EXECUTE_ACCESS }
+                     else if error_code & PF_ERROR_WRITE != 0 { XCPT_WRITE_ACCESS } else { XCPT_READ_ACCESS };
         let pf_params = [access, fault_addr];
         let params: &[u32] = if vector == 14 { &pf_params } else { &[] };
         debug!("SEH: hardware exception vector={}", vector);

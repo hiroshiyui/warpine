@@ -1232,7 +1232,7 @@ mod tests {
         let l = loader_in_session(d.path(), super::super::config_sys::MAX_THREADS);
         let blocks: Vec<u32> = std::iter::from_fn(|| l.alloc_paging_block(0)).collect();
         assert_eq!(blocks.len(), PAGING_BLOCKS as usize);
-        assert_eq!(PAGING_BLOCKS, 736, "736 threads a process (ADR-0115, less the shared arena's tables)");
+        assert_eq!(PAGING_BLOCKS, 751, "751 threads a process (ADR-0115; the process tables in their own page, ADR-0131)");
         let before = l.shared.mem_mgr.lock().unwrap().next_free;
         assert_eq!(l.dos_create_thread(0, 0x7_0000, 0x1_0000, 0, 0, 0x2000), ERROR_MAX_THRDS_REACHED);
         assert_eq!(l.shared.mem_mgr.lock().unwrap().next_free, before, "stack and TIB freed");

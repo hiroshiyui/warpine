@@ -72,7 +72,7 @@ mod ne_exec;
 mod descriptors;
 mod ring;
 mod vmem;
-pub(crate) mod paging;
+pub mod paging;
 pub(crate) mod track;
 pub(crate) mod exit_report;
 pub(crate) mod file_attrs;

@@ -129,21 +129,20 @@ impl Region {
     }
 }
 
-/// What a page in `state` lets the guest do.
+/// What a page in `state` lets the guest do: executable only with
+/// `PAG_EXECUTE` (ADR-0131).
 fn access_of(state: u32) -> PageAccess {
     if state & PAG_COMMIT == 0 || state & PAG_GUARD != 0 || state & FPERM == 0 {
         PageAccess::None
-    } else if state & PAG_WRITE != 0 {
-        PageAccess::ReadWrite
     } else {
-        PageAccess::Read
+        PageAccess::of(true, state & PAG_WRITE != 0, state & PAG_EXECUTE != 0)
     }
 }
 
 /// Whether going from `old` to `new` takes access away (a TLB may hold
-/// the old entry).
+/// the old entry): presence, write or execute permission.
 fn loses_access(old: PageAccess, new: PageAccess) -> bool {
-    matches!((old, new), (PageAccess::ReadWrite, PageAccess::Read | PageAccess::None) | (PageAccess::Read, PageAccess::None))
+    old.loses_to(new)
 }
 
 /// What `DosSetMem` changed.
@@ -278,23 +277,27 @@ impl PageMap {
         Some((run * PAGE_SIZE, flags))
     }
 
-    /// A page fault at `addr` (a write when `write`): what it means for a
-    /// tracked page, and the entries that change (a guard taken off, a
-    /// stack grown); None for a page in no tracked allocation.
-    pub fn fault(&mut self, addr: u32, write: bool) -> Option<(FaultKind, Vec<Change>)> {
+    /// A page fault at `addr` (a write when `write`, an instruction fetch
+    /// when `fetch`): what it means for a tracked page, and the entries
+    /// that change (a guard taken off, a stack grown); None for a page in
+    /// no tracked allocation.
+    pub fn fault(&mut self, addr: u32, write: bool, fetch: bool) -> Option<(FaultKind, Vec<Change>)> {
         let (base, region) = self.find_mut(addr)?;
         let i = ((addr - base) / PAGE_SIZE) as usize;
         let state = region.pages[i];
         let page = base + i as u32 * PAGE_SIZE;
-        let allows = match access_of(state) {
-            PageAccess::ReadWrite => true,
-            PageAccess::Read => !write,
-            PageAccess::None => false,
-        };
+        let a = access_of(state);
+        // A fetch from a page without PAG_EXECUTE is never a stale entry.
+        let allows = a.present() && (!write || a.writable()) && (!fetch || a.executable());
         // The entry is rewritten from the state: a stale TLB entry, or an
         // entry that disagrees with the state, cannot fault for ever.
         if allows {
             return Some((FaultKind::Retry, vec![(page, access_of(state))]));
+        }
+        // A fetch from a committed page without PAG_EXECUTE (ADR-0131): no
+        // guard to take off, no stack to grow.
+        if fetch && a.present() {
+            return Some((FaultKind::Violation, vec![]));
         }
         if region.stack {
             return Some(grow_stack(base, region, i));
@@ -396,7 +399,7 @@ impl super::Loader {
         self.apply_pending_allocations();
         for &(addr, access) in changes {
             if let Some(at) = process_pte_at(addr) {
-                self.system_write::<u32>(at, process_pte(addr, access));
+                self.system_write::<u64>(at, process_pte(addr, access));
             }
         }
     }
@@ -434,19 +437,20 @@ impl super::Loader {
         if pending.is_empty() {
             return;
         }
-        let writes: Vec<(u32, u32)> = {
+        let writes: Vec<(u32, u64)> = {
             let vmem = self.shared.vmem.lock_or_recover();
             pending.iter()
                 .flat_map(|&(addr, size, allocated)| (0..size / PAGE_SIZE).map(move |i| (addr + i * PAGE_SIZE, allocated)))
                 .filter(|&(page, _)| !vmem.contains(page))
                 .filter_map(|(page, allocated)| {
-                    let access = if allocated { PageAccess::ReadWrite } else { PageAccess::None };
+                    // A module's code object is executable (ADR-0131).
+                    let access = if allocated { PageAccess::ReadWrite.with_exec(vmem.executable(page)) } else { PageAccess::None };
                     process_pte_at(page).map(|at| (at, process_pte(page, access)))
                 })
                 .collect()
         };
         for (at, entry) in writes {
-            self.system_write::<u32>(at, entry);
+            self.system_write::<u64>(at, entry);
         }
     }
 
@@ -457,7 +461,7 @@ impl super::Loader {
         self.sync_allocations();
         let allocated = self.shared.mem_mgr.lock_or_recover().contains(addr);
         allocated && process_pte_at(addr)
-            .and_then(|at| self.guest_read::<u32>(at))
+            .and_then(|at| self.guest_read::<u64>(at))
             .is_some_and(|e| e & 1 != 0)
     }
 
@@ -494,19 +498,28 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// Make the read-only objects of a loaded module read-only (ADR-0114):
-    /// `objects` are `(base, bytes, LX flags)`, after the fixups are in.
-    /// Its executable objects report `PAG_EXECUTE` (`DosQueryMem`).
+    /// Make the read-only objects of a loaded module read-only (ADR-0114)
+    /// and its executable objects executable (ADR-0131; every other page
+    /// is not): `objects` are `(base, bytes, LX flags)`, after the fixups
+    /// are in. Its executable objects report `PAG_EXECUTE` (`DosQueryMem`).
     pub(crate) fn protect_objects(&self, objects: &[(u32, u32, u32)]) {
+        let mut code = std::collections::BTreeSet::new();
         {
             let mut vmem = self.shared.vmem.lock_or_recover();
             for &(base, bytes, _) in objects.iter().filter(|o| o.2 & LX_OBJECT_EXEC != 0) {
                 vmem.mark_executable(base, bytes);
+                let first = base & !(PAGE_SIZE - 1);
+                let end = (u64::from(base) + u64::from(bytes)).div_ceil(u64::from(PAGE_SIZE)) * u64::from(PAGE_SIZE);
+                code.extend((u64::from(first)..end).step_by(PAGE_SIZE as usize).map(|p| p as u32));
             }
         }
-        let changes: Vec<Change> = read_only_pages(objects).into_iter()
+        let read_only: std::collections::BTreeSet<u32> = read_only_pages(objects).into_iter().collect();
+        let changes: Vec<Change> = read_only.union(&code).copied()
             .filter(|&p| process_pte_at(p).is_some())
-            .map(|p| (p, PageAccess::Read)).collect();
+            .map(|p| {
+                let access = if read_only.contains(&p) { PageAccess::Read } else { PageAccess::ReadWrite };
+                (p, access.with_exec(code.contains(&p)))
+            }).collect();
         self.apply_page_changes(&changes);
         // A module loaded while threads run may reuse pages a TLB holds
         // writable.
@@ -629,9 +642,9 @@ impl super::Loader {
             if !self.shared.process_tables_ready.load(Ordering::Acquire) {
                 return None;
             }
-            let entry = self.guest_read::<u32>(process_pte_at(page)?)?;
-            const PRESENT: u32 = 1 << 0;
-            const WRITABLE: u32 = 1 << 1;
+            let entry = self.guest_read::<u64>(process_pte_at(page)?)?;
+            const PRESENT: u64 = 1 << 0;
+            const WRITABLE: u64 = 1 << 1;
             let execute = if code.executable(page) { PAG_EXECUTE } else { 0 };
             Some(match (entry & PRESENT != 0, entry & WRITABLE != 0) {
                 (false, _) => PAG_FREE,
@@ -659,11 +672,11 @@ impl super::Loader {
     /// A page fault at `addr` from guest code (a write when `write`): what
     /// it means, with the guard taken off a guard page. None: the page is
     /// in no tracked allocation.
-    pub(crate) fn page_fault_kind(&self, addr: u32, write: bool) -> Option<FaultKind> {
+    pub(crate) fn page_fault_kind(&self, addr: u32, write: bool, fetch: bool) -> Option<FaultKind> {
         if super::shared_arena::in_arena(addr) {
-            return self.arena_fault(addr, write);
+            return self.arena_fault(addr, write, fetch);
         }
-        let (kind, changes) = self.shared.vmem.lock_or_recover().fault(addr, write)?;
+        let (kind, changes) = self.shared.vmem.lock_or_recover().fault(addr, write, fetch)?;
         self.apply_page_changes(&changes);
         Some(kind)
     }
@@ -830,7 +843,7 @@ mod tests {
         const STACK: u32 = 8 * PAGE_SIZE;
         let l = Loader::new_mock();
         l.ensure_process_tables();
-        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u32>(at)).is_some_and(|e| e & 1 != 0);
+        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u64>(at)).is_some_and(|e| e & 1 != 0);
         let lost = std::sync::atomic::AtomicU32::new(0);
         std::thread::scope(|s| {
             s.spawn(|| for _ in 0..30000 {
@@ -863,7 +876,7 @@ mod tests {
         const SIZE: u32 = 8 * PAGE_SIZE;
         let l = Loader::new_mock();
         l.ensure_process_tables();
-        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u32>(at)).is_some_and(|e| e & 1 != 0);
+        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u64>(at)).is_some_and(|e| e & 1 != 0);
         let lost = std::sync::atomic::AtomicU32::new(0);
         let ppb = 0x0010_0000;
         std::thread::scope(|s| {
@@ -899,15 +912,15 @@ mod tests {
         assert_eq!(map.query(BASE + 6 * PAGE_SIZE, PAGE_SIZE), Some((PAGE_SIZE, rw | PAG_COMMIT | PAG_GUARD)));
         assert_eq!(map.query(BASE, 6 * PAGE_SIZE), Some((6 * PAGE_SIZE, rw | PAG_BASE)), "reserved");
         // A frame larger than a page: a touch two pages below the guard.
-        let (kind, changes) = map.fault(BASE + 4 * PAGE_SIZE + 16, true).unwrap();
+        let (kind, changes) = map.fault(BASE + 4 * PAGE_SIZE + 16, true, false).unwrap();
         assert_eq!(kind, FaultKind::Retry);
         assert_eq!(changes.iter().map(|c| c.0).collect::<Vec<_>>(),
                    vec![BASE + 4 * PAGE_SIZE, BASE + 5 * PAGE_SIZE, BASE + 6 * PAGE_SIZE]);
         assert_eq!(map.query(BASE + 3 * PAGE_SIZE, PAGE_SIZE), Some((PAGE_SIZE, rw | PAG_COMMIT | PAG_GUARD)), "the new guard");
         assert_eq!(map.query(BASE + 4 * PAGE_SIZE, 0x10000), Some((4 * PAGE_SIZE, rw | PAG_COMMIT)));
-        assert_eq!(map.fault(BASE + 2 * PAGE_SIZE, false).unwrap().0, FaultKind::Retry);
-        assert_eq!(map.fault(BASE + PAGE_SIZE, false).unwrap().0, FaultKind::StackExhausted, "the bottom pages");
-        assert_eq!(map.fault(BASE, false).unwrap().0, FaultKind::Retry, "once");
+        assert_eq!(map.fault(BASE + 2 * PAGE_SIZE, false, false).unwrap().0, FaultKind::Retry);
+        assert_eq!(map.fault(BASE + PAGE_SIZE, false, false).unwrap().0, FaultKind::StackExhausted, "the bottom pages");
+        assert_eq!(map.fault(BASE, false, false).unwrap().0, FaultKind::Retry, "once");
         assert_eq!(map.query(BASE, 0x10000), Some((8 * PAGE_SIZE, rw | PAG_COMMIT | PAG_BASE)), "all committed now");
         assert_eq!(map.free(BASE).unwrap().len(), 8, "every page not present again");
     }
@@ -918,11 +931,32 @@ mod tests {
         map.allocate(BASE, 3 * PAGE_SIZE, PAG_READ | PAG_WRITE);
         map.set(BASE, PAGE_SIZE, PAG_COMMIT | PAG_READ).unwrap().unwrap();
         map.set(BASE + PAGE_SIZE, PAGE_SIZE, RW | PAG_GUARD).unwrap().unwrap();
-        assert_eq!(map.fault(BASE + 8, false), Some((FaultKind::Retry, vec![(BASE, PageAccess::Read)])), "reading a readable page: a stale TLB");
-        assert_eq!(map.fault(BASE + 8, true), Some((FaultKind::Violation, vec![])), "writing a read-only page");
-        assert_eq!(map.fault(BASE + PAGE_SIZE, true), Some((FaultKind::Guard, vec![(BASE + PAGE_SIZE, PageAccess::ReadWrite)])));
-        assert_eq!(map.fault(BASE + PAGE_SIZE, true), Some((FaultKind::Retry, vec![(BASE + PAGE_SIZE, PageAccess::ReadWrite)])), "the guard is gone");
-        assert_eq!(map.fault(BASE + 2 * PAGE_SIZE, false), Some((FaultKind::Violation, vec![])), "reserved");
-        assert_eq!(map.fault(BASE + 3 * PAGE_SIZE, false), None, "untracked");
+        assert_eq!(map.fault(BASE + 8, false, false), Some((FaultKind::Retry, vec![(BASE, PageAccess::Read)])), "reading a readable page: a stale TLB");
+        assert_eq!(map.fault(BASE + 8, true, false), Some((FaultKind::Violation, vec![])), "writing a read-only page");
+        assert_eq!(map.fault(BASE + PAGE_SIZE, true, false), Some((FaultKind::Guard, vec![(BASE + PAGE_SIZE, PageAccess::ReadWrite)])));
+        assert_eq!(map.fault(BASE + PAGE_SIZE, true, false), Some((FaultKind::Retry, vec![(BASE + PAGE_SIZE, PageAccess::ReadWrite)])), "the guard is gone");
+        assert_eq!(map.fault(BASE + 2 * PAGE_SIZE, false, false), Some((FaultKind::Violation, vec![])), "reserved");
+        assert_eq!(map.fault(BASE + 3 * PAGE_SIZE, false, false), None, "untracked");
+    }
+
+    /// Instruction fetches (ADR-0131): a committed page without
+    /// PAG_EXECUTE is a violation, never a stale entry, a guard or a
+    /// stack to grow; with PAG_EXECUTE the fetch runs again.
+    #[test]
+    fn fetches_need_pag_execute() {
+        let mut map = PageMap::default();
+        map.allocate(BASE, 2 * PAGE_SIZE, PAG_READ | PAG_WRITE);
+        map.set(BASE, 2 * PAGE_SIZE, RW).unwrap().unwrap();
+        assert_eq!(map.fault(BASE + 8, false, true), Some((FaultKind::Violation, vec![])), "read-write, no PAG_EXECUTE");
+        let out = map.set(BASE + PAGE_SIZE, PAGE_SIZE, PAG_READ | PAG_EXECUTE).unwrap().unwrap();
+        assert_eq!(out.changes, vec![(BASE + PAGE_SIZE, PageAccess::ReadExec)]);
+        assert!(out.downgrade, "losing write");
+        assert_eq!(map.fault(BASE + PAGE_SIZE, false, true), Some((FaultKind::Retry, vec![(BASE + PAGE_SIZE, PageAccess::ReadExec)])));
+        let out = map.set(BASE + PAGE_SIZE, PAGE_SIZE, PAG_READ).unwrap().unwrap();
+        assert!(out.downgrade, "losing execute flushes the TLBs");
+        // A sparse stack's committed top page: a fetch does not grow it.
+        let stack = BASE + 0x10_0000;
+        map.allocate_stack(stack, 8 * PAGE_SIZE);
+        assert_eq!(map.fault(stack + 7 * PAGE_SIZE, false, true), Some((FaultKind::Violation, vec![])));
     }
 }

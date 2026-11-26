@@ -4292,13 +4292,32 @@ fn test_threads_limit_from_the_environment() {
     assert!(out.contains("ok created threads=63"), "clamped to 64:\n{out}");
 }
 
+/// nx_test: execute protection (ADR-0131). Code copied into read-write
+/// memory, onto the stack or into a data object traps with
+/// XCPT_ACCESS_VIOLATION / XCPT_EXECUTE_ACCESS at its address; with
+/// PAG_EXECUTE (DosAllocMem or DosSetMem) it runs, and losing it traps
+/// again. With WARPINE_NX=off every copy runs.
+#[test]
+fn test_no_execute_memory() {
+    const SAMPLE: &str = "samples/nx_test/nx_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("nx_test: done 24/24"), "{out}");
+    assert_eq!(code, 0, "{out}");
+    let (out, code) = run_sample_args(SAMPLE, &["off"], 60, &[("WARPINE_NX", "off")]);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("nx_test: done 16/16"), "WARPINE_NX=off: every copy runs\n{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// threads_limit_test's `cap` mode with the session's limit above a
-/// process's own (ADR-0115): a process gets 736 threads, thread 1 and 735
-/// more, each on its own paging block; the next DosCreateThread fails with
+/// process's own (ADR-0115, ADR-0131): a process gets 751 threads, thread 1
+/// and 750 more, each on its own paging block; the next DosCreateThread fails with
 /// ERROR_MAX_THRDS_REACHED (164); ended threads give their blocks back, so
 /// a second round gets as many.
 #[test]
-fn a_process_gets_736_threads() {
+fn a_process_gets_751_threads() {
     const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
     if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let run = tempfile::tempdir().unwrap();
@@ -4309,7 +4328,7 @@ fn a_process_gets_736_threads() {
     assert_eq!(code, 0, "stdout:\n{out}");
     assert!(!out.contains("FAIL"), "{out}");
     assert_eq!(out.matches("ok process cap rc=164").count(), 2, "{out}");
-    assert_eq!(out.matches("ok process cap: created threads=735").count(), 2, "{out}");
+    assert_eq!(out.matches("ok process cap: created threads=750").count(), 2, "{out}");
 }
 
 /// A process joining a session whose threads are all in use ends with

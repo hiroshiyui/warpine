@@ -287,7 +287,8 @@ impl super::Loader {
         // Paging with the thread's own tables (ADR-0088); CR0.WP: read-only
         // pages hold for Warpine's ring-0 stubs too (ADR-0113).
         sregs.cr3 = cr3 as u64;
-        sregs.cr4 |= super::paging::CR4_PSE;
+        sregs.cr4 |= super::paging::CR4_PAE;
+        sregs.efer |= super::paging::EFER_NXE;
         sregs.cr0 |= super::paging::CR0_PG | super::paging::CR0_WP;
         // The thread's TSS, in its ring-0 window (ADR-0113).
         sregs.tr = task_register();
@@ -961,8 +962,9 @@ impl super::Loader {
                         // with no handler goes on where it faulted.
                         if vector == PAGE_FAULT_VECTOR {
                             let write = error_code & PF_ERROR_WRITE != 0;
+                            let fetch = error_code & PF_ERROR_FETCH != 0;
                             let addr = sregs.cr2 as u32;
-                            match self.page_fault_kind(addr, write) {
+                            match self.page_fault_kind(addr, write, fetch) {
                                 Some(super::vmem::FaultKind::Retry) => {
                                     let mut r = vcpu.get_regs().unwrap();
                                     resume_at(&mut r, &fault_ctx);
@@ -2511,7 +2513,7 @@ mod tests {
     /// its TSS (ADR-0113).
     #[test]
     fn a_thread_runs_paged_on_its_own_block() {
-        use super::super::paging::{CR0_PG, CR4_PSE};
+        use super::super::paging::{CR0_PG, CR4_PAE, EFER_NXE};
         let loader = super::super::Loader::new_mock();
         let block = loader.alloc_paging_block(TIB_BASE).expect("a block");
         let mut vcpu = MockVcpu::new();
@@ -2519,7 +2521,8 @@ mod tests {
         let s = vcpu.get_sregs().unwrap();
         assert_eq!(s.cr3, block as u64);
         assert_ne!(s.cr0 & CR0_PG, 0);
-        assert_ne!(s.cr4 & CR4_PSE, 0);
+        assert_ne!(s.cr4 & CR4_PAE, 0, "PAE paging (ADR-0131)");
+        assert_ne!(s.efer & EFER_NXE, 0, "execute-disable enabled");
         assert_ne!(s.cr0 & super::super::paging::CR0_WP, 0, "write protect: the thunks are read-only at ring 0 too");
         assert_eq!(s.cr0 & 1, 1, "protected mode");
         assert_eq!((s.tr.base, s.tr.limit, s.tr.selector), (u64::from(RING0_WINDOW), TSS_SIZE - 1, TSS_SEL),

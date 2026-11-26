@@ -21,7 +21,7 @@
  * Run as "threads_limit_test cap" with a limit above a process's own
  * (WARPINE_THREADS=4095), it creates threads until DosCreateThread fails,
  * twice, and writes "process cap: created <n> rc=<rc>" each time: Warpine
- * gives a process at most 736 threads (thread 1 and 735 more, ADR-0115),
+ * gives a process at most 751 threads (thread 1 and 750 more, ADR-0115, ADR-0131),
  * and the failure is ERROR_MAX_THRDS_REACHED (164).
  *
  * One "ok ..." or "FAIL ..." line per check; exit code 0 when all passed.

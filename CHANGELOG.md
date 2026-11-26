@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`somBuildClass` initializes the class object**: a metaclass's own `somDefaultInit` now runs on the class objects it builds, before `somClassReady`, as `somNew` on a metaclass already did.
 
 ### Security
+- **No-execute guest memory** (ADR-0131): guests now run with PAE paging and `EFER.NXE`, so only code objects, memory allocated or set with `PAG_EXECUTE`, the API thunks and the IDT's stubs can run; code injected into a stack, a heap or a data object raises `XCPT_ACCESS_VIOLATION` with `XCPT_EXECUTE_ACCESS`. `WARPINE_NX=off` turns it off for legacy programs that run code from their data; 16-bit programs run without it. The process tables move into their own large page, so a process can have 751 threads (was 736). New sample `nx_test` (24 checks; 16 with `WARPINE_NX=off`).
 - **The SOM kernel's guest strings** (names, `somPrintf`'s format and `%s` arguments) stop at Warpine's protected memory, so neither `somPrintf` nor a TypeCode copies or prints it.
 
 ## [0.0.20] - 2026-11-25

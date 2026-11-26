@@ -89,6 +89,7 @@ fn detect_format(path: &str) -> Result<ExeFormat, String> {
     }
 }
 
+#[derive(PartialEq, Eq)]
 enum ExeFormat { LX, NE }
 
 /// The switch that prints [`license_notices`].
@@ -278,6 +279,10 @@ fn main() {
         }
     };
 
+    // Execute protection (ADR-0131): on for 32-bit programs unless
+    // WARPINE_NX=off; 16-bit programs' code is guarded by its segments.
+    let nx = format == ExeFormat::LX && loader::paging::nx_setting(std::env::var(loader::paging::NX_ENV).ok().as_deref());
+    loader::paging::set_nx_enforced(nx);
     match format {
         ExeFormat::NE => run_ne(file_path, &remaining_args[1..]),
         ExeFormat::LX => run_lx(file_path, gdb_port, &remaining_args[1..]),

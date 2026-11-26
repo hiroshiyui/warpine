@@ -1,6 +1,6 @@
 # ADR-0115: A larger paging arena: 482 threads per process
 
-- **Status:** Accepted
+- **Status:** Accepted; the limit raised to 751 threads by ADR-0131 (the process tables left the arena)
 - **Date:** 2026-11-22
 - **Sources:**
   - IBM's *Control Program Programming Reference*: `DosCreateThread` and its return codes (`ERROR_NOT_ENOUGH_MEMORY`, `ERROR_MAX_THRDS_REACHED`).

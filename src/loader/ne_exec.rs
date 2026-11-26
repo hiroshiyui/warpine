@@ -292,7 +292,8 @@ impl super::Loader {
         // Warpine's pages supervisor-only, the thunks read-only), as for
         // 32-bit threads (ADR-0113).
         sregs.cr3 = u64::from(cr3);
-        sregs.cr4 |= super::paging::CR4_PSE;
+        sregs.cr4 |= super::paging::CR4_PAE;
+        sregs.efer |= super::paging::EFER_NXE;
         sregs.cr0 |= super::paging::CR0_PG | super::paging::CR0_WP;
         sregs.tr = super::vcpu::task_register();
 
