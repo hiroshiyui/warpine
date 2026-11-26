@@ -4307,7 +4307,9 @@ fn zz_ci_pae_diagnostics() {
     let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
     let mut report = format!("{model}\nkernel {kernel}\n{flags}\n");
     let mut full_ok = true;
-    for (name, env) in [("full", vec![]), ("nx-off", vec![("WARPINE_NX", "off")]), ("no-nxe", vec![("WARPINE_DEBUG_NO_NXE", "1"), ("WARPINE_NX", "off")])] {
+    for (name, env) in [("full", vec![]), ("nx-off", vec![("WARPINE_NX", "off")]), ("no-nxe", vec![("WARPINE_DEBUG_NO_NXE", "1"), ("WARPINE_NX", "off")]),
+                             ("pdpt-page", vec![("WARPINE_DEBUG_PDPT_PAGE", "1")]),
+                             ("pdpt-page-no-nxe", vec![("WARPINE_DEBUG_PDPT_PAGE", "1"), ("WARPINE_DEBUG_NO_NXE", "1"), ("WARPINE_NX", "off")])] {
         let (out, code) = run_sample_args(SAMPLE, &[], 30, &env);
         let ok = out.contains("Hello from Warpine");
         if name == "full" { full_ok = ok; }

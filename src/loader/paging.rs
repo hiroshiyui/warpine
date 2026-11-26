@@ -550,9 +550,18 @@ impl super::Loader {
     pub(crate) fn alloc_paging_block(&self, tib: u32) -> Option<u32> {
         self.ensure_process_tables();
         let base = self.shared.paging_arena.lock_or_recover().alloc()?;
-        if self.system_write_bytes(base, &paging_block(base, tib, nx_enforced())).is_none() {
+        let block = paging_block(base, tib, nx_enforced());
+        if self.system_write_bytes(base, &block).is_none() {
             self.shared.paging_arena.lock_or_recover().free(base);
             return None;
+        }
+        // Temporary diagnostic (ADR-0131 on nested KVM): the PDPT copied to
+        // a page of its own, the first free page after the process tables.
+        if std::env::var_os("WARPINE_DEBUG_PDPT_PAGE").is_some() {
+            let page = PROCESS_TABLES + PROCESS_TABLES_SIZE;
+            let at = (RING0_OFFSET + PDPT_OFFSET) as usize;
+            let _ = self.system_write_bytes(page, &block[at..at + 32]);
+            return Some(page);
         }
         Some(cr3_of_block(base))
     }
