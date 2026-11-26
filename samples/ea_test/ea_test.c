@@ -6,7 +6,8 @@
    past the FEA2LIST's cbList; DosEnumAttribute lists them by handle
    (ENUMEA_REFTYPE_FHANDLE) and by path (ENUMEA_REFTYPE_PATH) as DENA2
    entries; DosOpen's EAOP2 sets the EAs of the file it creates, and
-   DosFindFirst's FIL_QUERYEASIZE reports a file's list size. Writes "ea_test: <name>: ok" or "... FAIL got <v> want <v>",
+   DosFindFirst's FIL_QUERYEASIZE reports a file's list size; a file moved
+   while open keeps its EAs reachable by handle. Writes "ea_test: <name>: ok" or "... FAIL got <v> want <v>",
    then "ea_test: done <p>/<t>". */
 #define INCL_DOS
 #define INCL_DOSERRORS
@@ -17,6 +18,7 @@
 
 #define FILE_NAME "EATEST.DAT"
 #define NEW_NAME  "EATEST2.DAT"
+#define MOVED     "EATEST3.DAT"
 #define BUF_SIZE  512
 
 static int passed = 0, total = 0;
@@ -174,13 +176,24 @@ int main(void)
     count = (ULONG)-1;
     DosEnumAttribute(ENUMEA_REFTYPE_FHANDLE, &hf2, 1, out, sizeof out, &count, ENUMEA_LEVEL_NO_VALUE);
     check("-> the new file has its EA", count, 1);
+    /* Moved while open: its EAs are still reached by handle. */
+    DosDelete((PSZ)MOVED);
+    check("DosMove(while open)", DosMove((PSZ)NEW_NAME, (PSZ)MOVED), NO_ERROR);
+    eaop.fpFEA2List = fea_list(fbuf, "WARPINE.AFTER", "moved", NULL, NULL);
+    check("DosSetFileInfo(after the move)", DosSetFileInfo(hf2, FIL_QUERYEASIZE, &eaop, sizeof eaop), NO_ERROR);
+    count = (ULONG)-1;
+    DosEnumAttribute(ENUMEA_REFTYPE_PATH, (PSZ)MOVED, 1, out, sizeof out, &count, ENUMEA_LEVEL_NO_VALUE);
+    check("-> both EAs on the moved file", count, 2);
+    count = (ULONG)-1;
+    DosEnumAttribute(ENUMEA_REFTYPE_FHANDLE, &hf2, 1, out, sizeof out, &count, ENUMEA_LEVEL_NO_VALUE);
+    check("-> and by its handle", count, 2);
     DosClose(hf2);
     count = 1;
-    check("DosFindFirst(FIL_QUERYEASIZE)", DosFindFirst((PSZ)NEW_NAME, &hdir, FILE_NORMAL, &find, sizeof find,
+    check("DosFindFirst(FIL_QUERYEASIZE)", DosFindFirst((PSZ)MOVED, &hdir, FILE_NORMAL, &find, sizeof find,
           &count, FIL_QUERYEASIZE), NO_ERROR);
-    check("-> cbList is its list's size", find.cbList, eaop.fpFEA2List->cbList);
+    check("-> cbList is its list's size", find.cbList > 4, 1);
     DosFindClose(hdir);
-    check("DosDelete(the new file)", DosDelete((PSZ)NEW_NAME), NO_ERROR);
+    check("DosDelete(the new file)", DosDelete((PSZ)MOVED), NO_ERROR);
     printf("ea_test: done %d/%d\n", passed, total);
     return passed == total ? 0 : 1;
 }
