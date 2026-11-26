@@ -4293,6 +4293,30 @@ fn test_threads_limit_from_the_environment() {
     assert!(out.contains("ok created threads=63"), "clamped to 64:\n{out}");
 }
 
+/// Temporary CI diagnostics for ADR-0131 on nested KVM: hello under the
+/// full setup, with WARPINE_NX=off, and without the NX CPUID leaf and
+/// EFER.NXE (WARPINE_DEBUG_NO_NXE, PAE only); prints the host CPU and
+/// kernel, and fails when the full setup does, to show the output.
+#[test]
+fn zz_ci_pae_diagnostics() {
+    const SAMPLE: &str = "samples/hello/hello.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let cpu = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let model = cpu.lines().find(|l| l.starts_with("model name")).unwrap_or("?").to_string();
+    let flags = cpu.lines().find(|l| l.starts_with("flags")).unwrap_or("?").to_string();
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let mut report = format!("{model}\nkernel {kernel}\n{flags}\n");
+    let mut full_ok = true;
+    for (name, env) in [("full", vec![]), ("nx-off", vec![("WARPINE_NX", "off")]), ("no-nxe", vec![("WARPINE_DEBUG_NO_NXE", "1"), ("WARPINE_NX", "off")])] {
+        let (out, code) = run_sample_args(SAMPLE, &[], 30, &env);
+        let ok = out.contains("Hello from Warpine");
+        if name == "full" { full_ok = ok; }
+        report += &format!("{name}: ok={ok} code={code}\n");
+        if !ok { report += &out.lines().filter(|l| l.contains("Triple") || l.contains("rror") || l.contains("EIP")).take(6).collect::<Vec<_>>().join("\n"); report += "\n"; }
+    }
+    assert!(full_ok, "PAE diagnostics:\n{report}");
+}
+
 /// nx_test: execute protection (ADR-0131). Code copied into read-write
 /// memory, onto the stack or into a data object traps with
 /// XCPT_ACCESS_VIOLATION / XCPT_EXECUTE_ACCESS at its address; with

@@ -229,6 +229,13 @@ pub fn nx_enforced() -> bool {
     NX_ENFORCED.load(Ordering::Relaxed)
 }
 
+/// Whether the vCPU gets the NX CPUID leaf and `EFER.NXE`: always, unless
+/// `WARPINE_DEBUG_NO_NXE` is set (a temporary switch for diagnosing hosts
+/// whose KVM rejects them).
+pub fn nxe_wanted() -> bool {
+    std::env::var_os("WARPINE_DEBUG_NO_NXE").is_none()
+}
+
 /// Whether `WARPINE_NX`'s value leaves execute protection on: everything
 /// but `off`, `0`, `no` or `false` (any case).
 pub fn nx_setting(value: Option<&str>) -> bool {
