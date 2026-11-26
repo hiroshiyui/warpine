@@ -40,7 +40,7 @@ Warpine runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) programs na
 
 - **Containers and drag and drop** — drags work within a program, between programs and from the host's file manager; lazy drag and owner-painted container backgrounds are missing.
 - **Menus** — keyboard menus, menu notifications, item changes and owner-drawn items measured with `WM_MEASUREITEM` and one level of cascading submenus work; deeper cascades are missing.
-- **Help** — F1 posts `WM_HELP`, but there is no help viewer yet (the IPF help format is unpublished).
+- **Help** — F1 posts `WM_HELP`, but there is no help viewer yet; the INF / HLP reader is under way (headers and tables of contents, `warpine --inf-toc`; ADR-0132).
 - **More GPI** — rounded box corners, line ends and joins, scaled line widths, rotated glyphs and images under transforms, palettes, and drawing through a child window's presentation space are not implemented.
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet; the spooler reports no printers.
 

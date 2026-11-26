@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`DosSetPathInfo` level 2** returned success without setting the extended attributes, and **`DosQueryPathInfo` level 5** was refused (`ERROR_INVALID_LEVEL`).
 
 ### Changed
+- **Guest memory is mapped on a 2 MB boundary**, so the host can back the guest's 2 MB pages (PAE, ADR-0131) with large pages of its own.
 - **`somBuildClass` initializes the class object**: a metaclass's own `somDefaultInit` now runs on the class objects it builds, before `somClassReady`, as `somNew` on a metaclass already did.
 
 ### Security
