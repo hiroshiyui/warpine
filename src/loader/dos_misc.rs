@@ -230,7 +230,7 @@ mod tests {
         let hmod = l.guest_read::<u32>(buf + 16).unwrap();
         assert_eq!(l.dos_query_proc_addr(hmod, 234, 0, buf + 20), NO_ERROR, "DosExit");
         assert_ne!(l.guest_read::<u32>(buf + 20), Some(0));
-        assert_eq!(l.dos_query_proc_addr(hmod, 981, 0, buf + 20), ERROR_PROC_NOT_FOUND, "DosOpenL is not implemented");
+        assert_eq!(l.dos_query_proc_addr(hmod, 990, 0, buf + 20), ERROR_PROC_NOT_FOUND, "DosListIOL is not implemented");
     }
 
     #[test]

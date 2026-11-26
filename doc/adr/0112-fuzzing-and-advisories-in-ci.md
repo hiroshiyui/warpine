@@ -73,6 +73,8 @@ Warpine reads no font or help file a program supplies (its fonts are built in, `
 
 `DosSetPathInfo` level 2 now sets extended attributes, so a program's `FEA2LIST` is parsed (`src/loader/ea_list.rs`, which builds alone). The `fea2_list` target checks that parsing never panics, that every entry it gives fits inside `cbList` with a non-empty name without NULs, and that an error names an offset inside the list. It ran 32 million inputs in 90 seconds without finding anything. `seed.sh` writes one list.
 
+Later the same day the target grew with the level-3 queries: the `GEA2LIST` they take (`parse_gea2_list`, the same checks) and the lists Warpine builds (`build_fea2_list` must parse back to the same entries and state its own length; `build_dena2` must stay in the room it is given). 15 million inputs in two minutes found nothing.
+
 ## Addendum (2026-11-26): Workplace setup strings
 
 `WinCreateObject` and `WinSetObjectData` (ADR-0130) bring a parser of setup strings from the program (`KEY=value;…`, `^;` a semicolon) and the joining of queued strings, in `src/loader/wps_setup.rs`, which builds alone. The `wps_setup` target's first byte splits the input into a key and a string. It checks that scanning never panics, that an escaped value scans back, that the next queued item is still found and that a later occurrence wins, and that a title is always followed safely. Within its first minute it found two problems:

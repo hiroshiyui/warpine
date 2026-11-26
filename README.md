@@ -204,6 +204,8 @@ samples/               OS/2 sample applications and build scripts
   infoseg_test/        DosGetInfoSeg global and local information segments, a running clock
   fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
   bigdata_test/        1.5 MB of static data, all of it the program's own
+  largefile_test/      Files past 4 GB: DosOpenL, DosSetFilePtrL, DosSetFileSizeL, FILELOCKL, 64-bit sizes
+  ea_test/             Extended attributes by handle and path: set, sized, queried, enumerated
   attr_test/           Hidden, system and archive kept and reported, archive on write, carried by DosCopy
   libpath_test/        CONFIG.SYS LIBPATH and SET: the DLL search order and the starting environment
   pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
@@ -415,7 +417,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2502 unit tests (no KVM required)
+cargo test                        # 2506 unit tests (no KVM required)
 cargo test --test integration     # 239 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

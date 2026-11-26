@@ -794,7 +794,7 @@ typedef struct _PIPEINFO {
     CHAR   szName[1];
 } PIPEINFO, *PPIPEINFO;
 
-typedef long long LONGLONG;
+typedef long long LONGLONG, *PLONGLONG;
 typedef unsigned long long ULONGLONG;
 
 typedef struct _FILESTATUS3L {
@@ -808,6 +808,24 @@ typedef struct _FILESTATUS3L {
     LONGLONG cbFileAlloc;
     ULONG    attrFile;
 } FILESTATUS3L, *PFILESTATUS3L;
+
+typedef struct _FILESTATUS4L {
+    FDATE    fdateCreation;
+    FTIME    ftimeCreation;
+    FDATE    fdateLastAccess;
+    FTIME    ftimeLastAccess;
+    FDATE    fdateLastWrite;
+    FTIME    ftimeLastWrite;
+    LONGLONG cbFile;
+    LONGLONG cbFileAlloc;
+    ULONG    attrFile;
+    ULONG    cbList;
+} FILESTATUS4L, *PFILESTATUS4L;
+
+typedef struct _FILELOCKL {
+    LONGLONG lOffset;
+    LONGLONG lRange;
+} FILELOCKL, *PFILELOCKL;
 #pragma pack(pop)
 
 /* The 64-bit find buffers are not padded. */
@@ -848,6 +866,23 @@ typedef struct _FILEFINDBUF4L {
 #define FIL_STANDARDL          11
 #define FIL_QUERYEASIZEL       12
 #define FIL_QUERYEASFROMLISTL  13
+
+/* Large files: 64-bit sizes, offsets and lock ranges. */
+APIRET APIENTRY DosOpenL(PCSZ pszFileName, PHFILE phf, PULONG pulAction, LONGLONG cbFile,
+                         ULONG ulAttribute, ULONG fsOpenFlags, ULONG fsOpenMode, PEAOP2 peaop2);
+APIRET APIENTRY DosSetFilePtrL(HFILE hFile, LONGLONG ib, ULONG method, PLONGLONG ibActual);
+APIRET APIENTRY DosSetFileSizeL(HFILE hFile, LONGLONG cbSize);
+APIRET APIENTRY DosSetFileLocksL(HFILE hFile, PFILELOCKL pflUnlock, PFILELOCKL pflLock,
+                                 ULONG timeout, ULONG flags);
+APIRET APIENTRY DosCancelLockRequestL(HFILE hFile, PFILELOCKL pflLock);
+APIRET APIENTRY DosProtectOpenL(PCSZ pszFileName, PHFILE phf, PULONG pulAction, LONGLONG cbFile,
+                                ULONG ulAttribute, ULONG fsOpenFlags, ULONG fsOpenMode,
+                                PEAOP2 peaop2, PFHLOCK pfhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFilePtrL(HFILE hFile, LONGLONG ib, ULONG method, PLONGLONG ibActual,
+                                      FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFileSizeL(HFILE hFile, LONGLONG cbSize, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFileLocksL(HFILE hFile, PFILELOCKL pflUnlock, PFILELOCKL pflLock,
+                                        ULONG timeout, ULONG flags, FHLOCK fhFileHandleLockID);
 
 typedef USHORT SEL, *PSEL;
 

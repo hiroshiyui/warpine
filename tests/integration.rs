@@ -4136,6 +4136,32 @@ fn test_file_attributes() {
     assert_all_checks_pass("samples/fileattr_test/fileattr_test.exe", &[]);
 }
 
+/// ea_test: extended attributes set by handle (DosSetFileInfo level 2),
+/// sizes at level 2, level 3 queries by handle and by path that never write
+/// past the FEA2LIST's cbList, and DosEnumAttribute by handle and by path.
+#[test]
+fn test_extended_attributes_by_handle_and_path() {
+    const SAMPLE: &str = "samples/ea_test/ea_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("ea_test: done 30/30"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// largefile_test: a sparse file grown past 4 GB, data written and read
+/// back past 4 GB, 64-bit sizes at levels 11 / 12 and in FILEFINDBUF3L,
+/// FILELOCKL ranges, and the DosProtect*L forms (DOSCALLS 981–989).
+#[test]
+fn test_large_files() {
+    const SAMPLE: &str = "samples/largefile_test/largefile_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("largefile_test: done 40/40"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// datetime_test: dates after 2038 (ADR-0039). The session starts at
 /// 2040-03-01 (`WARPINE_CLOCK`) in a fixed zone nine hours east of UTC
 /// (`TZ=JST-9`, no daylight saving): DosGetDateTime / QSV_TIME / the C

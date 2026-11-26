@@ -18,7 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **Shared muxwait semaphores across processes** (ADR-0050 addendum): named and `DC_SEM_SHARED` muxwait lists live in the session's semaphore segment, so another process opens them by name or handle, waits on them and adds or deletes records. Their members are shared events or mutexes. The segment's slots grow to 2 KB (version 2). `shsem_test` has 33 checks, 24 in its child.
 
+- **Extended attributes by handle**: `DosSetFileInfo` level 2 sets them and `DosQueryFileInfo` level 3 returns them (the VFS remembers the path each file was opened by); level 2 of both queries reports the true size of the file's EA list. New sample `ea_test` (30 checks, GCC and clang).
+
+- **Large files** (DOSCALLS 981–989): `DosOpenL`, `DosSetFilePtrL`, `DosSetFileSizeL`, `DosSetFileLocksL`, `DosCancelLockRequestL` and the `DosProtect*L` forms; 64-bit sizes at levels 11–13 of the file-information calls and in `DosFindFirst`'s `FILEFINDBUF3L` / `4L`. The SDK declares them, with `FILESTATUS4L` and `FILELOCKL`. New sample `largefile_test` (40 checks, GCC and clang). 1047 entry points.
+
 ### Fixed
+- **`DosQueryPathInfo` level 3 wrote past a too-small buffer**: it never read the `FEA2LIST`'s `cbList`, so a short buffer was overrun in the program's own memory. It now gives `ERROR_BUFFER_OVERFLOW` and writes nothing, and a malformed `GEA2LIST` gives `ERROR_EA_LIST_INCONSISTENT` with `oError` (the `fea2_list` fuzz target covers the new parser).
+- **`DosEnumAttribute`** had its reference types swapped (`<bsedos.h>`: 0 is a handle, 1 a path) and wrote entries in neither `DENA1`'s nor `DENA2`'s layout; it now writes linked `DENA2` entries, by handle or by path.
 - **A GDB interrupt (Ctrl-C) stops a program spinning in guest code** (ADR-0104 addendum): the stub only set a flag the vCPU reads between runs, so a loop that never called Warpine was never stopped (the stub gave up after 2 s); it now kicks every vCPU out of the guest. `c_gdb_test spin` and a raw-RSP integration test check it.
 - **`DosSetPathInfo` level 2** returned success without setting the extended attributes, and **`DosQueryPathInfo` level 5** was refused (`ERROR_INVALID_LEVEL`).
 

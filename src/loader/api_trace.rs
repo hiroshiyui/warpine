@@ -190,6 +190,15 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         646 => "DosProtectQueryFileInfo",
         873 => "DosSetExtLIBPATH",
         874 => "DosQueryExtLIBPATH",
+        981 => "DosOpenL",
+        982 => "DosProtectOpenL",
+        983 => "DosProtectSetFileLocksL",
+        984 => "DosProtectSetFilePtrL",
+        985 => "DosProtectSetFileSizeL",
+        986 => "DosSetFileLocksL",
+        987 => "DosCancelLockRequestL",
+        988 => "DosSetFilePtrL",
+        989 => "DosSetFileSizeL",
 
         // ── QUECALLS ──────────────────────────────────────────────
         o if (1024..PMWIN_BASE).contains(&o) => match o - 1024 {

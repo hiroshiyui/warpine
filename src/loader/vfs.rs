@@ -245,9 +245,19 @@ pub struct FileStatus {
     pub last_access_time: u16,
     pub last_write_date: u16,
     pub last_write_time: u16,
-    pub file_size: u32,
-    pub file_alloc: u32,
+    /// 64-bit, as the large-file calls report them; the 32-bit structures
+    /// take them saturated ([`FileStatus::size32`]).
+    pub file_size: u64,
+    pub file_alloc: u64,
     pub attributes: FileAttribute,
+}
+
+impl FileStatus {
+    /// `file_size` and `file_alloc` for a 32-bit structure: a file of 4 GB
+    /// or more reports 0xFFFFFFFF (unverified: what OS/2 reports there).
+    pub fn size32(&self) -> (u32, u32) {
+        (u32::try_from(self.file_size).unwrap_or(u32::MAX), u32::try_from(self.file_alloc).unwrap_or(u32::MAX))
+    }
 }
 
 /// Directory entry returned by find_first/find_next (corresponds to FILEFINDBUF3).
@@ -284,10 +294,10 @@ pub struct FsVolumeInfo {
 }
 
 /// Byte-range lock specification for DosSetFileLocks.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileLockRange {
-    pub offset: u32,
-    pub length: u32,
+    pub offset: u64,
+    pub length: u64,
 }
 
 // ── Opaque Handle Types ──
@@ -461,10 +471,14 @@ pub const STD_HANDLES: u32 = 3;
 /// An open file tracked by DriveManager. Duplicated handles
 /// (`DosDupHandle`) share one entry's backend handle — and so its file
 /// pointer — which is closed when the last of them is.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct FileEntry {
     drive: u8,
     vfs_handle: VfsFileHandle,
+    /// The path it was opened by, relative to its drive's root (the calls
+    /// by handle on extended attributes reach the file by it; a file
+    /// renamed while open keeps its old path here).
+    rel_path: std::sync::Arc<str>,
 }
 
 /// An open directory search tracked by DriveManager.
@@ -779,7 +793,7 @@ impl DriveManager {
         let backend = self.drives[drive as usize].as_ref().ok_or(Os2Error::INVALID_DRIVE)?;
         let (vfs_handle, action) = backend.open(&rel_path, mode, sharing, flags, attributes)?;
         let os2_handle = self.alloc_handle();
-        self.file_handles.insert(os2_handle, FileEntry { drive, vfs_handle });
+        self.file_handles.insert(os2_handle, FileEntry { drive, vfs_handle, rel_path: rel_path.into() });
         self.file_refs.insert((drive, vfs_handle), 1);
         Ok((os2_handle, action))
     }
@@ -883,7 +897,7 @@ impl DriveManager {
     /// what `new` was) or, for `None`, a fresh handle. Both share the file
     /// and its pointer.
     pub fn dup_file(&mut self, old: u32, new: Option<u32>) -> VfsResult<u32> {
-        let entry = *self.file_handles.get(&old).ok_or(Os2Error::INVALID_HANDLE)?;
+        let entry = self.file_handles.get(&old).ok_or(Os2Error::INVALID_HANDLE)?.clone();
         if new == Some(old) {
             return Ok(old);
         }
@@ -1078,6 +1092,12 @@ impl DriveManager {
     pub fn query_file_info(&self, handle: u32, level: u32) -> VfsResult<FileStatus> {
         let entry = self.file_handles.get(&handle).ok_or(Os2Error::INVALID_HANDLE)?;
         self.backend(entry.drive)?.query_file_info(entry.vfs_handle, level)
+    }
+
+    /// The drive and drive-relative path open file `handle` was opened by.
+    pub fn file_path(&self, handle: u32) -> VfsResult<(u8, String)> {
+        let entry = self.file_handles.get(&handle).ok_or(Os2Error::INVALID_HANDLE)?;
+        Ok((entry.drive, entry.rel_path.to_string()))
     }
 
     /// Set file status by path (`DosSetPathInfo`).

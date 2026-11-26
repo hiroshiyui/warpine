@@ -193,6 +193,15 @@ DOSCALLS.645  DosProtectQueryFHState
 DOSCALLS.646  DosProtectQueryFileInfo
 DOSCALLS.873  DosSetExtLIBPATH
 DOSCALLS.874  DosQueryExtLIBPATH
+DOSCALLS.981  DosOpenL
+DOSCALLS.982  DosProtectOpenL
+DOSCALLS.983  DosProtectSetFileLocksL
+DOSCALLS.984  DosProtectSetFilePtrL
+DOSCALLS.985  DosProtectSetFileSizeL
+DOSCALLS.986  DosSetFileLocksL
+DOSCALLS.987  DosCancelLockRequestL
+DOSCALLS.988  DosSetFilePtrL
+DOSCALLS.989  DosSetFileSizeL
 
 # ── QUECALLS (ordinal relative to module, linker uses QUECALLS.N) ─────────────
 QUECALLS.9    DosReadQueue

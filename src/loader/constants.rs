@@ -975,6 +975,7 @@ pub const ERROR_INVALID_HANDLE: u32 = 6;
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub const ERROR_INVALID_DRIVE: u32 = 15;
 pub const ERROR_INVALID_FUNCTION: u32 = 1;
+pub const ERROR_NEGATIVE_SEEK: u32 = 131;
 pub const ERROR_BUFFER_OVERFLOW: u32 = 111;
 /// An EA name or list a program passed is not well formed (Open Watcom's
 /// bseerr.h).
@@ -995,7 +996,17 @@ pub const DATETIME_SIZE:              u32 = 12;
 /// `DosQueryFileInfo` / `DosSetFileInfo` levels (`<bsedos.h>`).
 pub const FIL_STANDARD:               u32 = 1;
 pub const FIL_QUERYEASIZE:            u32 = 2;
+pub const FIL_QUERYEASFROMLIST:       u32 = 3;
 pub const FIL_QUERYFULLNAME:          u32 = 5;
+/// The 64-bit levels (`FILESTATUS3L` / `4L`, `FILEFINDBUF3L` / `4L`).
+pub const FIL_STANDARDL:              u32 = 11;
+pub const FIL_QUERYEASIZEL:           u32 = 12;
+pub const FIL_QUERYEASFROMLISTL:      u32 = 13;
+/// Size of the OS/2 `FILESTATUS3L` structure (`<bsedos.h>`).
+pub const FILESTATUS3L_SIZE:          u32 = 32;
+/// `DosEnumAttribute` reference types (`<bsedos.h>`).
+pub const ENUMEA_REFTYPE_FHANDLE:     u32 = 0;
+pub const ENUMEA_REFTYPE_PATH:        u32 = 1;
 /// Size of the OS/2 `FILESTATUS3` structure (`<bsedos.h>`).
 pub const FILESTATUS3_SIZE:           u32 = 24;
 pub const ERROR_INVALID_CODE_PAGE:    u32 = 472;

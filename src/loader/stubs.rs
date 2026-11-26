@@ -687,10 +687,18 @@ impl super::Loader {
     }
 
     /// DosSetFileInfo (ordinal 218): set an open file's times
-    /// (`FIL_STANDARD`, a `FILESTATUS3`): see [`Self::set_file_status`].
-    /// Pipes have no times to set. Level 2 (EAs) is accepted and ignored.
+    /// (`FIL_STANDARD`, a `FILESTATUS3`): see [`Self::set_file_status`];
+    /// at level 2 (`FIL_QUERYEASIZE`) its extended attributes, as
+    /// `DosSetPathInfo` sets them ([`Self::set_eas`]), on the file the
+    /// handle was opened by. Pipes have no times or EAs to set.
     pub fn dos_set_file_info(&self, hf: u32, level: u32, p_info: u32, cb_info: u32) -> u32 {
         debug!("  DosSetFileInfo(hf={}, level={})", hf, level);
+        if level == FIL_QUERYEASIZE || level == FIL_QUERYEASIZEL {
+            return match self.ea_handle(hf) {
+                Ok(target) => self.set_eas(target, p_info, cb_info),
+                Err(e) => e,
+            };
+        }
         let status = match self.read_set_status(level, p_info, cb_info) {
             Ok(Some(status)) => status,
             Ok(None) => return NO_ERROR,
@@ -700,7 +708,7 @@ impl super::Loader {
             || hf >= super::managers::PIPE_HANDLE_BASE {
             return NO_ERROR;
         }
-        match self.shared.drive_mgr.lock_or_recover().set_file_info(hf, level, &status) {
+        match self.shared.drive_mgr.lock_or_recover().set_file_info(hf, FIL_STANDARD, &status) {
             Ok(()) => NO_ERROR,
             Err(e) => e.0,
         }
@@ -733,26 +741,32 @@ impl super::Loader {
     pub fn dos_set_path_info(&self, psz_name: u32, level: u32, p_info: u32, cb_info: u32, _flag: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         debug!("  DosSetPathInfo('{}', level={})", name, level);
-        if level == FIL_QUERYEASIZE { return self.dos_set_path_eas(&name, p_info, cb_info); }
+        if level == FIL_QUERYEASIZE || level == FIL_QUERYEASIZEL {
+            return match self.ea_path(&name) {
+                Ok(target) => self.set_eas(Some(target), p_info, cb_info),
+                Err(e) => e,
+            };
+        }
         let status = match self.read_set_status(level, p_info, cb_info) {
             Ok(Some(status)) => status,
             Ok(None) => return NO_ERROR,
             Err(rc) => return rc,
         };
-        match self.shared.drive_mgr.lock_or_recover().set_path_info(&name, level, &status) {
+        match self.shared.drive_mgr.lock_or_recover().set_path_info(&name, FIL_STANDARD, &status) {
             Ok(()) => NO_ERROR,
             Err(e) => e.0,
         }
     }
 
-    /// The extended attributes of the `EAOP2` at `p_info` set on `name`:
+    /// The extended attributes of the `EAOP2` at `p_info` set on `target`
+    /// (`None`: a pipe, which takes the list and keeps nothing):
     /// each entry of its `FEA2LIST` (an empty value deletes the EA), in
     /// order. A list that is not well formed sets nothing: its bad entry's
     /// offset goes to `oError` and the result is
     /// `ERROR_EA_LIST_INCONSISTENT` (Control Program Reference; the offset's
     /// base, the list's start, is Warpine's reading). EA names are kept as
     /// given (unverified: OS/2 may upper-case them).
-    fn dos_set_path_eas(&self, name: &str, p_info: u32, cb_info: u32) -> u32 {
+    fn set_eas(&self, target: Option<(u8, String)>, p_info: u32, cb_info: u32) -> u32 {
         const EAOP2_SIZE: u32 = 12;
         const EAOP2_FEA2LIST: u32 = 4;
         const EAOP2_ERROR: u32 = 8;
@@ -772,11 +786,11 @@ impl super::Loader {
             }
         };
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-        let dm = self.shared.drive_mgr.lock_or_recover();
-        let (drive, rel) = match dm.resolve_path(name) {
-            Ok(r) => r,
-            Err(e) => return e.0,
+        let Some((drive, rel)) = target else {
+            let _ = self.guest_write::<u32>(p_info.wrapping_add(EAOP2_ERROR), 0);
+            return NO_ERROR;
         };
+        let dm = self.shared.drive_mgr.lock_or_recover();
         let backend = match dm.backend(drive) {
             Ok(b) => b,
             Err(e) => return e.0,
@@ -803,17 +817,25 @@ impl super::Loader {
     fn read_set_status(&self, level: u32, p_info: u32, cb_info: u32)
         -> Result<Option<super::vfs::FileStatus>, u32>
     {
-        match level {
-            FIL_STANDARD => {}
-            FIL_QUERYEASIZE => return Ok(None),
+        let size = match level {
+            FIL_STANDARD => FILESTATUS3_SIZE,
+            FIL_STANDARDL => FILESTATUS3L_SIZE,
+            FIL_QUERYEASIZE | FIL_QUERYEASIZEL => return Ok(None),
             _ => return Err(ERROR_INVALID_LEVEL),
-        }
-        if cb_info < FILESTATUS3_SIZE {
+        };
+        if cb_info < size {
             return Err(ERROR_BUFFER_OVERFLOW);
         }
-        let b = self.guest_read_bytes(p_info, FILESTATUS3_SIZE as usize).ok_or(ERROR_INVALID_PARAMETER)?;
+        let b = self.guest_read_bytes(p_info, size as usize).ok_or(ERROR_INVALID_PARAMETER)?;
         let word = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
         let dword = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let qword = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        // FILESTATUS3L: the sizes are LONGLONGs, the attributes after them.
+        let (file_size, file_alloc, attrs) = if level == FIL_STANDARDL {
+            (qword(12), qword(20), dword(28))
+        } else {
+            (dword(12) as u64, dword(16) as u64, dword(20))
+        };
         let status = super::vfs::FileStatus {
             creation_date: word(0),
             creation_time: word(2),
@@ -821,9 +843,9 @@ impl super::Loader {
             last_access_time: word(6),
             last_write_date: word(8),
             last_write_time: word(10),
-            file_size: dword(12),
-            file_alloc: dword(16),
-            attributes: super::vfs::FileAttribute(dword(20)),
+            file_size,
+            file_alloc,
+            attributes: super::vfs::FileAttribute(attrs),
         };
         let pairs = [(status.creation_date, status.creation_time),
                      (status.last_access_date, status.last_access_time),
@@ -1407,6 +1429,171 @@ mod tests {
         assert_eq!(l.dos_set_path_info(path, FIL_QUERYEASIZE, eaop, 8, 0), ERROR_BUFFER_OVERFLOW, "a short EAOP2");
         l.guest_write::<u32>(eaop + 4, 0).unwrap();
         assert_eq!(l.dos_set_path_info(path, FIL_QUERYEASIZE, eaop, 12, 0), ERROR_INVALID_PARAMETER, "no FEA2LIST");
+    }
+
+    /// EAs by handle and the queries: DosSetFileInfo level 2 sets them on
+    /// the file the handle opened; level 3 of DosQueryFileInfo /
+    /// DosQueryPathInfo returns the names a GEA2LIST asks for, never past
+    /// the FEA2LIST's cbList; level 2 reports the size that takes them all;
+    /// DosEnumAttribute numbers its reference types as <bsedos.h> does.
+    #[test]
+    fn extended_attributes_by_handle_and_bounded_queries() {
+        use super::super::vfs::DriveConfig;
+        use super::super::vfs_hostdir::HostDirBackend;
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("note.txt"), b"x").unwrap();
+        let l = Loader::new_mock();
+        {
+            let mut dm = l.shared.drive_mgr.lock_or_recover();
+            dm.set_drive_config(2, DriveConfig { host_path: tmp.path().to_path_buf(), label: "T".into(), read_only: false });
+            dm.mount(2, Box::new(HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
+        }
+        let path = put(&l, 0x0030_0000, "C:\\NOTE.TXT");
+        let (phf, pact) = (0x0030_0100u32, 0x0030_0104u32);
+        assert_eq!(l.dos_open(path, phf, pact, 0x01 /* OPEN_ACTION_OPEN_IF_EXISTS */, OPEN_ACCESS_READWRITE | 0x40 /* OPEN_SHARE_DENYNONE */), NO_ERROR);
+        let hf = l.guest_read::<u32>(phf).unwrap();
+        let (eaop, fea, gea) = (0x0031_0000u32, 0x0031_0100u32, 0x0031_0800u32);
+        let eas = [super::super::ea_list::Fea2 { flags: 0, name: b"ONE".to_vec(), value: b"first".to_vec() },
+                   super::super::ea_list::Fea2 { flags: 0x80, name: b"TWO".to_vec(), value: b"2".to_vec() }];
+        let list = super::super::ea_list::build_fea2_list(&eas);
+        l.guest_write_bytes(fea, &list).unwrap();
+        for (at, v) in [(eaop, 0), (eaop + 4, fea), (eaop + 8, 0xFFFF)] { l.guest_write::<u32>(at, v).unwrap(); }
+        assert_eq!(l.dos_set_file_info(hf, FIL_QUERYEASIZE, eaop, 12), NO_ERROR, "set by handle");
+        let get = |name: &str| l.shared.drive_mgr.lock_or_recover().backend(2).unwrap().get_ea("note.txt", name).ok().map(|e| e.value);
+        assert_eq!(get("TWO").as_deref(), Some(&b"2"[..]));
+        assert_eq!(l.dos_set_file_info(9999, FIL_QUERYEASIZE, eaop, 12), ERROR_INVALID_HANDLE);
+
+        // Level 2: cbList is the FEA2LIST holding both.
+        let fs = 0x0032_0000u32;
+        assert_eq!(l.dos_query_file_info(hf, FIL_QUERYEASIZE, fs, 28), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(fs + 24), Some(list.len() as u32));
+        assert_eq!(l.dos_query_path_info(path, FIL_QUERYEASIZE, fs, 28), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(fs + 24), Some(list.len() as u32));
+
+        // Level 3: TWO, then one the file lacks.
+        let names = [b"two".as_slice(), b"NONE"];
+        let mut g = Vec::new();
+        for (i, n) in names.iter().enumerate() {
+            let mut e = vec![0u8; 4];
+            e.push(n.len() as u8);
+            e.extend_from_slice(n);
+            e.push(0);
+            e.resize(e.len().next_multiple_of(4), 0);
+            if i == 0 { let len = e.len() as u32; e[..4].copy_from_slice(&len.to_le_bytes()); }
+            g.extend(e);
+        }
+        let mut gl = ((g.len() + 4) as u32).to_le_bytes().to_vec();
+        gl.extend(g);
+        l.guest_write_bytes(gea, &gl).unwrap();
+        l.guest_write::<u32>(eaop, gea).unwrap();
+        let want = super::super::ea_list::build_fea2_list(&[eas[1].clone(),
+            super::super::ea_list::Fea2 { flags: 0, name: b"NONE".to_vec(), value: Vec::new() }]);
+        let guard = 0x0031_0400u32;
+        let query = |by_handle: bool, room: u32| {
+            l.guest_write_bytes(fea, &[0xAAu8; 0x400]).unwrap();
+            l.guest_write::<u32>(fea, room).unwrap();
+            if by_handle { l.dos_query_file_info(hf, FIL_QUERYEASFROMLIST, eaop, 12) }
+            else { l.dos_query_path_info(path, FIL_QUERYEASFROMLIST, eaop, 12) }
+        };
+        for by_handle in [true, false] {
+            assert_eq!(query(by_handle, want.len() as u32 - 1), ERROR_BUFFER_OVERFLOW, "one byte short");
+            assert_eq!(l.guest_read::<u8>(fea + 4), Some(0xAA), "nothing written");
+            assert_eq!(query(by_handle, 0x400), NO_ERROR);
+            assert_eq!(l.guest_read_bytes(fea, want.len()).unwrap(), want, "TWO found by any case, NONE empty");
+            assert_eq!(l.guest_read::<u8>(guard), Some(0xAA));
+        }
+        l.guest_write::<u8>(gea + 8, 0).unwrap();
+        assert_eq!(query(true, 0x400), ERROR_EA_LIST_INCONSISTENT, "an empty name");
+        assert_eq!(l.guest_read::<u32>(eaop + 8), Some(4), "oError names the entry");
+        assert_eq!(l.dos_query_file_info(hf, FIL_QUERYEASFROMLIST, eaop, 8), ERROR_BUFFER_OVERFLOW, "a short EAOP2");
+
+        // DosEnumAttribute: by handle (0) and by path (1); DENA2 entries.
+        let (buf, pcount, phandle) = (0x0033_0000u32, 0x0033_0800u32, 0x0033_0804u32);
+        l.guest_write::<u32>(phandle, hf).unwrap();
+        for (ref_type, file) in [(ENUMEA_REFTYPE_FHANDLE, phandle), (ENUMEA_REFTYPE_PATH, path)] {
+            l.guest_write::<u32>(pcount, 10).unwrap();
+            assert_eq!(l.dos_enum_attribute(ref_type, file, 1, buf, 0x800, pcount, 1), NO_ERROR);
+            assert_eq!(l.guest_read::<u32>(pcount), Some(2), "reference type {ref_type}");
+            let (dena, _) = super::super::ea_list::build_dena2(&eas, 0x800);
+            let mut got = l.guest_read_bytes(buf, dena.len()).unwrap();
+            // The host lists EAs in its own order.
+            if got[8..11] == *b"TWO" {
+                let first = u32::from_le_bytes(got[..4].try_into().unwrap()) as usize;
+                let (a, b) = got.split_at(first);
+                let mut swapped = b.to_vec();
+                swapped[..4].copy_from_slice(&(b.len() as u32).to_le_bytes());
+                swapped.extend(a);
+                let end = swapped.len() - a.len();
+                swapped[end..end + 4].copy_from_slice(&[0; 4]);
+                got = swapped;
+            }
+            assert_eq!(got, dena);
+        }
+        l.guest_write::<u32>(pcount, 10).unwrap();
+        assert_eq!(l.dos_enum_attribute(ENUMEA_REFTYPE_PATH, path, 2, buf, 0x800, pcount, 1), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(pcount), Some(1), "from the second");
+        assert_eq!(l.dos_enum_attribute(7, path, 1, buf, 0x800, pcount, 1), ERROR_INVALID_PARAMETER);
+        l.guest_write::<u32>(pcount, 10).unwrap();
+        assert_eq!(l.dos_enum_attribute(ENUMEA_REFTYPE_PATH, path, 1, buf, 12, pcount, 1), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(pcount), Some(1), "only what fits");
+    }
+
+    /// The large-file calls: a sparse file past 4 GB sized, sought and
+    /// locked with 64-bit values; levels 11 / 12 report 64-bit sizes while
+    /// the 32-bit levels saturate; DosFindFirst's FIL_STANDARDL entries.
+    #[test]
+    fn large_files_use_64_bit_sizes_offsets_and_locks() {
+        use super::super::vfs::DriveConfig;
+        use super::super::vfs_hostdir::HostDirBackend;
+        const BIG: u64 = 5 << 30;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let l = Loader::new_mock();
+        {
+            let mut dm = l.shared.drive_mgr.lock_or_recover();
+            dm.set_drive_config(2, DriveConfig { host_path: tmp.path().to_path_buf(), label: "T".into(), read_only: false });
+            dm.mount(2, Box::new(HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
+        }
+        let path = put(&l, 0x0030_0000, "C:\\BIG.DAT");
+        let (phf, pact, pos, buf) = (0x0030_0100u32, 0x0030_0104u32, 0x0030_0108u32, 0x0030_0200u32);
+        // OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_OPEN_IF_EXISTS, read-write, deny none.
+        assert_eq!(l.dos_open(path, phf, pact, 0x11, OPEN_ACCESS_READWRITE | 0x40), NO_ERROR);
+        let hf = l.guest_read::<u32>(phf).unwrap();
+        assert_eq!(l.dos_set_file_size_l(hf, BIG as i64), NO_ERROR);
+        assert_eq!(l.dos_set_file_size_l(hf, -1), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_set_file_ptr_l(hf, -16, 2, pos), NO_ERROR, "from the end");
+        assert_eq!(l.guest_read::<u64>(pos), Some(BIG - 16));
+        assert_eq!(l.dos_set_file_ptr_l(hf, 0, 1, pos), NO_ERROR);
+        assert_eq!(l.guest_read::<u64>(pos), Some(BIG - 16), "where it is");
+        assert_eq!(l.dos_set_file_ptr_l(hf, 0, 7, pos), ERROR_INVALID_PARAMETER, "no such method");
+        // Level 11: FILESTATUS3L; level 12 adds cbList; 1 saturates.
+        assert_eq!(l.dos_query_file_info(hf, FIL_STANDARDL, buf, 31), ERROR_BUFFER_OVERFLOW);
+        assert_eq!(l.dos_query_file_info(hf, FIL_STANDARDL, buf, 32), NO_ERROR);
+        assert_eq!(l.guest_read::<u64>(buf + 12), Some(BIG), "cbFile");
+        assert!(l.guest_read::<u64>(buf + 20).unwrap() >= BIG, "cbFileAlloc");
+        assert_eq!(l.dos_query_path_info(path, FIL_QUERYEASIZEL, buf, 36), NO_ERROR);
+        assert_eq!(l.guest_read::<u64>(buf + 12), Some(BIG));
+        assert_eq!(l.guest_read::<u32>(buf + 32), Some(4), "cbList of no EAs");
+        assert_eq!(l.dos_query_file_info(hf, FIL_STANDARD, buf, 24), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(buf + 12), Some(u32::MAX), "saturated in a FILESTATUS3");
+        // FILELOCKL ranges past 4 GB.
+        let (lk, bad) = (0x0030_0300u32, 0x0030_0320u32);
+        l.guest_write::<u64>(lk, BIG - 100).unwrap();
+        l.guest_write::<u64>(lk + 8, 50).unwrap();
+        assert_eq!(l.dos_set_file_locks_l(hf, 0, lk, 0, 0), NO_ERROR);
+        assert_eq!(l.dos_set_file_locks_l(hf, lk, 0, 0, 0), NO_ERROR, "and unlocked");
+        l.guest_write::<i64>(bad, -5).unwrap();
+        l.guest_write::<u64>(bad + 8, 1).unwrap();
+        assert_eq!(l.dos_set_file_locks_l(hf, 0, bad, 0, 0), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.read_lock_range(lk, true), Ok(Some(super::super::vfs::FileLockRange { offset: BIG - 100, length: 50 })));
+        // DosFindFirst at FIL_STANDARDL: FILEFINDBUF3L.
+        let (pdir, pcount, spec) = (0x0030_0400u32, 0x0030_0404u32, put(&l, 0x0030_0410, "C:\\BIG.DAT"));
+        l.guest_write::<u32>(pdir, 0xFFFF_FFFF).unwrap();
+        l.guest_write::<u32>(pcount, 1).unwrap();
+        assert_eq!(l.dos_find_first(spec, pdir, 0, buf, 0x200, pcount, FIL_STANDARDL), NO_ERROR);
+        assert_eq!(l.guest_read::<u64>(buf + 16), Some(BIG), "FILEFINDBUF3L.cbFile");
+        assert_eq!(l.guest_read::<u8>(buf + 36), Some(7), "cchName after attrFile");
+        assert_eq!(l.guest_read_bytes(buf + 37, 7).unwrap(), b"BIG.DAT");
+        assert_eq!(l.dos_find_first(spec, pdir, 0, buf, 0x200, pcount, 7), ERROR_INVALID_LEVEL);
     }
 
     /// DosQueryPathInfo level 5 (FIL_QUERYFULLNAME): the name qualified by

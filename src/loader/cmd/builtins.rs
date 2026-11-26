@@ -204,7 +204,7 @@ impl CmdShell {
                 ));
             } else {
                 file_count += 1;
-                total_bytes += e.status.file_size as u64;
+                total_bytes += e.status.file_size;
                 self.writeln(&format!(
                     "{date}  {time}   {:>12}  {}",
                     e.status.file_size, e.name

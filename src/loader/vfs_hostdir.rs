@@ -85,7 +85,7 @@ fn metadata_to_file_status(meta: &fs::Metadata) -> FileStatus {
         .map(systemtime_to_dos)
         .unwrap_or((0, 0));
 
-    let size = meta.len() as u32;
+    let size = meta.len();
     let mut attrs = 0u32;
     if meta.is_dir() { attrs |= FileAttribute::DIRECTORY.0; }
     if meta.permissions().readonly() { attrs |= FileAttribute::READONLY.0; }
@@ -100,9 +100,15 @@ fn metadata_to_file_status(meta: &fs::Metadata) -> FileStatus {
         last_write_date: wdate,
         last_write_time: wtime,
         file_size: size,
-        file_alloc: (size + 511) & !511, // round up to 512-byte sectors
+        file_alloc: size.saturating_add(511) & !511, // round up to 512-byte sectors
         attributes: FileAttribute(attrs),
     }
+}
+
+/// A 64-bit offset or length for `fcntl`'s locks, at most `off_t`'s
+/// largest (a range past it is cut there).
+fn off_t_of(v: u64) -> libc::off_t {
+    libc::off_t::try_from(v).unwrap_or(libc::off_t::MAX)
 }
 
 // ── Directory listing cache ──
@@ -1320,8 +1326,8 @@ impl VfsBackend for HostDirBackend {
             let flock = libc::flock {
                 l_type: libc::F_UNLCK as i16,
                 l_whence: libc::SEEK_SET as i16,
-                l_start: range.offset as libc::off_t,
-                l_len: range.length as libc::off_t,
+                l_start: off_t_of(range.offset),
+                l_len: off_t_of(range.length),
                 l_pid: 0,
             };
             let rc = unsafe { libc::fcntl(fd, libc::F_SETLK, &flock) };
@@ -1335,8 +1341,8 @@ impl VfsBackend for HostDirBackend {
             let flock = libc::flock {
                 l_type: libc::F_WRLCK as i16,
                 l_whence: libc::SEEK_SET as i16,
-                l_start: range.offset as libc::off_t,
-                l_len: range.length as libc::off_t,
+                l_start: off_t_of(range.offset),
+                l_len: off_t_of(range.length),
                 l_pid: 0,
             };
             let rc = unsafe { libc::fcntl(fd, libc::F_SETLK, &flock) };

@@ -24,7 +24,7 @@ pub struct VfsFiles<'a> {
 /// A VFS file status as the interpreter's description of an entry.
 fn file_info(name: Vec<u8>, status: &FileStatus) -> FileInfo {
     FileInfo {
-        name, size: status.file_size as u64, date: status.last_write_date, time: status.last_write_time,
+        name, size: status.file_size, date: status.last_write_date, time: status.last_write_time,
         attributes: status.attributes.0,
     }
 }
@@ -76,7 +76,7 @@ impl VfsFiles<'_> {
     pub fn file_size(&self, handle: u32) -> Result<u64, u32> {
         let dm = self.shared.drive_mgr.lock_or_recover();
         if !dm.is_file(handle) { return Err(ERROR_INVALID_HANDLE); }
-        dm.query_file_info(handle, 1).map(|s| s.file_size as u64).map_err(|e| e.0)
+        dm.query_file_info(handle, 1).map(|s| s.file_size).map_err(|e| e.0)
     }
 
     pub fn file_close(&self, handle: u32) {

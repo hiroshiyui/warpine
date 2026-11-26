@@ -57,6 +57,11 @@ pub struct ApiEntry {
 
 // ── Public functions ──────────────────────────────────────────────────────────
 
+/// A `LONGLONG` argument from its two stack words (low first).
+fn longlong(lo: u32, hi: u32) -> i64 {
+    ((hi as u64) << 32 | lo as u64) as i64
+}
+
 /// Binary-search the registry for a handler by flat ordinal.
 /// Returns `None` for ordinals not covered by this registry
 /// (e.g., PMWIN/PMGPI/KBDCALLS/VIOCALLS — handled by sub-dispatchers).
@@ -485,6 +490,26 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_ext_libpath(a[0],a[1])) },
     ApiEntry { ordinal: 874, module: "DOSCALLS", name: "DosQueryExtLIBPATH", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_ext_libpath(a[0],a[1])) },
+
+    // ── DOSCALLS — large files (LONGLONG arguments take two stack words) ──
+    ApiEntry { ordinal: 981, module: "DOSCALLS", name: "DosOpenL",          argc: 9,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open(a[0],a[1],a[2],a[6],a[7])) },
+    ApiEntry { ordinal: 982, module: "DOSCALLS", name: "DosProtectOpenL",   argc: 10,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_open(a[0],a[1],a[2],a[6],a[7],a[9])) },
+    ApiEntry { ordinal: 983, module: "DOSCALLS", name: "DosProtectSetFileLocksL", argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[5],|| l.dos_protect_set_file_locks_l(a[0],a[1],a[2],a[3],a[4],a[5]))) },
+    ApiEntry { ordinal: 984, module: "DOSCALLS", name: "DosProtectSetFilePtrL", argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[5],|| l.dos_set_file_ptr_l(a[0],longlong(a[1],a[2]),a[3],a[4]))) },
+    ApiEntry { ordinal: 985, module: "DOSCALLS", name: "DosProtectSetFileSizeL", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[3],|| l.dos_set_file_size_l(a[0],longlong(a[1],a[2])))) },
+    ApiEntry { ordinal: 986, module: "DOSCALLS", name: "DosSetFileLocksL",  argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_locks_l(a[0],a[1],a[2],a[3],a[4])) },
+    ApiEntry { ordinal: 987, module: "DOSCALLS", name: "DosCancelLockRequestL", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_cancel_lock_request(a[0],a[1])) },
+    ApiEntry { ordinal: 988, module: "DOSCALLS", name: "DosSetFilePtrL",    argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_ptr_l(a[0],longlong(a[1],a[2]),a[3],a[4])) },
+    ApiEntry { ordinal: 989, module: "DOSCALLS", name: "DosSetFileSizeL",   argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_size_l(a[0],longlong(a[1],a[2]))) },
 
     // ── QUECALLS (base 1024) ──────────────────────────────────────────────
     ApiEntry { ordinal: 1024 + 9,  module: "QUECALLS", name: "DosReadQueue",   argc: 8,
@@ -1621,7 +1646,7 @@ mod tests {
             assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
         }
         let report = super::compat_report();
-        assert!(report.contains("DOSCALLS  (160 implemented, 4 stub)"), "{report}");
+        assert!(report.contains("DOSCALLS  (169 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────
