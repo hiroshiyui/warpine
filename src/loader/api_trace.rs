@@ -199,6 +199,8 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         987 => "DosCancelLockRequestL",
         988 => "DosSetFilePtrL",
         989 => "DosSetFileSizeL",
+        990 => "DosListIOL",
+        996 => "DosListIO",
 
         // ── QUECALLS ──────────────────────────────────────────────
         o if (1024..PMWIN_BASE).contains(&o) => match o - 1024 {

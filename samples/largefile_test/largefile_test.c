@@ -3,7 +3,8 @@
    with DosSetFileSizeL, data written and read back at an offset past 4 GB
    reached with DosSetFilePtrL, 64-bit sizes from DosQueryFileInfo /
    DosQueryPathInfo (FIL_STANDARDL, FIL_QUERYEASIZEL) and DosFindFirst
-   (FILEFINDBUF3L), FILELOCKL ranges past 4 GB, and the DosProtect*L forms.
+   (FILEFINDBUF3L), FILELOCKL ranges past 4 GB, the DosProtect*L forms, and
+   DosListIOL / DosListIO (a write past 4 GB and reads back in one call).
    Writes "largefile_test: <name>: ok" or "... FAIL got <v> want <v>", then
    "largefile_test: done <p>/<t>". */
 #define INCL_DOS
@@ -39,7 +40,9 @@ int main(void)
     FILEFINDBUF3L find;
     HDIR         hdir = HDIR_CREATE;
     FHLOCK       fhl;
-    char         text[8];
+    char         text[8], one[4], two[4];
+    LISTIOL      lio[2];
+    LISTIO       lio32;
 
     DosDelete((PSZ)FILE_NAME);
     check("DosOpenL", DosOpenL((PSZ)FILE_NAME, &hf, &action, 0, FILE_NORMAL,
@@ -81,6 +84,30 @@ int main(void)
     check("-> cbFile", find.cbFile == BIG, 1);
     check("-> the name", strcmp(find.achName, FILE_NAME), 0);
     DosFindClose(hdir);
+
+    /* List I/O: a write past 4 GB, then two reads in one call. */
+    memset( lio, 0, sizeof lio );
+    lio[0].hFile = hf; lio[0].CmdFlag = LISTIO_WRITE | FILE_BEGIN;
+    lio[0].Offset = FAR_OFF + 8; lio[0].pBuffer = "list"; lio[0].NumBytes = 4;
+    check( "DosListIOL(write)", DosListIOL( LISTIO_ORDERED, 1, lio ), NO_ERROR );
+    check( "-> written", lio[0].Actual == 4 && lio[0].RetCode == NO_ERROR, 1 );
+    memset( lio, 0, sizeof lio );
+    lio[0].hFile = hf; lio[0].CmdFlag = LISTIO_READ | FILE_BEGIN;
+    lio[0].Offset = FAR_OFF; lio[0].pBuffer = one; lio[0].NumBytes = 4;
+    lio[1].hFile = hf; lio[1].CmdFlag = LISTIO_READ | FILE_BEGIN;
+    lio[1].Offset = FAR_OFF + 8; lio[1].pBuffer = two; lio[1].NumBytes = 4;
+    check( "DosListIOL(two reads)", DosListIOL( LISTIO_UNORDERED, 2, lio ), NO_ERROR );
+    check( "-> both", lio[0].Actual == 4 && lio[1].Actual == 4
+           && memcmp( one, "tail", 4 ) == 0 && memcmp( two, "list", 4 ) == 0, 1 );
+    check( "DosListIOL(bad mode)", DosListIOL( 3, 1, lio ), ERROR_INVALID_PARAMETER );
+    lio[0].CmdFlag = LISTIO_READ | LISTIO_WRITE;
+    check( "DosListIOL(read and write)", DosListIOL( LISTIO_ORDERED, 1, lio ), ERROR_INVALID_PARAMETER );
+    check( "-> its RetCode", lio[0].RetCode, ERROR_INVALID_PARAMETER );
+    memset( &lio32, 0, sizeof lio32 );
+    lio32.hFile = hf; lio32.CmdFlag = LISTIO_READ | FILE_BEGIN;
+    lio32.Offset = 0; lio32.pBuffer = one; lio32.NumBytes = 4;
+    check( "DosListIO(read at 0)", DosListIO( LISTIO_ORDERED, 1, &lio32 ), NO_ERROR );
+    check( "-> sparse zeros", lio32.Actual == 4 && one[0] == 0 && one[3] == 0, 1 );
 
     /* Lock ranges past 4 GB. */
     lock.lOffset = FAR_OFF;

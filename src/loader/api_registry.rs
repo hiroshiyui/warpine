@@ -510,6 +510,10 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_ptr_l(a[0],longlong(a[1],a[2]),a[3],a[4])) },
     ApiEntry { ordinal: 989, module: "DOSCALLS", name: "DosSetFileSizeL",   argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_size_l(a[0],longlong(a[1],a[2]))) },
+    ApiEntry { ordinal: 990, module: "DOSCALLS", name: "DosListIOL",        argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_list_io(a[0],a[1],a[2],true)) },
+    ApiEntry { ordinal: 996, module: "DOSCALLS", name: "DosListIO",         argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_list_io(a[0],a[1],a[2],false)) },
 
     // ── QUECALLS (base 1024) ──────────────────────────────────────────────
     ApiEntry { ordinal: 1024 + 9,  module: "QUECALLS", name: "DosReadQueue",   argc: 8,
@@ -1646,7 +1650,7 @@ mod tests {
             assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
         }
         let report = super::compat_report();
-        assert!(report.contains("DOSCALLS  (169 implemented, 4 stub)"), "{report}");
+        assert!(report.contains("DOSCALLS  (171 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────

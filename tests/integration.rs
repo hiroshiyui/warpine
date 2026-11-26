@@ -4152,14 +4152,15 @@ fn test_extended_attributes_by_handle_and_path() {
 
 /// largefile_test: a sparse file grown past 4 GB, data written and read
 /// back past 4 GB, 64-bit sizes at levels 11 / 12 and in FILEFINDBUF3L,
-/// FILELOCKL ranges, and the DosProtect*L forms (DOSCALLS 981–989).
+/// FILELOCKL ranges, the DosProtect*L forms (DOSCALLS 981–989), and
+/// DosListIOL / DosListIO (990, 996).
 #[test]
 fn test_large_files() {
     const SAMPLE: &str = "samples/largefile_test/largefile_test.exe";
     if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 60);
     assert!(!out.contains("FAIL"), "{out}");
-    assert!(out.contains("largefile_test: done 40/40"), "{out}");
+    assert!(out.contains("largefile_test: done 49/49"), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 

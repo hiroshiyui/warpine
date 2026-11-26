@@ -561,10 +561,10 @@ $ warpine --compat
 Warpine OS/2 API Compatibility Report
 ======================================
 
-DOSCALLS  (138 implemented, 4 stub)
-  [stub]  [  317]  DosDebug
-          [  213]  DosFlatToSel
-          [  234]  DosExit
+DOSCALLS  (171 implemented, 4 stub)
+          [   8]  DosGetInfoSeg
+          [  75]  DosQueryFileMode16
+          [  84]  DosSetFileMode
   ...
 ```
 
@@ -574,7 +574,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (173 APIs: 169 implemented, 4 stub)
+### DOSCALLS (175 APIs: 171 implemented, 4 stub)
 
 **Smaller calls (ADR-0086):** DosErrClass (211), DosQueryModFromEIP (360), DosTmrQueryFreq (362), DosTmrQueryTime (363), DosCancelLockRequest (429), DosVerifyPidTid (460), DosQueryProcType (586), and the protected-handle calls DosProtectSetFilePtr (621), DosProtectEnumAttribute (636), DosProtectOpen (637), DosProtectClose (638), DosProtectSetFileSize (640), DosProtectRead (641), DosProtectWrite (642), DosProtectSetFileInfo (643), DosProtectSetFHState (644), DosProtectQueryFHState (645), DosProtectQueryFileInfo (646).
 - **The timer** counts at 1,193,182 Hz from the process's first query.
@@ -586,7 +586,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 - **`DosQueryModuleHandle`** answers for every built-in module (DOSCALLS, PMWIN, REXX …), which is always loaded.
 
 **File I/O:**
-DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372), DosOpenL (981), DosProtectOpenL (982), DosProtectSetFileLocksL (983), DosProtectSetFilePtrL (984), DosProtectSetFileSizeL (985), DosSetFileLocksL (986), DosCancelLockRequestL (987), DosSetFilePtrL (988), DosSetFileSizeL (989)
+DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372), DosOpenL (981), DosProtectOpenL (982), DosProtectSetFileLocksL (983), DosProtectSetFilePtrL (984), DosProtectSetFileSizeL (985), DosSetFileLocksL (986), DosCancelLockRequestL (987), DosSetFilePtrL (988), DosSetFileSizeL (989), DosListIOL (990), DosListIO (996)
 
 **Directory Operations:**
 DosCreateDir (270), DosDeleteDir (226), DosQueryCurrentDir (274), DosSetCurrentDir (255), DosQueryCurrentDisk (275), DosSetDefaultDisk (220), DosFindFirst (264), DosFindNext (265), DosFindClose (263)
@@ -663,7 +663,7 @@ Date and time (ADR-0039): Warpine cannot set the host's clock, so each process h
 
 File times are local time in `FDATE` / `FTIME`, clamped to 1980-01-01 00:00:00 … 2107-12-31 23:59:58 (what the 7-bit year from 1980 can hold) and not shifted by the session clock. `DosSetFileInfo` / `DosSetPathInfo` (`FIL_STANDARD`, a `FILESTATUS3` of at least 24 bytes, else `ERROR_BUFFER_OVERFLOW`) set the last-access and last-write times; a date and time of 0 / 0 leave a time unchanged, an invalid date or time fails with `ERROR_INVALID_PARAMETER`. The creation time (Linux cannot set one) is not set. Of the attributes, `FILE_READONLY` takes effect on files: it clears the host file's write permission (clearing the attribute gives the owner write access back), so the file reports `FILE_READONLY`, cannot be opened for writing, and `DosDelete` refuses it with `ERROR_ACCESS_DENIED`. A directory keeps its write permission, so new files can still be created in it. Hidden, system and archive have no host counterpart: Warpine keeps them as one byte beside the file (the extended attribute `user.warpine.attr`, or a sidecar in the folder's `.os2ea`, which programs never see or reach; ADR-0091) and reports them in `DosQueryPathInfo`, `DosQueryFileInfo` and `DosFindFirst`, whose filter shows hidden and system files only when asked for. A file is archived until the attribute is cleared, and again when it is opened for writing; a directory has none of them unless set. `DosCopy` gives the copy the source's EAs and attributes, and `DosMove` keeps them. Warpine's own choices (unverified): archived at the opening for writing rather than at the first write; EAs or attributes that cannot be copied are left out without an error. `DosSetFileMode` sets the attributes the same way. `DosSetPathInfo` level 2 (`FIL_QUERYEASIZE`) sets extended attributes from an `EAOP2` (at least 12 bytes, else `ERROR_BUFFER_OVERFLOW`) whose `fpFEA2List` names an `FEA2LIST` (at most 64 KB): each entry is set in order, an empty value deletes its EA; a list that is not well formed (an entry past `cbList`, an empty name, no NUL after a name, a next offset inside its entry) sets nothing, gives `ERROR_EA_LIST_INCONSISTENT` and puts the bad entry's offset from the list's start in `oError`. `DosSetFileInfo` level 2 does the same on the file a handle was opened by (a pipe takes the list and keeps nothing); other levels are `ERROR_INVALID_LEVEL`. `DosOpen` / `DosOpenL` take an `EAOP2` the same way: its list is checked before anything is opened (not well formed: `ERROR_EA_LIST_INCONSISTENT`, nothing opened) and set on the file when the open created, replaced or truncated it, not when it opened an existing one (unverified); EAs that cannot be set close the file again. Level 2 of `DosQueryPathInfo` / `DosQueryFileInfo` — and `DosFindFirst`'s `FIL_QUERYEASIZE` / `FIL_QUERYEASIZEL` entries — report in `cbList` the size of the `FEA2LIST` that holds every EA of the file (4 for none), so a buffer of that size takes them all. Level 3 (`FIL_QUERYEASFROMLIST`) takes an `EAOP2` whose `fpGEA2List` names the EAs wanted and whose `fpFEA2List` is a buffer, its `cbList` the buffer's size: it gets an `FEA2LIST` of every EA asked for, in order, names matched without regard to case and one the file lacks given with no value; a `GEA2LIST` not well formed gives `ERROR_EA_LIST_INCONSISTENT` with `oError`, and a list that does not fit gives `ERROR_BUFFER_OVERFLOW` and writes nothing. `DosEnumAttribute` (`ENUMEA_LEVEL_NO_VALUE`) takes a file handle (`ENUMEA_REFTYPE_FHANDLE`, 0, `pvFile` pointing at it) or a path (`ENUMEA_REFTYPE_PATH`, 1; other types `ERROR_INVALID_PARAMETER`) and writes, from the `ulEntry`th EA (1-based), at most `*pulCount` `DENA2` entries — `FEA2`s without values, `cbValue` giving the value's size — as many as fit in `cbBuf`, linked by `oNextEntryOffset`, their number in `*pulCount`. Entries Warpine writes are padded to four bytes. Warpine's choices (unverified): the padding, nothing written on `ERROR_BUFFER_OVERFLOW`, names matched without regard to case, `DENA2` entries from the toolkit's typedef. `DosQueryPathInfo` level 5 (`FIL_QUERYFULLNAME`) writes the fully qualified name — the drive, then the drive's current directory for a relative name, `.` and `..` resolved (above the root: `ERROR_PATH_NOT_FOUND`) — whether or not the file exists, in the caller's case; a buffer too small for it and its NUL gives `ERROR_BUFFER_OVERFLOW`.
 
-**Large files.** `DosOpenL`, `DosSetFilePtrL`, `DosSetFileSizeL`, `DosSetFileLocksL` and `DosCancelLockRequestL` (and their `DosProtect*L` forms) are the 32-bit calls with `LONGLONG` sizes, offsets and `FILELOCKL` ranges, so files past 4 GB can be sized, sought and locked; a negative size or lock range is `ERROR_INVALID_PARAMETER` (unverified). Levels 11 (`FIL_STANDARDL`, a `FILESTATUS3L`: 32 bytes), 12 (`FIL_QUERYEASIZEL`, `FILESTATUS4L`: 36) and 13 (`FIL_QUERYEASFROMLISTL`, as level 3) of `DosQueryPathInfo` / `DosQueryFileInfo`, levels 11 and 12 of `DosSetPathInfo` / `DosSetFileInfo`, and `DosFindFirst`'s `FIL_STANDARDL` / `FIL_QUERYEASIZEL` (`FILEFINDBUF3L` / `4L`) carry 64-bit sizes. At the 32-bit levels a file of 4 GB or more reports `cbFile` and `cbFileAlloc` of 0xFFFFFFFF (unverified).
+**Large files.** `DosOpenL`, `DosSetFilePtrL`, `DosSetFileSizeL`, `DosSetFileLocksL` and `DosCancelLockRequestL` (and their `DosProtect*L` forms) are the 32-bit calls with `LONGLONG` sizes, offsets and `FILELOCKL` ranges, so files past 4 GB can be sized, sought and locked; a negative size or lock range is `ERROR_INVALID_PARAMETER` (unverified). Levels 11 (`FIL_STANDARDL`, a `FILESTATUS3L`: 32 bytes), 12 (`FIL_QUERYEASIZEL`, `FILESTATUS4L`: 36) and 13 (`FIL_QUERYEASFROMLISTL`, as level 3) of `DosQueryPathInfo` / `DosQueryFileInfo`, levels 11 and 12 of `DosSetPathInfo` / `DosSetFileInfo`, and `DosFindFirst`'s `FIL_STANDARDL` / `FIL_QUERYEASIZEL` (`FILEFINDBUF3L` / `4L`) carry 64-bit sizes. At the 32-bit levels a file of 4 GB or more reports `cbFile` and `cbFileAlloc` of 0xFFFFFFFF (unverified). `DosListIO` / `DosListIOL` run a list of `LISTIO` / `LISTIOL` entries (`LISTIO_ORDERED` or `LISTIO_UNORDERED`, both in order): each seeks its handle by `CmdFlag`'s low bits to `Offset` (a `LONGLONG` in `LISTIOL`), then reads (`LISTIO_READ`) or writes (`LISTIO_WRITE`) `NumBytes` at `pBuffer`, and gets `Actual` and `RetCode`; the call returns the first entry's error (unverified), another mode or more than 4096 entries `ERROR_INVALID_PARAMETER`.
 
 **Exception Handling:**
 DosRaiseException (356), DosUnwindException (357), DosSetSignalExceptionFocus (378), DosSendSignalException (379), DosAcknowledgeSignalException (418)
@@ -1230,11 +1230,11 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 609 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 611 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 438 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
-| DOSCALLS | registry | 169 | 4 | 173 |
+| DOSCALLS | registry | 171 | 4 | 175 |
 | QUECALLS | registry | 8 | 0 | 8 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 4 | 0 | 4 |
@@ -1257,7 +1257,7 @@ Counts are taken from the static registry (`api_registry.rs`, 609 entries) and t
 | PMWP (window positions, Workplace objects) | registry | 6 | 0 | 6 |
 | PMWIN | sub-dispatcher | 218 | 0 | 218 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **1028** | **19** | **1047** |
+| **Total** | | **1030** | **19** | **1049** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

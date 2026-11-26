@@ -1009,6 +1009,15 @@ pub const FILESTATUS3L_SIZE:          u32 = 32;
 pub const EAOP2_SIZE:                 u32 = 12;
 pub const EAOP2_FEA2LIST:             u32 = 4;
 pub const EAOP2_ERROR:                u32 = 8;
+/// `DosListIO` modes and commands, and its entries' sizes (`<bsedos.h>`).
+pub const LISTIO_ORDERED:             u32 = 1;
+pub const LISTIO_UNORDERED:           u32 = 2;
+pub const LISTIO_READ:                u32 = 4;
+pub const LISTIO_WRITE:               u32 = 8;
+pub const LISTIO_SIZE:                u32 = 52;
+pub const LISTIOL_SIZE:               u32 = 56;
+/// The most entries one `DosListIO` call takes (Warpine's bound).
+pub const MAX_LISTIO_ENTRIES:         u32 = 4096;
 /// `DosEnumAttribute` reference types (`<bsedos.h>`).
 pub const ENUMEA_REFTYPE_FHANDLE:     u32 = 0;
 pub const ENUMEA_REFTYPE_PATH:        u32 = 1;

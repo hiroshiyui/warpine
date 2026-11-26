@@ -209,6 +209,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - re-adding a routine re-orders it;
   - at most 256 routines;
   - the exception chain emptied before each routine.
+- **`DosSetFilePtr` / `DosSetFilePtrL`**: `ERROR_INVALID_FUNCTION` for a method other than `FILE_BEGIN`, `FILE_CURRENT` or `FILE_END` (files and pipes alike).
+- **List I/O** (`DosListIO` / `DosListIOL`): the first entry's error as the result; an entry with neither or both of `LISTIO_READ` / `LISTIO_WRITE` failing alone with `ERROR_INVALID_PARAMETER`; at most 4096 entries; unordered lists run in order.
 - **Large files**: a negative size, lock offset or range `ERROR_INVALID_PARAMETER`; `cbFile` / `cbFileAlloc` of 0xFFFFFFFF at the 32-bit levels for a file of 4 GB or more.
 - **Extended attribute lists**: `DosOpen`'s `EAOP2` set only when the open creates, replaces or truncates the file; `cbList` (levels 2 and 12, `DosFindFirst`) the size of an `FEA2LIST`; entries Warpine writes padded to four bytes; nothing written when a level-3 query's list does not fit (`ERROR_BUFFER_OVERFLOW`); EA names matched without regard to case; `DosEnumAttribute` writing `DENA2` (`FEA2` without values) entries, from the toolkit's typedef; a pipe taking `DosSetFileInfo` level 2 and keeping nothing.
 - **Shared memory**:

@@ -1636,7 +1636,7 @@ mod tests {
         assert_eq!(l.guest_read::<u64>(pos), Some(BIG - 16));
         assert_eq!(l.dos_set_file_ptr_l(hf, 0, 1, pos), NO_ERROR);
         assert_eq!(l.guest_read::<u64>(pos), Some(BIG - 16), "where it is");
-        assert_eq!(l.dos_set_file_ptr_l(hf, 0, 7, pos), ERROR_INVALID_PARAMETER, "no such method");
+        assert_eq!(l.dos_set_file_ptr_l(hf, 0, 7, pos), ERROR_INVALID_FUNCTION, "no such method");
         // Level 11: FILESTATUS3L; level 12 adds cbList; 1 saturates.
         assert_eq!(l.dos_query_file_info(hf, FIL_STANDARDL, buf, 31), ERROR_BUFFER_OVERFLOW);
         assert_eq!(l.dos_query_file_info(hf, FIL_STANDARDL, buf, 32), NO_ERROR);

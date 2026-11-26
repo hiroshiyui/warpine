@@ -140,6 +140,54 @@ impl super::Loader {
         if self.shared.drive_mgr.lock_or_recover().is_file(hf) { NO_ERROR } else { ERROR_INVALID_HANDLE }
     }
 
+    // ── List I/O (DosListIO, DosListIOL) ─────────────────────────────────
+
+    /// DosListIO (ordinal 996) / DosListIOL (990, `large`): `count`
+    /// `LISTIO` (52 bytes) or `LISTIOL` (56: a `LONGLONG` offset) entries
+    /// at `plist`, each a seek of its handle (`CmdFlag`'s low bits:
+    /// `FILE_BEGIN` / `FILE_CURRENT` / `FILE_END`) to `Offset` and then a
+    /// read (`LISTIO_READ`) or write (`LISTIO_WRITE`) of `NumBytes` at
+    /// `pBuffer`; each entry gets its `Actual` and `RetCode`.
+    /// `LISTIO_ORDERED` and `LISTIO_UNORDERED` both run the entries in
+    /// order. Warpine's choices (unverified): the result is the first
+    /// entry's error, or `NO_ERROR`; an entry with neither or both of
+    /// `LISTIO_READ` / `LISTIO_WRITE` fails with `ERROR_INVALID_PARAMETER`
+    /// and the others still run; more than `MAX_LISTIO_ENTRIES` is
+    /// `ERROR_INVALID_PARAMETER`.
+    pub fn dos_list_io(&self, mode: u32, count: u32, plist: u32, large: bool) -> u32 {
+        const SEEK_METHOD: u32 = 3;
+        if mode != LISTIO_ORDERED && mode != LISTIO_UNORDERED { return ERROR_INVALID_PARAMETER; }
+        if count > MAX_LISTIO_ENTRIES { return ERROR_INVALID_PARAMETER; }
+        // Field offsets; the LONGLONG offset moves the rest by 4.
+        let (size, shift) = if large { (LISTIOL_SIZE, 4) } else { (LISTIO_SIZE, 0) };
+        let mut first_error = NO_ERROR;
+        for i in 0..count {
+            let Some(e) = i.checked_mul(size).and_then(|o| plist.checked_add(o)) else { return ERROR_INVALID_PARAMETER };
+            let field = |off: u32| e.wrapping_add(off);
+            let (Some(hf), Some(cmd)) = (self.guest_read::<u32>(e), self.guest_read::<u32>(field(4))) else {
+                return ERROR_INVALID_PARAMETER;
+            };
+            let offset = if large { self.guest_read::<i64>(field(8)) } else { self.guest_read::<i32>(field(8)).map(i64::from) };
+            let (Some(offset), Some(buf), Some(len)) =
+                (offset, self.guest_read::<u32>(field(12 + shift)), self.guest_read::<u32>(field(16 + shift))) else {
+                return ERROR_INVALID_PARAMETER;
+            };
+            let actual = field(20 + shift);
+            let _ = self.guest_write::<u32>(actual, 0);
+            let rc = match cmd & (LISTIO_READ | LISTIO_WRITE) {
+                LISTIO_READ | LISTIO_WRITE => match self.dos_set_file_ptr_l(hf, offset, cmd & SEEK_METHOD, 0) {
+                    NO_ERROR if cmd & LISTIO_READ != 0 => self.dos_read(hf, buf, len, actual),
+                    NO_ERROR => self.dos_write(hf, buf, len, actual),
+                    e => e,
+                },
+                _ => ERROR_INVALID_PARAMETER,
+            };
+            let _ = self.guest_write::<u32>(field(24 + shift), rc);
+            if first_error == NO_ERROR { first_error = rc; }
+        }
+        first_error
+    }
+
     // ── File-handle protection (DosProtect*) ────────────────────────────
 
     /// Whether FHLOCK `lock` protects handle `hf` (else
@@ -231,7 +279,25 @@ mod tests {
         let hmod = l.guest_read::<u32>(buf + 16).unwrap();
         assert_eq!(l.dos_query_proc_addr(hmod, 234, 0, buf + 20), NO_ERROR, "DosExit");
         assert_ne!(l.guest_read::<u32>(buf + 20), Some(0));
-        assert_eq!(l.dos_query_proc_addr(hmod, 990, 0, buf + 20), ERROR_PROC_NOT_FOUND, "DosListIOL is not implemented");
+        assert_eq!(l.dos_query_proc_addr(hmod, 991, 0, buf + 20), ERROR_PROC_NOT_FOUND, "DOS16FSRAMSEMREQUEST2 is not implemented");
+    }
+
+    /// DosListIO checks its mode and bound before any entry; an entry with
+    /// a bad command or handle gets its RetCode, and the call the first
+    /// entry's error.
+    #[test]
+    fn list_io_checks_mode_count_and_entries() {
+        let l = super::super::Loader::new_mock();
+        let p = l.alloc_zeroed(2 * LISTIOL_SIZE).unwrap();
+        assert_eq!(l.dos_list_io(0, 1, p, false), ERROR_INVALID_PARAMETER, "no mode");
+        assert_eq!(l.dos_list_io(LISTIO_ORDERED, MAX_LISTIO_ENTRIES + 1, p, true), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_list_io(LISTIO_ORDERED, 0, p, false), NO_ERROR, "nothing to do");
+        // Entry 0: no command; entry 1 (LISTIOL): a read of a handle that is no file.
+        l.guest_write::<u32>(p + LISTIOL_SIZE, 9999);
+        l.guest_write::<u32>(p + LISTIOL_SIZE + 4, LISTIO_READ);
+        assert_eq!(l.dos_list_io(LISTIO_UNORDERED, 2, p, true), ERROR_INVALID_PARAMETER, "the first entry's error");
+        assert_eq!(l.guest_read::<u32>(p + 28), Some(ERROR_INVALID_PARAMETER), "entry 0's RetCode");
+        assert_ne!(l.guest_read::<u32>(p + LISTIOL_SIZE + 28), Some(NO_ERROR), "entry 1 still ran and failed");
     }
 
     #[test]

@@ -475,9 +475,9 @@ pub const STD_HANDLES: u32 = 3;
 struct FileEntry {
     drive: u8,
     vfs_handle: VfsFileHandle,
-    /// The path it was opened by, relative to its drive's root (the calls
-    /// by handle on extended attributes reach the file by it; a file
-    /// renamed while open keeps its old path here).
+    /// The path it was opened by, relative to its drive's root, updated
+    /// by `rename_file` (the calls by handle on extended attributes reach
+    /// the file by it).
     rel_path: std::sync::Arc<str>,
 }
 
@@ -1047,13 +1047,22 @@ impl DriveManager {
     }
 
     /// Rename or move a file within the same drive.
-    pub fn rename_file(&self, old_path: &str, new_path: &str) -> VfsResult<()> {
+    /// Files open under the old name (or inside a renamed directory) are
+    /// reached by the new one afterwards, so the calls by handle on their
+    /// extended attributes follow them.
+    pub fn rename_file(&mut self, old_path: &str, new_path: &str) -> VfsResult<()> {
         let (drive_old, rel_old) = self.resolve_path(old_path)?;
         let (drive_new, rel_new) = self.resolve_path(new_path)?;
         if drive_old != drive_new {
             return Err(Os2Error::NOT_SAME_DEVICE);
         }
-        self.backend(drive_old)?.rename(&rel_old, &rel_new)
+        self.backend(drive_old)?.rename(&rel_old, &rel_new)?;
+        let (Some(old), Some(new)) = (normalize_rel_path(&rel_old), normalize_rel_path(&rel_new)) else { return Ok(()) };
+        for e in self.file_handles.values_mut().filter(|e| e.drive == drive_old) {
+            let Some(rest) = renamed_rest(&e.rel_path, &old) else { continue };
+            e.rel_path = format!("{new}{rest}").into();
+        }
+        Ok(())
     }
 
     /// Copy a file, replacing the target. A file is not copied onto itself
@@ -1191,6 +1200,14 @@ impl DriveManager {
         }
         map
     }
+}
+
+/// What follows `old` in `path` when `path` is `old` or lies inside it
+/// (names compared without regard to case, as the drives look them up).
+fn renamed_rest<'a>(path: &'a str, old: &str) -> Option<&'a str> {
+    let head = path.get(..old.len())?;
+    let rest = &path[old.len()..];
+    (head.eq_ignore_ascii_case(old) && (rest.is_empty() || rest.starts_with('/'))).then_some(rest)
 }
 
 /// The directory part of drive-relative `rel_path` (`/` separators), empty
@@ -1410,6 +1427,22 @@ mod tests {
 
     /// A copy carries the EAs and the attributes (read-only included),
     /// on one drive and across drives (ADR-0091).
+    #[test]
+    fn open_files_follow_a_rename() {
+        let c = tempfile::tempdir().unwrap();
+        std::fs::create_dir(c.path().join("dir")).unwrap();
+        std::fs::write(c.path().join("dir/a.txt"), b"x").unwrap();
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(c.path().to_path_buf()).unwrap()));
+        let (hf, _) = dm.open_file(r"C:\DIR\A.TXT", OpenMode::ReadOnly, SharingMode::DenyNone,
+                                   OpenFlags::from_raw(0x01), FileAttribute::NORMAL).unwrap();
+        assert_eq!(dm.rename_file(r"C:\DIR\A.TXT", r"C:\DIR\B.TXT"), Ok(()));
+        assert_eq!(dm.file_path(hf).unwrap().1, "DIR/B.TXT", "the file");
+        assert_eq!(dm.rename_file(r"C:\dir", r"C:\NEW"), Ok(()));
+        assert_eq!(dm.file_path(hf).unwrap().1, "NEW/B.TXT", "its directory");
+        assert_eq!(renamed_rest("DIRX/a", "DIR"), None, "a longer name is not inside");
+    }
+
     #[test]
     fn a_copy_carries_eas_and_attributes() {
         let (c, d) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());

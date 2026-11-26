@@ -202,6 +202,8 @@ DOSCALLS.986  DosSetFileLocksL
 DOSCALLS.987  DosCancelLockRequestL
 DOSCALLS.988  DosSetFilePtrL
 DOSCALLS.989  DosSetFileSizeL
+DOSCALLS.990  DosListIOL
+DOSCALLS.996  DosListIO
 
 # ── QUECALLS (ordinal relative to module, linker uses QUECALLS.N) ─────────────
 QUECALLS.9    DosReadQueue

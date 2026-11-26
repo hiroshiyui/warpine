@@ -537,8 +537,11 @@ impl super::Loader {
     }
 
     /// Move `hf`'s file pointer (`FILE_BEGIN` / `FILE_CURRENT` /
-    /// `FILE_END`); the new position.
+    /// `FILE_END`); the new position. Another method is
+    /// `ERROR_INVALID_FUNCTION`, for files and pipes alike (unverified).
     fn seek(&self, hf: u32, offset: i64, method: u32) -> Result<u64, u32> {
+        const FILE_END: u32 = 2;
+        if method > FILE_END { return Err(ERROR_INVALID_FUNCTION); }
         if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
             let file = self.shared.handle_mgr.lock_or_recover().host_file(hf).ok_or(ERROR_INVALID_HANDLE)?;
             let pos = match method {
@@ -688,7 +691,7 @@ impl super::Loader {
     pub fn dos_move(&self, psz_old_ptr: u32, psz_new_ptr: u32) -> u32 {
         let old_name = self.read_guest_string(psz_old_ptr);
         let new_name = self.read_guest_string(psz_new_ptr);
-        let dm = self.shared.drive_mgr.lock_or_recover();
+        let mut dm = self.shared.drive_mgr.lock_or_recover();
         match dm.rename_file(&old_name, &new_name) {
             Ok(()) => 0,
             Err(e) => e.0,

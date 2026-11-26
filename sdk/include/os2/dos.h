@@ -827,7 +827,39 @@ typedef struct _FILELOCKL {
     LONGLONG lOffset;
     LONGLONG lRange;
 } FILELOCKL, *PFILELOCKL;
+
+/* DosListIO / DosListIOL: one read or write each. */
+typedef struct _LISTIO_CB {
+    HFILE hFile;
+    ULONG CmdFlag;
+    LONG  Offset;
+    PVOID pBuffer;
+    ULONG NumBytes;
+    ULONG Actual;
+    ULONG RetCode;
+    ULONG Reserved;
+    ULONG Reserved2[3];
+    ULONG Reserved3[2];
+} LISTIO, *PLISTIO;
+
+typedef struct _LISTIO_CBL {
+    HFILE    hFile;
+    ULONG    CmdFlag;
+    LONGLONG Offset;
+    PVOID    pBuffer;
+    ULONG    NumBytes;
+    ULONG    Actual;
+    ULONG    RetCode;
+    ULONG    Reserved;
+    ULONG    Reserved2[3];
+    ULONG    Reserved3[2];
+} LISTIOL, *PLISTIOL;
 #pragma pack(pop)
+
+#define LISTIO_ORDERED   1
+#define LISTIO_UNORDERED 2
+#define LISTIO_READ      4
+#define LISTIO_WRITE     8
 
 /* The 64-bit find buffers are not padded. */
 #pragma pack(push, 1)
@@ -884,6 +916,8 @@ APIRET APIENTRY DosProtectSetFilePtrL(HFILE hFile, LONGLONG ib, ULONG method, PL
 APIRET APIENTRY DosProtectSetFileSizeL(HFILE hFile, LONGLONG cbSize, FHLOCK fhFileHandleLockID);
 APIRET APIENTRY DosProtectSetFileLocksL(HFILE hFile, PFILELOCKL pflUnlock, PFILELOCKL pflLock,
                                         ULONG timeout, ULONG flags, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosListIO(ULONG ulCmdMode, ULONG ulNumentries, PLISTIO pListIO);
+APIRET APIENTRY DosListIOL(LONG CmdMode, LONG NumEntries, PLISTIOL pListIO);
 
 typedef USHORT SEL, *PSEL;
 
