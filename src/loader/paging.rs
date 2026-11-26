@@ -229,13 +229,6 @@ pub fn nx_enforced() -> bool {
     NX_ENFORCED.load(Ordering::Relaxed)
 }
 
-/// Whether the vCPU gets the NX CPUID leaf and `EFER.NXE`: always, unless
-/// `WARPINE_DEBUG_NO_NXE` is set (a temporary switch for diagnosing hosts
-/// whose KVM rejects them).
-pub fn nxe_wanted() -> bool {
-    std::env::var_os("WARPINE_DEBUG_NO_NXE").is_none()
-}
-
 /// Whether `WARPINE_NX`'s value leaves execute protection on: everything
 /// but `off`, `0`, `no` or `false` (any case).
 pub fn nx_setting(value: Option<&str>) -> bool {
@@ -554,14 +547,6 @@ impl super::Loader {
         if self.system_write_bytes(base, &block).is_none() {
             self.shared.paging_arena.lock_or_recover().free(base);
             return None;
-        }
-        // Temporary diagnostic (ADR-0131 on nested KVM): the PDPT copied to
-        // a page of its own, the first free page after the process tables.
-        if std::env::var_os("WARPINE_DEBUG_PDPT_PAGE").is_some() {
-            let page = PROCESS_TABLES + PROCESS_TABLES_SIZE;
-            let at = (RING0_OFFSET + PDPT_OFFSET) as usize;
-            let _ = self.system_write_bytes(page, &block[at..at + 32]);
-            return Some(page);
         }
         Some(cr3_of_block(base))
     }

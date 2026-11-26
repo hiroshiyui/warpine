@@ -288,7 +288,7 @@ impl super::Loader {
         // pages hold for Warpine's ring-0 stubs too (ADR-0113).
         sregs.cr3 = cr3 as u64;
         sregs.cr4 |= super::paging::CR4_PAE;
-        if super::paging::nxe_wanted() { sregs.efer |= super::paging::EFER_NXE; }
+        sregs.efer |= super::paging::EFER_NXE;
         sregs.cr0 |= super::paging::CR0_PG | super::paging::CR0_WP;
         // The thread's TSS, in its ring-0 window (ADR-0113).
         sregs.tr = task_register();

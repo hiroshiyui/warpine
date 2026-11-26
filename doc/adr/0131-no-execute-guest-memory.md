@@ -51,3 +51,7 @@ The processor's execute-disable bit (XD, also called NX) exists only in PAE and 
   - `XCPT_EXECUTE_ACCESS` in `ExceptionInfo[0]` for a fetch fault;
   - no-execute for stacks and for memory allocated without `PAG_EXECUTE` (OS/2 accepted both);
   - NX off for 16-bit processes.
+
+## Addendum (2026-11-26): hosts that cannot run PAE guests
+
+Some of GitHub's CI runners (an AMD EPYC 9V74 under Hyper-V, kernel 7.0.0-1017-azure, KVM nested) triple-fault every PAE guest at its first instruction, with or without `EFER.NXE` and the CPUID leaf; other runners, and the hosts this was developed on, run them. On GitHub CI only (`GITHUB_ACTIONS`, passed into the container by `ci/run.sh`), the integration tests first start `hello`; when it cannot start, every KVM test is skipped with a warning rather than all failing. Elsewhere such a failure still fails the tests. A fallback to 32-bit paging on such hosts is left open (TODOs).

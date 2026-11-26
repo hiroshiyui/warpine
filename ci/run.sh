@@ -29,6 +29,7 @@ for mode in "$@"; do
     echo "##### $mode #####"
     podman run --rm --device /dev/kvm --userns=keep-id --security-opt label=disable \
         -e CI_JOBS="${CI_JOBS:-2}" -e CARGO_TARGET_DIR="$ROOT/target/ci" \
+        ${GITHUB_ACTIONS:+-e GITHUB_ACTIONS="$GITHUB_ACTIONS"} \
         ${FUZZ_SECONDS:+-e FUZZ_SECONDS="$FUZZ_SECONDS"} \
         -v "$ROOT:$ROOT" -w "$ROOT" "$IMAGE" ci/matrix.sh "$mode"
 done

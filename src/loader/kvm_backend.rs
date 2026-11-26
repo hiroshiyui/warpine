@@ -58,9 +58,7 @@ impl VmBackend for KvmVmBackend {
         let mut fd = self.vm.create_vcpu(id).map_err(|e| e.to_string())?;
         // KVM accepts EFER.NXE only when the guest's CPUID reports NX
         // (ADR-0131): that leaf alone, so CPUID shows programs nothing else.
-        if super::paging::nxe_wanted() {
-            fd.set_cpuid2(&nx_cpuid()?).map_err(|e| format!("set_cpuid2: {e}"))?;
-        }
+        fd.set_cpuid2(&nx_cpuid()?).map_err(|e| format!("set_cpuid2: {e}"))?;
         // Only the address is taken here; the byte is accessed atomically
         // through `KvmKick` (see its safety argument).
         let immediate_exit = std::ptr::addr_of_mut!(fd.get_kvm_run().immediate_exit);
