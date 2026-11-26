@@ -62,6 +62,17 @@ integration_tests() {
     return 1
 }
 
+# The host's processor and KVM settings, for runners that cannot run PAE
+# guests (ADR-0131 addendum): is nested paging (npt / ept) on?
+step "host"
+grep -m1 "model name" /proc/cpuinfo || true
+uname -r
+for p in /sys/module/kvm_amd/parameters/npt /sys/module/kvm_amd/parameters/nested \
+         /sys/module/kvm_intel/parameters/ept /sys/module/kvm_intel/parameters/nested; do
+    [ -r "$p" ] && echo "$p: $(cat "$p")"
+done
+true
+
 step "build"
 cargo build --bins
 
@@ -99,6 +110,17 @@ case "$MODE" in
         OUT_TAG=ci-gcc samples/build_sdk.sh gcc
         fuzz_all "${FUZZ_SECONDS:-600}"
         ;;
+    probe)
+        # A quick check of PAE guests on this runner (ADR-0131 addendum,
+        # .github/workflows/pae-probe.yml): two samples, two tests, and no
+        # warning in place of a failure.
+        step "Open Watcom and the probe's samples"
+        ./vendor/setup_watcom.sh
+        make -C samples/hello
+        make -C samples/nx_test
+        step "PAE probe: hello and nx_test"
+        cargo test --test integration -- --test-threads="$JOBS" test_hello_world test_no_execute_memory
+        ;;
     gcc|clang)
         step "every C sample from $MODE ($("$MODE" --version | head -1))"
         # Under their own tag, apart from a workstation's own builds.
@@ -107,7 +129,7 @@ case "$MODE" in
         WARPINE_SAMPLES="ci-$MODE" integration_tests cargo test --test integration -- --test-threads="$JOBS"
         ;;
     *)
-        echo "ci/matrix.sh: unknown entry $MODE (watcom, gcc, clang or fuzz)" >&2
+        echo "ci/matrix.sh: unknown entry $MODE (watcom, gcc, clang, fuzz or probe)" >&2
         exit 2
         ;;
 esac

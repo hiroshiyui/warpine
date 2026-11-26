@@ -67,14 +67,14 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 |---|---|---|
 | `EXE_AREA_START` – `EXE_AREA_END` | `0x10000` – `0x01000000` | Program area; an EXE's objects must fit without overlap (ADR-0094) |
 | `MAGIC_API_BASE` / `EXIT_TRAP_ADDR` | `0x01000000` / `0x010003FF` | API thunks / exit trap |
-| `PROCESS_TABLES` | `0x01200000` (2 MB) | Supervisor-only: the process's page tables (8 + 96 + 16: program area, allocator, shared arena) and the three directories of 1–4 GB (ADR-0114, ADR-0131) |
+| `PROCESS_TABLES` | `0x01200000` (2 MB) | Supervisor-only: the process's page tables (8 + 96 + 16: program area, allocator, shared arena) the three directories of 1–4 GB, then the threads' PDPTs (ADR-0114, ADR-0131) |
 | `PAGING_EXTRA_BASE` – `_END` | `0x01400000` – `0x01800000` | Supervisor-only large pages: 256 more paging blocks (751 threads, ADR-0115) |
 | `SYSTEM_AREA_BASE` | `0x01800000` (256 KB) | GDT, IDT, TIB, PIB, environment, `TLM_PAGE`, info segments (ADR-0094) |
 | `TIB_BASE` / `PIB_BASE` | `0x01810000` / `0x01811000` | Thread 1's TIB, the PIB |
 | `TLM_PAGE` | `0x0181F000` | Thread-local page, mapped per 32-bit thread (ADR-0088) |
 | `FS_WINDOW` | `0x01840000` | Each thread's TIB; selector `0x18`'s base (ADR-0110); low 64 KB not present (NULL traps) |
 | `RING0_WINDOW` | `0x01841000` | Each thread's TSS (`TSS_SEL`) and ring-0 stack (ADR-0113) |
-| `PAGING_ARENA_BASE` – `_END` | `0x01842000` – `0x02000000` | Supervisor-only: 495 threads' paging blocks (4 pages each: directory, TLM table, thread-local page, ring-0 page with the TSS and PDPT; ADR-0131); the last 6 MB large pages |
+| `PAGING_ARENA_BASE` – `_END` | `0x01842000` – `0x02000000` | Supervisor-only: 495 threads' paging blocks (4 pages each: directory, TLM table, thread-local page, ring-0 page with the TSS; ADR-0131); the last 6 MB large pages |
 | `DYNAMIC_ALLOC_BASE` | `0x02000000` | Allocations, up to `SHARED_ARENA_BASE` |
 | `SHARED_ARENA_BASE` | `0x0E000000` | The session's shared arena (32 MB); pages present only for blocks the process holds |
 | `GUEST_MEM_SIZE` | 256 MB | Guest memory |

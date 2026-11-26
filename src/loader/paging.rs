@@ -67,10 +67,8 @@ const DIRECTORY_OFFSET: u32 = 0;
 const TABLE_OFFSET: u32 = PAGE_SIZE;
 const TLM_OFFSET: u32 = 2 * PAGE_SIZE;
 const RING0_OFFSET: u32 = 3 * PAGE_SIZE;
-/// The PDPT's offset in the ring-0 page: after the TSS, 32-byte aligned
-/// (ADR-0131). CR3 points at it.
-const PDPT_OFFSET: u32 = 0x80;
-const _: () = assert!(PDPT_OFFSET >= TSS_SIZE && PDPT_OFFSET.is_multiple_of(32));
+/// A PDPT's size: four 8-byte entries (ADR-0131).
+const PDPT_SIZE: u32 = 32;
 /// The low addresses no 32-bit thread reaches (OS/2's low 64 KB, below
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
@@ -122,6 +120,12 @@ pub const SHARED_TABLES: u32 = ALLOC_TABLES + ALLOC_CHUNKS * PAGE_SIZE;
 const HIGH_DIRECTORIES: u32 = SHARED_TABLES + SHARED_CHUNKS * PAGE_SIZE;
 const HIGH_DIRECTORY_COUNT: u32 = 3;
 pub const PROCESS_TABLES_SIZE: u32 = (EXE_CHUNKS + ALLOC_CHUNKS + SHARED_CHUNKS + HIGH_DIRECTORY_COUNT) * PAGE_SIZE;
+/// The threads' PDPTs, one per paging block, after the process tables in
+/// the same supervisor-only page (ADR-0131 addendum): apart from the
+/// ring-0 page, whose stack the processor writes during exception delivery
+/// (some nested hosts write-protect a page holding page tables).
+const PDPTS: u32 = PROCESS_TABLES + PROCESS_TABLES_SIZE;
+const _: () = assert!(PDPTS + PAGING_BLOCKS * PDPT_SIZE <= PROCESS_TABLES_END);
 const _: () = assert!(PROCESS_TABLES + PROCESS_TABLES_SIZE <= PROCESS_TABLES_END
     && PROCESS_TABLES as u64 >= MAGIC_API_BASE + STUB_AREA_SIZE as u64);
 /// Where the paging blocks start: the whole arena holds blocks.
@@ -407,23 +411,31 @@ pub fn paging_block(base: u32, tib: u32, nx: bool) -> Vec<u8> {
     put32(RING0_OFFSET + TSS_SS0_OFFSET, u32::from(KERNEL_DATA_SEL));
     let iomap = (RING0_OFFSET + TSS_IOMAP_OFFSET) as usize;
     block[iomap..iomap + 2].copy_from_slice(&(TSS_SIZE as u16).to_le_bytes());
-    let pdpt = (RING0_OFFSET + PDPT_OFFSET) as usize;
-    let pdptes = [base + DIRECTORY_OFFSET, HIGH_DIRECTORIES, HIGH_DIRECTORIES + PAGE_SIZE, HIGH_DIRECTORIES + 2 * PAGE_SIZE];
-    for (k, dir) in pdptes.into_iter().enumerate() {
-        block[pdpt + 8 * k..pdpt + 8 * k + 8].copy_from_slice(&(u64::from(dir) | PDPTE_PRESENT).to_le_bytes());
-    }
     block
 }
 
-/// The CR3 value of the block at `base`: its PDPT, in the ring-0 page.
-pub fn cr3_of_block(base: u32) -> u32 {
-    base + RING0_OFFSET + PDPT_OFFSET
+/// The PDPT of the block at `base`: its own directory for the first
+/// gigabyte, the process's three for the rest.
+pub fn pdpt_of_block(base: u32) -> [u8; PDPT_SIZE as usize] {
+    let mut pdpt = [0u8; PDPT_SIZE as usize];
+    let dirs = [base + DIRECTORY_OFFSET, HIGH_DIRECTORIES, HIGH_DIRECTORIES + PAGE_SIZE, HIGH_DIRECTORIES + 2 * PAGE_SIZE];
+    for (k, dir) in dirs.into_iter().enumerate() {
+        pdpt[8 * k..8 * k + 8].copy_from_slice(&(u64::from(dir) | PDPTE_PRESENT).to_le_bytes());
+    }
+    pdpt
+}
+
+/// The CR3 value of the block at `base`: its PDPT, in the threads' PDPT
+/// table; None for an address that is no block.
+pub fn cr3_of_block(base: u32) -> Option<u32> {
+    block_slot(base).map(|slot| PDPTS + slot * PDPT_SIZE)
 }
 
 /// The block whose PDPT CR3 holds; None for a value that is no block's.
 pub fn block_of_cr3(cr3: u64) -> Option<u32> {
     let pdpt = u32::try_from(cr3 & CR3_ADDRESS).ok()?;
-    pdpt.checked_sub(RING0_OFFSET + PDPT_OFFSET).filter(|&b| valid_block(b))
+    let slot = pdpt.checked_sub(PDPTS).filter(|off| off.is_multiple_of(PDPT_SIZE))? / PDPT_SIZE;
+    (slot < PAGING_BLOCKS).then(|| block_base(slot))
 }
 
 /// The address of block `slot`: the first [`MAIN_BLOCKS`] after the
@@ -544,11 +556,14 @@ impl super::Loader {
         self.ensure_process_tables();
         let base = self.shared.paging_arena.lock_or_recover().alloc()?;
         let block = paging_block(base, tib, nx_enforced());
-        if self.system_write_bytes(base, &block).is_none() {
+        let cr3 = cr3_of_block(base);
+        let written = cr3.is_some_and(|cr3| self.system_write_bytes(base, &block).is_some()
+            && self.system_write_bytes(cr3, &pdpt_of_block(base)).is_some());
+        if !written {
             self.shared.paging_arena.lock_or_recover().free(base);
             return None;
         }
-        Some(cr3_of_block(base))
+        cr3
     }
 
     /// Write the process tables (ADR-0114) once, before the first thread's
@@ -661,7 +676,7 @@ mod tests {
         assert_eq!(pte(&b, RING0_ENTRY), u64::from(BASE + RING0_OFFSET) | PTE_SUPERVISOR | PTE_XD, "the ring-0 window");
         assert_eq!(pde(&b, STUB_CHUNK), (u64::from(STUB_CHUNK) << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE,
                    "the thunks: read-only, executable");
-        assert_eq!(tlm_page_of(cr3_of_block(BASE) as u64), Some(BASE + TLM_OFFSET));
+        assert_eq!(tlm_page_of(cr3_of_block(BASE).unwrap() as u64), Some(BASE + TLM_OFFSET));
     }
 
     /// No entry maps a page anywhere but to itself, except the
@@ -755,27 +770,29 @@ mod tests {
     }
 
     /// The ring-0 page starts with a TSS whose ring-0 stack is the rest of
-    /// that page, on the ring-0 data selector, with no I/O bitmap; after it
-    /// the PDPT CR3 names: the block's directory and the three shared ones.
+    /// that page, on the ring-0 data selector, with no I/O bitmap; the PDPT
+    /// CR3 names lies apart, in the PDPT table: the block's directory and
+    /// the three shared ones.
     #[test]
-    fn the_ring0_page_holds_the_threads_tss_pdpt_and_stack() {
+    fn the_ring0_page_holds_the_threads_tss_and_stack() {
         const BASE: u32 = PAGING_BLOCKS_BASE + 5 * PAGING_BLOCK_SIZE;
         let b = paging_block(BASE, TIB_BASE, true);
         let word = |off: u32| u32::from_le_bytes(b[(RING0_OFFSET + off) as usize..(RING0_OFFSET + off + 4) as usize].try_into().unwrap());
         assert_eq!(word(TSS_ESP0_OFFSET), RING0_WINDOW + PAGE_SIZE, "ESP0: the top of the ring-0 page");
         assert_eq!(word(TSS_SS0_OFFSET), u32::from(KERNEL_DATA_SEL), "SS0: ring-0 data");
         assert_eq!(word(TSS_IOMAP_OFFSET - 2) >> 16, TSS_SIZE, "no I/O permission bitmap");
-        let pdpt: Vec<u64> = (0..4).map(|k| entry(&b, RING0_OFFSET + PDPT_OFFSET + 8 * k)).collect();
+        let p = pdpt_of_block(BASE);
+        let pdpt: Vec<u64> = (0..4).map(|k| entry(&p, 8 * k)).collect();
         assert_eq!(pdpt, vec![u64::from(BASE) | PDPTE_PRESENT, u64::from(HIGH_DIRECTORIES) | PDPTE_PRESENT,
                               u64::from(HIGH_DIRECTORIES + PAGE_SIZE) | PDPTE_PRESENT, u64::from(HIGH_DIRECTORIES + 2 * PAGE_SIZE) | PDPTE_PRESENT]);
-        assert_eq!(cr3_of_block(BASE), BASE + RING0_OFFSET + PDPT_OFFSET);
-        assert_eq!(block_of_cr3(cr3_of_block(BASE) as u64), Some(BASE));
+        assert_eq!(cr3_of_block(BASE), Some(PDPTS + 5 * PDPT_SIZE), "slot 5's PDPT");
+        assert!(supervisor_only(PDPTS) && (PDPTS >> LARGE_PAGE_SHIFT) == TABLES_CHUNK, "in the tables' supervisor-only page");
+        assert_eq!(block_of_cr3(cr3_of_block(BASE).unwrap() as u64), Some(BASE));
         assert_eq!(ring0_page_of_tlm(BASE + TLM_OFFSET), Some(BASE + RING0_OFFSET));
         assert_eq!(ring0_page_of_tlm(0), None);
         assert_eq!(KERNEL_DATA_SEL & 3, 0, "SS0's RPL is 0");
         let fields = [TSS_ESP0_OFFSET, TSS_SS0_OFFSET, TSS_IOMAP_OFFSET - 2];
-        let pdpt_words = PDPT_OFFSET..PDPT_OFFSET + 32;
-        for off in (0..PAGE_SIZE).step_by(4).filter(|o| !fields.contains(o) && !pdpt_words.contains(o)) {
+        for off in (0..PAGE_SIZE).step_by(4).filter(|o| !fields.contains(o)) {
             assert_eq!(word(off), 0, "ring-0 page offset {off:#x}");
         }
     }
@@ -801,7 +818,7 @@ mod tests {
             assert!(!valid_block(bad), "{bad:#x}");
             assert_eq!(block_of_cr3(u64::from(bad)), None, "{bad:#x}");
         }
-        let cr3 = u64::from(cr3_of_block(PAGING_BLOCKS_BASE));
+        let cr3 = u64::from(cr3_of_block(PAGING_BLOCKS_BASE).unwrap());
         assert_eq!(tlm_page_of(cr3), Some(PAGING_BLOCKS_BASE + TLM_OFFSET));
         assert_eq!(tlm_page_of(1u64 << 32 | cr3), None, "CR3 above 4 GB");
         assert_eq!(tlm_page_of(cr3 | CR3_PWT), Some(PAGING_BLOCKS_BASE + TLM_OFFSET),
