@@ -148,6 +148,7 @@ pub mod som_typecode;
 pub mod pmwp_objects;
 pub mod wps_setup;
 pub mod ea_list;
+pub mod ipf_file;
 mod critsec;
 pub mod dostimer;
 pub mod suballoc;

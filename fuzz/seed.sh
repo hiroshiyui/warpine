@@ -14,7 +14,7 @@
 # libFuzzer finds its tags quickly.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav corpus/config_sys corpus/profile corpus/resolver corpus/wps_setup corpus/fea2_list
+mkdir -p corpus/lx_parse corpus/ne_parse corpus/msgfile corpus/desktop_proto corpus/os2rc corpus/somidl corpus/lx_link corpus/bitmap corpus/res_templates corpus/pointer corpus/wav corpus/config_sys corpus/profile corpus/resolver corpus/wps_setup corpus/fea2_list corpus/ipf_file
 n=0
 while IFS= read -r -d '' f; do
     case $(head -c 2 "$f" | od -An -c | tr -d ' ') in
@@ -79,4 +79,10 @@ printf '\x03nameserver 192.0.2.53\nsearch example.com lan\ndomain example.org\n'
 printf '\x04www.example.com.' > corpus/resolver/name
 printf '\x08OBJECTIDTITLE=Lunch^;today;TEXT=soup;OBJECTID=<WP_C>;NODELETE=YES' > corpus/wps_setup/create
 printf '\x1c\x00\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00MINE\x00abc\x00\x00\x00\x00\x00\x00\x00' > corpus/fea2_list/one
+# An INF book compiled by Open Watcom's wipfc from Warpine's own source.
+ROOT=$(cd .. && pwd)
+W="$ROOT/vendor/watcom"
+if [ -x "$W/binl64/wipfc" ]; then
+    (cd corpus/ipf_file && WATCOM="$W" WIPFC="$W/wipfc" "$W/binl64/wipfc" -q -inf "$ROOT/tests/ipf/book.ipf" -o book.inf) || true
+fi
 echo "fuzz/seed.sh: $n programs and DLLs, $m lx-link inputs as seeds"

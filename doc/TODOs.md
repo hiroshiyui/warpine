@@ -53,7 +53,7 @@ The SOM kernel (ADR-0059–0063, 0070–0073, 0122, 0126) is done; the WPS is to
 - [ ] **Menus in dialogs**: `WM_UPDATEFRAME(FCF_MENU)` and its other flags; `WinSetParent` / `WinSetOwner` of a menu.
 - [ ] **Message boxes**: the `HK_HELP` hook; `MB_SYSTEMMODAL` as system modal.
 - [ ] **Standard dialogs**: a default error box when `FDM_ERROR` returns 0; style-list filtering, `FNTM_COLORCHANGED` / `FNTM_UPDATEPREVIEW`; the read-only check box, overwrite confirmation, sample emphasis; a PMCTLS section in `os2_ordinals.md`.
-- [ ] **Help viewer**: an INF / HLP reader (ADR-0132: `wipfc`'s output and source as specification and oracle, a local corpus from the Hobbes archive as cross-check); `RT_HELPTABLE` / `RT_HELPSUBTABLE` and F1 panels; `HM_*` notifications, `Ddf*`.
+- [ ] **Help viewer**: the rest of the INF / HLP reader (ADR-0132; header and table of contents read, `ipf_file.rs`): the dictionary, cells and their text and formatting, panel numbers and names, the index, images; then a viewer; `RT_HELPTABLE` / `RT_HELPSUBTABLE` and F1 panels; `HM_*` notifications, `Ddf*`.
 
 **Frames, input, messages**
 - [ ] **Frames**: cascades deeper than one level, opening on hover; `MM_SETITEM`, `MM_SETITEMHANDLE`, `MM_SELECTITEM`, `MM_QUERYITEMRECT`, `MM_QUERYSELITEMID`, default-item messages; minimized icons (`FCF_ICON`, `WinSetIcon`), min/max for dialogs; `WinSetActiveWindow` on minimized or disabled frames; `SWP_ZORDER` in a subclassed `WM_FORMATFRAME`; `QWS_FLAGS`, `WinFlashWindow`'s alarm, `WM_MINMAXFRAME` from `WinSetMultWindowPos`.

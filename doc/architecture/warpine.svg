@@ -278,8 +278,8 @@
 <path fill="#bbdefb" stroke="black" d="M5701.55,-752.38C5701.55,-752.38 4640.45,-752.38 4640.45,-752.38 4634.45,-752.38 4628.45,-746.38 4628.45,-740.38 4628.45,-740.38 4628.45,-717.86 4628.45,-717.86 4628.45,-711.86 4634.45,-705.86 4640.45,-705.86 4640.45,-705.86 5701.55,-705.86 5701.55,-705.86 5707.55,-705.86 5713.55,-711.86 5713.55,-717.86 5713.55,-717.86 5713.55,-740.38 5713.55,-740.38 5713.55,-746.38 5707.55,-752.38 5701.55,-752.38"/>
 <text xml:space="preserve" text-anchor="start" x="4639.25" y="-737.17" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM shell DLLs: PMSHAPI profiles (ADR&#45;0017), the switch list (the session&#39;s, ADR&#45;0056), HELPMGR, the SOM runtime kernel (ADR&#45;0059 to ADR&#45;0063, ADR&#45;0070 to ADR&#45;0073) and its TypeCodes (ADR&#45;0128)</text>
 <text xml:space="preserve" text-anchor="start" x="5037.12" y="-729.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/profile_text.rs, loader/helpmgr.rs</text>
-<text xml:space="preserve" text-anchor="start" x="5025.88" y="-721.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_switch.rs, loader/pmwp_objects.rs, loader/wps_setup.rs, loader/som.rs</text>
-<text xml:space="preserve" text-anchor="start" x="5084.75" y="-713.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/som_dispatch.rs, loader/som_typecode.rs</text>
+<text xml:space="preserve" text-anchor="start" x="5022.12" y="-721.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/ipf_file.rs, loader/pm_switch.rs, loader/pmwp_objects.rs, loader/wps_setup.rs</text>
+<text xml:space="preserve" text-anchor="start" x="5058.12" y="-713.02" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/som.rs, loader/som_dispatch.rs, loader/som_typecode.rs</text>
 </g>
 <!-- dispatch&#45;&gt;pmshell -->
 <g id="edge14" class="edge">

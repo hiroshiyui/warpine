@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **Extended attributes by handle**: `DosSetFileInfo` level 2 sets them and `DosQueryFileInfo` level 3 returns them (the VFS remembers the path each file was opened by); level 2 of both queries reports the true size of the file's EA list. New sample `ea_test` (30 checks, GCC and clang).
 
+- **INF / HLP help files, first step** (ADR-0132): `src/loader/ipf_file.rs` reads an INF book's or HLP library's header and table of contents, the layout Open Watcom's `wipfc` writes; `warpine --inf-toc <file>` lists them. Tested on a book `wipfc` compiles from Warpine's own `tests/ipf/book.ipf`, and locally on help files compiled by IBM's IPFC; an `ipf_file` fuzz target.
 - **`DosListIO` / `DosListIOL`** (DOSCALLS 996, 990): a list of reads and writes, each after a seek (64-bit offsets in `LISTIOL`), with each entry's `Actual` and `RetCode`; the SDK declares `LISTIO` / `LISTIOL`. `largefile_test` has 49 checks. 1049 entry points.
 - **`DosSetFilePtr` / `DosSetFilePtrL`** with an unknown method return `ERROR_INVALID_FUNCTION` for files too (it was `ERROR_INVALID_PARAMETER`; pipes already gave it).
 - **Open files follow a rename**: after `DosMove` of a file, or of a directory holding it, the calls by handle on its extended attributes reach it under the new name.

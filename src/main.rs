@@ -94,6 +94,37 @@ enum ExeFormat { LX, NE }
 
 /// The switch that prints [`license_notices`].
 const LICENSES_SWITCH: &str = "--licenses";
+/// `warpine --inf-toc <file>`: an INF / HLP file's title and table of
+/// contents (ADR-0132), to check the reader against real files.
+const INF_TOC_SWITCH: &str = "--inf-toc";
+
+/// Print the title and table of contents of the INF / HLP file at `path`,
+/// one entry a line, indented by its level, hidden ones marked; the exit
+/// code: 0, or 1 for a file that cannot be read or is not one.
+fn print_inf_toc(path: Option<&str>) -> i32 {
+    use loader::ipf_file::{parse_header, parse_toc};
+    let Some(path) = path else { eprintln!("usage: warpine {INF_TOC_SWITCH} <file.inf|file.hlp>"); return 1 };
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{path}: {e}"); return 1 }
+    };
+    let parsed = parse_header(&data).and_then(|h| parse_toc(&data, &h).map(|t| (h, t)));
+    let (header, toc) = match parsed {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{path}: not a readable INF / HLP file ({e:?})"); return 1 }
+    };
+    use std::io::Write;
+    let kind = if header.help_library { "HLP" } else { "INF" };
+    let mut out = std::io::stdout().lock();
+    // A reader that stops early (`| head`) ends the listing, quietly.
+    let _ = writeln!(out, "{kind} {}.{}: {}", header.version.0, header.version.1, String::from_utf8_lossy(&header.title))
+        .and_then(|()| toc.iter().try_for_each(|e| {
+            let indent = "  ".repeat(e.level.saturating_sub(1) as usize);
+            let hidden = if e.hidden { " (hidden)" } else { "" };
+            writeln!(out, "{indent}{}{hidden}", String::from_utf8_lossy(&e.title))
+        }));
+    0
+}
 
 /// Warpine's licence and the licences of the fonts built into the binary
 /// (ADR-0076). The SIL Open Font License asks that every copy of the fonts
@@ -187,6 +218,10 @@ fn main() {
     if args[1] == "--compat" {
         print!("{}", loader::api_registry::compat_report());
         return;
+    }
+
+    if args[1] == INF_TOC_SWITCH {
+        std::process::exit(print_inf_toc(args.get(2).map(String::as_str)));
     }
 
     // A process started past the nesting limit runs no guest code

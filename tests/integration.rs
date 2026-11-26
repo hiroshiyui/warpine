@@ -4151,6 +4151,30 @@ fn test_extended_attributes_by_handle_and_path() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// The INF reader (ADR-0132) on a book Open Watcom's wipfc compiles from
+/// Warpine's own IPF source: `warpine --inf-toc` lists its title and
+/// table of contents, levels and the hidden panel, an extended entry too.
+#[test]
+fn inf_toc_reads_a_book_compiled_by_wipfc() {
+    let watcom = Path::new("vendor/watcom").canonicalize();
+    let Ok(watcom) = watcom else { return };
+    let wipfc = watcom.join("binl64/wipfc");
+    if !wipfc.exists() { return; }
+    let dir = tempfile::tempdir().unwrap();
+    let source = Path::new("tests/ipf/book.ipf").canonicalize().unwrap();
+    let ok = Command::new(&wipfc).args(["-q", "-inf"]).arg(&source).args(["-o", "book.inf"])
+        .current_dir(dir.path()).env("WATCOM", &watcom).env("WIPFC", watcom.join("wipfc"))
+        .status().unwrap().success();
+    assert!(ok, "wipfc compiled the book");
+    let out = Command::new(warpine()).arg("--inf-toc").arg(dir.path().join("book.inf")).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout),
+               "INF 2.2: Warpine Test Book\nIntroduction\n  Details\n  Positioned panel\nHidden panel (hidden)\n");
+    let junk = dir.path().join("junk.inf");
+    std::fs::write(&junk, b"not a help file").unwrap();
+    assert_eq!(Command::new(warpine()).arg("--inf-toc").arg(&junk).output().unwrap().status.code(), Some(1));
+}
+
 /// largefile_test: a sparse file grown past 4 GB, data written and read
 /// back past 4 GB, 64-bit sizes at levels 11 / 12 and in FILEFINDBUF3L,
 /// FILELOCKL ranges, the DosProtect*L forms (DOSCALLS 981–989), and

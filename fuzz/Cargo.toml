@@ -125,3 +125,9 @@ name = "fea2_list"
 path = "fuzz_targets/fea2_list.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "ipf_file"
+path = "fuzz_targets/ipf_file.rs"
+test = false
+doc = false
