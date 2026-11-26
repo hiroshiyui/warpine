@@ -69,6 +69,10 @@ fn guests_start() -> bool {
     let ok = out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Hello from Warpine"));
     if !ok {
         eprintln!("WARNING: this host's KVM cannot start a PAE guest (ADR-0131); skipping every KVM test");
+        // A marker the workflow turns into a warning on the run's page.
+        if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+            let _ = std::fs::write(Path::new(&dir).join("kvm-tests-skipped"), "");
+        }
     }
     ok
 }
