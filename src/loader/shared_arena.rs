@@ -721,7 +721,7 @@ impl super::Loader {
                 .filter(|&(_, _, a)| a != PageAccess::None) else {
                 return FaultKind::Violation;
             };
-            let present = self.guest_read::<u64>(pte).is_some_and(|e| e & 1 != 0);
+            let present = self.system_read::<u64>(pte).is_some_and(|e| e & 1 != 0);
             let allows = (!write || access.writable()) && (!fetch || access.executable());
             if present && allows {
                 // Mapped meanwhile by another thread, or a stale TLB entry.
@@ -1038,7 +1038,7 @@ mod tests {
                 assert_eq!(l.guest_read::<u32>(DYNAMIC_ALLOC_BASE), Some(SHARED_ARENA_BASE), "the lowest block");
                 std::thread::yield_now();
                 assert_eq!(l.arena_free(SHARED_ARENA_BASE), Some(NO_ERROR));
-                let e = l.guest_read::<u64>(pte).unwrap();
+                let e = l.system_read::<u64>(pte).unwrap();
                 assert_eq!(e & 1, 0, "iteration {i}: a block let go stays unmapped");
             }
         });

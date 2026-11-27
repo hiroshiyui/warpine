@@ -43,7 +43,7 @@ impl super::Loader {
     /// Read GDT entry base address from guest memory.
     pub(crate) fn gdt_entry_base(&self, selector: u16) -> u32 {
         let gdt_idx = (selector / 8) as u32;
-        let entry = self.guest_read::<u64>(GDT_BASE + gdt_idx * 8).unwrap_or(0);
+        let entry = self.system_read::<u64>(GDT_BASE + gdt_idx * 8).unwrap_or(0);
         let base_lo = ((entry >> 16) & 0xFFFF) as u32;
         let base_mid = ((entry >> 32) & 0xFF) as u32;
         let base_hi = ((entry >> 56) & 0xFF) as u32;
@@ -53,7 +53,7 @@ impl super::Loader {
     /// Read GDT entry limit from guest memory.
     pub(crate) fn gdt_entry_limit(&self, selector: u16) -> u32 {
         let gdt_idx = (selector / 8) as u32;
-        let entry = self.guest_read::<u64>(GDT_BASE + gdt_idx * 8).unwrap_or(0);
+        let entry = self.system_read::<u64>(GDT_BASE + gdt_idx * 8).unwrap_or(0);
         let limit_lo = (entry & 0xFFFF) as u32;
         let limit_hi = ((entry >> 48) & 0x0F) as u32;
         limit_lo | (limit_hi << 16)

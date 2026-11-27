@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Large files** (DOSCALLS 981–989): `DosOpenL`, `DosSetFilePtrL`, `DosSetFileSizeL`, `DosSetFileLocksL`, `DosCancelLockRequestL` and the `DosProtect*L` forms; 64-bit sizes at levels 11–13 of the file-information calls and in `DosFindFirst`'s `FILEFINDBUF3L` / `4L`. The SDK declares them, with `FILESTATUS4L` and `FILELOCKL`. New sample `largefile_test` (40 checks, GCC and clang). 1047 entry points.
 
 ### Fixed
+- **Single-value reads of protected memory** (ADR-0113 addendum): `guest_read` of a guest-given address in Warpine's protected memory now fails, so no call can echo a word of the descriptor tables, page tables or ring-0 stacks back; Warpine's own reads use `system_read`.
 - **Shared memory copies against a free** (ADR-0049 addendum): an API call's copy into or out of a shared block keeps the block from being let go until it ends, so the range cannot reach another process mid-copy; before, the check and the copy were apart.
 - **TLB shootdowns** (ADR-0114 addendum): a call that takes access to a page away (`DosSetMem`, `DosFreeMem`, letting a shared block go) now returns only once every other vCPU of the process has flushed its TLB or left guest code; before, a thread running at that moment could still reach the page for a moment. `mem_protect_test` has 44 checks.
 - **`ring_test`** checks that the process tables and the PDPTs cannot be read at ring 3, and that `DosQueryMem` refuses output pointers into the thunks, the process tables and the PDPTs (21 checks).

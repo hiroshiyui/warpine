@@ -102,7 +102,7 @@ impl super::Loader {
         if index == 0 || index >= GDT_ENTRY_COUNT || selector & 4 != 0 {
             return None;
         }
-        let d = self.guest_read::<u64>(GDT_BASE + index * 8)?;
+        let d = self.system_read::<u64>(GDT_BASE + index * 8)?;
         let access = (d >> 40) as u8;
         let flags = (d >> 52) as u8;
         let raw_limit = (d & 0xFFFF) as u32 | (((d >> 48) & 0xF) as u32) << 16;
@@ -145,7 +145,7 @@ impl super::Loader {
         let at = ring0_page + offset;
         let mut frame = [0u32; RING3_FRAME_DWORDS as usize];
         for (i, word) in frame.iter_mut().enumerate() {
-            *word = self.guest_read::<u32>(at + 4 * i as u32).ok_or_else(|| "the ring-0 stack cannot be read".to_string())?;
+            *word = self.system_read::<u32>(at + 4 * i as u32).ok_or_else(|| "the ring-0 stack cannot be read".to_string())?;
         }
         let [_vector, _error, _eip, cs, _eflags, esp, ss] = frame;
         if cs & 3 != 3 {

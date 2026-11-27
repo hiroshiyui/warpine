@@ -438,8 +438,21 @@ impl super::Loader {
         self.shared.guest_mem.ptr_at(offset, len)
     }
 
-    /// Read a value from guest memory with bounds check.
+    /// Read a value from guest memory with bounds check; `None` in
+    /// Warpine's protected memory ([`protected`]), which the guest cannot
+    /// read either, so that no call echoes a word of it back (security
+    /// audit 2026-11-25). Warpine's own reads there use [`Self::system_read`].
     pub fn guest_read<T: Copy>(&self, offset: u32) -> Option<T> {
+        if protected(offset, std::mem::size_of::<T>()) {
+            return None;
+        }
+        self.shared.guest_mem.read::<T>(offset)
+    }
+
+    /// Read from Warpine's protected memory too: only for its own
+    /// structures, never at an address a guest gave (the read side of
+    /// [`Self::system_write`]).
+    pub(crate) fn system_read<T: Copy>(&self, offset: u32) -> Option<T> {
         self.shared.guest_mem.read::<T>(offset)
     }
 
@@ -600,7 +613,8 @@ mod tests {
         assert!(l.guest_read_bytes(P - 8, 8).is_some(), "just below");
         l.guest_write_bytes(P - 2, b"xy").unwrap();
         assert_eq!(l.read_guest_string(P - 2), "xy", "ends where protected memory begins");
-        assert!(l.guest_read::<u64>(SYSTEM_AREA_BASE).is_some(), "Warpine's own reads");
+        assert!(l.guest_read::<u64>(SYSTEM_AREA_BASE).is_none(), "nor a single value for a guest");
+        assert!(l.system_read::<u64>(SYSTEM_AREA_BASE).is_some(), "Warpine's own reads");
     }
 
     /// A refresh that read the table before a change made under its lock

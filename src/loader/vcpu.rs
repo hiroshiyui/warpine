@@ -807,11 +807,11 @@ impl super::Loader {
                         };
 
                         // Stack layout: [vector_num] [error_code_or_fake] [fault_EIP] [fault_CS] [fault_EFLAGS]
-                        let vector     = self.guest_read::<u32>(frame_base).unwrap_or(0xFF);
-                        let error_code = self.guest_read::<u32>(frame_base + 4).unwrap_or(0);
-                        let fault_eip  = self.guest_read::<u32>(frame_base + 8).unwrap_or(0);
-                        let fault_cs   = self.guest_read::<u32>(frame_base + 12).unwrap_or(0);
-                        let fault_eflags = self.guest_read::<u32>(frame_base + 16).unwrap_or(0);
+                        let vector     = self.system_read::<u32>(frame_base).unwrap_or(0xFF);
+                        let error_code = self.system_read::<u32>(frame_base + 4).unwrap_or(0);
+                        let fault_eip  = self.system_read::<u32>(frame_base + 8).unwrap_or(0);
+                        let fault_cs   = self.system_read::<u32>(frame_base + 12).unwrap_or(0);
+                        let fault_eflags = self.system_read::<u32>(frame_base + 16).unwrap_or(0);
 
                         // ── Far16 thunk bypass ───────────────────────────────
                         // Watcom __Far16 thunks do `JMP FAR <tiled_sel>:<off>`
@@ -835,9 +835,9 @@ impl super::Loader {
                             let is_tiled = (TILED_SEL_START_INDEX..TILED_SEL_START_INDEX + NUM_TILES).contains(&err_sel_index)
                                 || (TILED_CODE_START_INDEX..TILED_CODE_START_INDEX + NUM_CODE_TILES).contains(&err_sel_index);
                             if is_tiled {
-                                let b0 = self.guest_read::<u8>(fault_eip).unwrap_or(0);
-                                let b1 = self.guest_read::<u8>(fault_eip + 1).unwrap_or(0);
-                                let b2 = self.guest_read::<u8>(fault_eip + 2).unwrap_or(0);
+                                let b0 = self.system_read::<u8>(fault_eip).unwrap_or(0);
+                                let b1 = self.system_read::<u8>(fault_eip + 1).unwrap_or(0);
+                                let b2 = self.system_read::<u8>(fault_eip + 2).unwrap_or(0);
 
                                 // Two known Far16 thunk patterns that fault with a tiled selector:
                                 //   Pattern A (Watcom __Far16 JMP):  66 EA <off16> <sel16>
@@ -2540,7 +2540,7 @@ mod tests {
     fn the_gdt_has_ring0_descriptors_and_only_the_breakpoint_gate_is_dpl3() {
         let loader = super::super::Loader::new_mock();
         loader.setup_idt();
-        let desc = |sel: u16| loader.guest_read::<u64>(GDT_BASE + u32::from(sel)).unwrap();
+        let desc = |sel: u16| loader.system_read::<u64>(GDT_BASE + u32::from(sel)).unwrap();
         let access = |sel: u16| (desc(sel) >> 40) as u8;
         assert_eq!(access(KERNEL_CODE_SEL), 0x9B, "ring-0 code: present, DPL 0, execute/read");
         assert_eq!(access(KERNEL_DATA_SEL), 0x93, "ring-0 data: present, DPL 0, read/write");
@@ -2552,7 +2552,7 @@ mod tests {
             assert_eq!(access(sel), want, "selector {sel:#x}: DPL 3, for ring 3");
         }
         for v in 0..32u32 {
-            let attrs = loader.guest_read::<u16>(IDT_BASE + v * 8 + 4).unwrap();
+            let attrs = loader.system_read::<u16>(IDT_BASE + v * 8 + 4).unwrap();
             let dpl = (attrs >> 13) & 3;
             assert_eq!(dpl, if v == 3 { 3 } else { 0 }, "gate {v}'s DPL");
             assert_eq!(attrs & 0x9F00, 0x8E00, "gate {v}: a present 32-bit interrupt gate");
@@ -2566,14 +2566,14 @@ mod tests {
     fn at_ring_3_program_descriptors_are_dpl3_and_gates_enter_ring_0() {
         let loader = super::super::Loader::new_mock();
         loader.setup_idt();
-        let access = |sel: u32| (loader.guest_read::<u64>(GDT_BASE + sel).unwrap() >> 40) as u8;
+        let access = |sel: u32| (loader.system_read::<u64>(GDT_BASE + sel).unwrap() >> 40) as u8;
         for (sel, want) in [(0x08, 0xFB), (0x10, 0xF3), (0x18, 0xF3), (0x20, 0xF3), (0x28, 0xFB),
                             (TILED_SEL_START, 0xF3), (TILED_CODE_START, 0xFB)] {
             assert_eq!(access(sel), want, "selector {sel:#x}: DPL 3");
         }
         assert_eq!(access(u32::from(KERNEL_CODE_SEL)), 0x9B, "ring 0's code stays DPL 0");
         for v in 0..32u32 {
-            let cs = loader.guest_read::<u16>(IDT_BASE + v * 8 + 2).unwrap();
+            let cs = loader.system_read::<u16>(IDT_BASE + v * 8 + 2).unwrap();
             assert_eq!(cs, KERNEL_CODE_SEL, "gate {v} enters ring 0");
         }
         let block = loader.alloc_paging_block(TIB_BASE).expect("a block");

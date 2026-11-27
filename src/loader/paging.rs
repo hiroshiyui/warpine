@@ -864,28 +864,28 @@ mod tests {
         loader.ensure_process_tables();
         for addr in [LOW_GUARD, EXE_AREA_START + 0x5000, EXE_AREA_END - PAGE_SIZE] {
             let at = process_pte_at(addr).unwrap();
-            assert_eq!(loader.guest_read::<u64>(at), Some(u64::from(addr) | PTE_FLAGS | PTE_XD),
+            assert_eq!(loader.system_read::<u64>(at), Some(u64::from(addr) | PTE_FLAGS | PTE_XD),
                        "{addr:#x}: the program area present, not executable until its code is marked");
         }
         for addr in [DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + 0x5000, DYNAMIC_ALLOC_END - PAGE_SIZE] {
             let at = process_pte_at(addr).unwrap();
-            assert_eq!(loader.guest_read::<u64>(at), Some(u64::from(addr)), "{addr:#x}: the allocator's region not present until allocated");
+            assert_eq!(loader.system_read::<u64>(at), Some(u64::from(addr)), "{addr:#x}: the allocator's region not present until allocated");
         }
         // The 1-4 GB: one-to-one large pages, not executable.
-        assert_eq!(loader.guest_read::<u64>(HIGH_DIRECTORIES), Some((1u64 << 30) | PTE_FLAGS | PDE_LARGE | PTE_XD));
-        assert_eq!(loader.guest_read::<u64>(HIGH_DIRECTORIES + 3 * PAGE_SIZE - 8),
+        assert_eq!(loader.system_read::<u64>(HIGH_DIRECTORIES), Some((1u64 << 30) | PTE_FLAGS | PDE_LARGE | PTE_XD));
+        assert_eq!(loader.system_read::<u64>(HIGH_DIRECTORIES + 3 * PAGE_SIZE - 8),
                    Some((0xFFE0_0000u64) | PTE_FLAGS | PDE_LARGE | PTE_XD), "the last 2 MB below 4 GB");
         // An allocation comes in with the next sync, its free goes out.
         let block = loader.shared.mem_mgr.lock().unwrap().alloc(2 * PAGE_SIZE).unwrap();
         loader.sync_allocations();
-        let entry = |a: u32| loader.guest_read::<u64>(process_pte_at(a).unwrap()).unwrap();
+        let entry = |a: u32| loader.system_read::<u64>(process_pte_at(a).unwrap()).unwrap();
         assert_eq!((entry(block), entry(block + PAGE_SIZE)),
                    (u64::from(block) | PTE_FLAGS | PTE_XD, u64::from(block + PAGE_SIZE) | PTE_FLAGS | PTE_XD));
         assert!(loader.shared.mem_mgr.lock().unwrap().free(block));
         loader.sync_allocations();
         assert_eq!(entry(block) & PTE_PRESENT, 0, "freed: not present");
         for addr in (0..LOW_GUARD).step_by(PAGE_SIZE as usize) {
-            assert_eq!(loader.guest_read::<u64>(process_pte_at(addr).unwrap()).map(|e| e & PTE_PRESENT), Some(0),
+            assert_eq!(loader.system_read::<u64>(process_pte_at(addr).unwrap()).map(|e| e & PTE_PRESENT), Some(0),
                        "{addr:#x}: the low 64 KB not present");
         }
     }
@@ -954,7 +954,8 @@ mod tests {
             assert_eq!(loader.guest_write::<u32>(addr, 0x5151), None, "{addr:#x}: refused");
             assert!(loader.guest_write_bytes(addr, &[1, 2, 3, 4]).is_none(), "{addr:#x}");
             assert!(loader.guest_slice_mut(addr, 4).is_none(), "{addr:#x}");
-            assert!(loader.guest_read::<u32>(addr).is_some(), "{addr:#x}: reads stay possible");
+            assert!(loader.guest_read::<u32>(addr).is_none(), "{addr:#x}: nor read for a guest");
+            assert!(loader.system_read::<u32>(addr).is_some(), "{addr:#x}: Warpine's own reads stay possible");
         }
         assert!(protected(TIB_BASE - 2, 4), "a write that straddles the edge");
         assert!(supervisor_only(PAGING_EXTRA_BASE) && supervisor_only(PAGING_EXTRA_END - PAGE_SIZE));
@@ -1016,7 +1017,7 @@ mod tests {
         super::super::guest_mem::set_thread_tib(TIB_BASE);
         loader.guest_write::<u32>(TLM_PAGE + 4, 0x2222).unwrap();
         assert_eq!(loader.guest_read::<u32>(TLM_PAGE), Some(0), "this thread's page");
-        assert_eq!(loader.guest_read::<u32>(own + 4), Some(0x2222));
+        assert_eq!(loader.system_read::<u32>(own + 4), Some(0x2222), "the backing page, in the arena");
         // An access that crosses the page's end is not translated.
         assert_eq!(loader.guest_read::<u64>(TLM_PAGE + PAGE_SIZE - 4).map(|v| v as u32), Some(0));
         super::super::guest_mem::set_thread_tlm_backing(0);

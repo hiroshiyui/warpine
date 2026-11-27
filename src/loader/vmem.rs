@@ -556,7 +556,7 @@ impl super::Loader {
         self.sync_allocations();
         let allocated = self.shared.mem_mgr.lock_or_recover().contains(addr);
         allocated && process_pte_at(addr)
-            .and_then(|at| self.guest_read::<u64>(at))
+            .and_then(|at| self.system_read::<u64>(at))
             .is_some_and(|e| e & 1 != 0)
     }
 
@@ -736,7 +736,7 @@ impl super::Loader {
             if !self.shared.process_tables_ready.load(Ordering::Acquire) {
                 return None;
             }
-            let entry = self.guest_read::<u64>(process_pte_at(page)?)?;
+            let entry = self.system_read::<u64>(process_pte_at(page)?)?;
             const PRESENT: u64 = 1 << 0;
             const WRITABLE: u64 = 1 << 1;
             let execute = if code.executable(page) { PAG_EXECUTE } else { 0 };
@@ -969,7 +969,7 @@ mod tests {
         const STACK: u32 = 8 * PAGE_SIZE;
         let l = Loader::new_mock();
         l.ensure_process_tables();
-        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u64>(at)).is_some_and(|e| e & 1 != 0);
+        let present = |page: u32| process_pte_at(page).and_then(|at| l.system_read::<u64>(at)).is_some_and(|e| e & 1 != 0);
         let lost = std::sync::atomic::AtomicU32::new(0);
         std::thread::scope(|s| {
             s.spawn(|| for _ in 0..30000 {
@@ -1002,7 +1002,7 @@ mod tests {
         const SIZE: u32 = 8 * PAGE_SIZE;
         let l = Loader::new_mock();
         l.ensure_process_tables();
-        let present = |page: u32| process_pte_at(page).and_then(|at| l.guest_read::<u64>(at)).is_some_and(|e| e & 1 != 0);
+        let present = |page: u32| process_pte_at(page).and_then(|at| l.system_read::<u64>(at)).is_some_and(|e| e & 1 != 0);
         let lost = std::sync::atomic::AtomicU32::new(0);
         let ppb = 0x0010_0000;
         std::thread::scope(|s| {

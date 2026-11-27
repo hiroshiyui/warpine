@@ -87,7 +87,7 @@ impl Loader {
 
         let mut code_bytes = vec![0u8; 32];
         for (i, b) in code_bytes.iter_mut().enumerate() {
-            *b = self.guest_read::<u8>(flat_code_addr.wrapping_add(i as u32))
+            *b = self.system_read::<u8>(flat_code_addr.wrapping_add(i as u32))
                      .unwrap_or(0xCC);
         }
 
@@ -101,7 +101,7 @@ impl Loader {
         let mut stack_words = Vec::with_capacity(32);
         for i in 0..32u32 {
             stack_words.push(
-                self.guest_read::<u32>(flat_esp.wrapping_add(i * 4))
+                self.system_read::<u32>(flat_esp.wrapping_add(i * 4))
                     .unwrap_or(0xDEADC0DE),
             );
         }
