@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "warpine"
-version = "0.0.20"
+version = "0.0.21"
 dependencies = [
  "ab_glyph_rasterizer",
  "bytemuck",
