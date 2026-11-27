@@ -34,7 +34,8 @@ The OS/2 and Warpine terms these documents use, in alphabetical order. OS/2 term
 - **PIB, TIB** — the process and thread information blocks OS/2 gives every process and thread (`DosGetInfoBlocks`).
 - **PM** — Presentation Manager: OS/2's graphical user interface and its window calls (`Win*`).
 - **Process tables** — the page tables all threads of a process share, which hold the page states of its memory (ADR-0114, ADR-0131).
-- **Protected memory** — Warpine's own structures in guest memory (GDT, IDT, stubs, page tables), which no API call writes through a guest's pointer (ADR-0113).
+- **PDPT** — page-directory-pointer table: the four-entry table CR3 names under PAE paging; each Warpine thread has one in a page of its own (ADR-0131).
+- **Protected memory** — Warpine's own structures in guest memory (GDT, IDT, stubs, API thunks, page tables, PDPTs), which no API call writes through a guest's pointer (ADR-0113).
 - **REXX** — OS/2's scripting language; Warpine has its own interpreter and the REXX API (ADR-0081).
 - **Ring 0, ring 3** — the processor's most and least privileged levels; every guest runs at ring 3 (ADR-0113).
 - **SDK** — Warpine's C / C++ headers, runtime and tools for building OS/2 programs with GCC or clang (ADR-0096).
