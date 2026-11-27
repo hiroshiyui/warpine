@@ -1,12 +1,15 @@
-# A quick, manual check of PAE guests on GitHub's runners (ADR-0131
-# addendum): eight jobs at once, each printing its host's processor and KVM
-# settings and running only hello and nx_test (ci/matrix.sh probe), to land
-# on a runner that cannot run PAE guests without waiting for the whole
-# matrix. Start it with `gh workflow run pae-probe.yml`.
+# A quick check of PAE guests on GitHub's runners (ADR-0131 addendum):
+# eight jobs at once, each printing its host's processor and KVM settings
+# and running hello alone, then six single- and multi-threaded tests
+# (ci/matrix.sh probe), to land on a runner that cannot run PAE guests
+# without waiting for the whole matrix. It runs weekly, to catch new runner
+# hardware before a push meets it, and by hand: `gh workflow run pae-probe.yml`.
 name: PAE probe
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '47 4 * * 1'   # Mondays, 04:47 UTC, after the fuzz run
 
 permissions:
   contents: read

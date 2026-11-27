@@ -78,4 +78,4 @@ Differences between Intel and AMD that bear on this, from the vendors' public ma
 
 The fix also closes a gap in protected memory: `guest_mem::protected` now covers the API thunks and the process tables as well as the PDPT area, so no API call writes them through a guest's pointer; `setup_stubs` writes the thunks with `system_write`.
 
-**Resolved again (2026-11-27).** With a page of its own per PDPT (389616c), the probe passed in all eight jobs, among them two AMD EPYC 9V74, two 9V45 and one 7763 host, multi-threaded tests included, and the full CI run passed on a 7763 and on Intel hosts.
+**Resolved again (2026-11-27).** With a page of its own per PDPT (389616c), the probe passed in all eight jobs, among them two AMD EPYC 9V74, two 9V45 and one 7763 host, multi-threaded tests included, and the full CI run passed on a 7763 and on Intel hosts. The probe also runs weekly (Mondays), so a new runner model that cannot run PAE guests shows up before a push meets it.
