@@ -96,14 +96,15 @@ case "$MODE" in
         ;;
     probe)
         # A quick check of PAE guests on this runner (ADR-0131 addendum,
-        # .github/workflows/pae-probe.yml): two samples, two tests, and no
-        # warning in place of a failure.
+        # .github/workflows/pae-probe.yml): one and several threads, and
+        # no warning in place of a failure.
         step "Open Watcom and the probe's samples"
         ./vendor/setup_watcom.sh
-        make -C samples/hello
-        make -C samples/nx_test
-        step "PAE probe: hello and nx_test"
-        cargo test --test integration -- --test-threads="$JOBS" test_hello_world test_no_execute_memory
+        for s in hello nx_test tlm_test ring_test mem_protect_test stack_grow_test; do make -C "samples/$s"; done
+        step "PAE probe"
+        cargo test --test integration -- --test-threads="$JOBS" test_hello_world test_no_execute_memory \
+            test_thread_local_memory every_thread_has_a_tss_and_the_flat_segments \
+            page_states_of_allocated_memory_hold thread_stacks_grow_and_run_out
         ;;
     gcc|clang)
         step "every C sample from $MODE ($("$MODE" --version | head -1))"
