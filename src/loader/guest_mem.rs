@@ -69,21 +69,23 @@ fn tlm_translate(offset: u32, len: usize) -> u32 {
 
 /// Whether `len` bytes at the guest-physical `offset` touch Warpine's
 /// protected memory (ADR-0113): the GDT, IDT and exception stubs (the
-/// system area below the TIB) and the paging arena, both parts (page
-/// tables, TSSs, ring-0 stacks). A guest at ring 3 cannot write them itself, and Warpine
+/// system area below the TIB), the API thunks, the process tables, the
+/// paging arena, both parts (page tables, TSSs, ring-0 stacks), and the
+/// threads' PDPTs (ADR-0131). A guest at ring 3 cannot write them itself, and Warpine
 /// does not write them on its behalf: every write through a guest-given
 /// pointer goes through the checked paths, and only Warpine's own setup
 /// uses the `*_system` ones. The address is the one given, before the
 /// thread-local page is translated: `TLM_PAGE` stays writable, its backing
 /// page in the arena does not.
 pub fn protected(offset: u32, len: usize) -> bool {
-    use super::constants::{SYSTEM_AREA_BASE, TIB_BASE};
-    use super::paging::{PAGING_ARENA_BASE, PAGING_ARENA_END, PAGING_EXTRA_BASE, PAGING_EXTRA_END};
+    use super::constants::{MAGIC_API_BASE, PDPT_AREA_BASE, SHARED_ARENA_BASE, STUB_AREA_SIZE, SYSTEM_AREA_BASE, TIB_BASE};
+    use super::paging::{PAGING_ARENA_BASE, PAGING_ARENA_END, PAGING_EXTRA_END, PROCESS_TABLES};
     let start = u64::from(offset);
     let end = start + len.max(1) as u64;
     let overlaps = |lo: u32, hi: u32| start < u64::from(hi) && end > u64::from(lo);
     overlaps(SYSTEM_AREA_BASE, TIB_BASE) || overlaps(PAGING_ARENA_BASE, PAGING_ARENA_END)
-        || overlaps(PAGING_EXTRA_BASE, PAGING_EXTRA_END)
+        || overlaps(MAGIC_API_BASE as u32, MAGIC_API_BASE as u32 + STUB_AREA_SIZE)
+        || overlaps(PROCESS_TABLES, PAGING_EXTRA_END) || overlaps(PDPT_AREA_BASE, SHARED_ARENA_BASE)
 }
 
 // ── GuestMemory ───────────────────────────────────────────────────────────────
@@ -529,7 +531,7 @@ mod tests {
     #[test]
     fn copies_of_guest_memory_stop_at_protected_memory() {
         use super::super::constants::SYSTEM_AREA_BASE;
-        use super::super::paging::PAGING_EXTRA_BASE as P; // protected from here up
+        use super::super::paging::PROCESS_TABLES as P; // protected from here up
         let l = Loader::new_mock();
         assert_eq!(l.guest_read_bytes(SYSTEM_AREA_BASE, 8), None, "the GDT");
         assert_eq!(l.guest_read_bytes(P - 4, 8), None, "straddling into it");
@@ -629,7 +631,7 @@ mod tests {
     #[test]
     fn test_mock_guest_oob_read_returns_none() {
         let loader = Loader::new_mock();
-        let end = 64 * 1024 * 1024u32; // 64 MB mock region (new_mock allocates 64 MB)
+        let end = super::super::constants::GUEST_MEM_SIZE; // new_mock allocates all of guest memory
         assert!(loader.guest_read::<u8>(end - 1).is_some());   // last valid byte
         assert!(loader.guest_read::<u8>(end).is_none());        // one past end
         assert!(loader.guest_read::<u32>(end - 3).is_none());   // u32 straddles end

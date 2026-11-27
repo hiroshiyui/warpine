@@ -16,6 +16,13 @@ pub const GUEST_MEM_SIZE: u32 = 0x1000_0000; // 256 MB
 /// ADR-0049). Private allocations stay below it.
 pub const SHARED_ARENA_BASE: u32 = 0x0E00_0000;
 pub const SHARED_ARENA_SIZE: u32 = 0x0200_0000; // 32 MB
+/// The threads' PDPTs, one 4 KB page each, supervisor-only, just below
+/// the shared arena (ADR-0131 addendum): a page of its own per PDPT, which
+/// nothing else uses and nothing writes while its thread runs.
+pub const PDPT_AREA_BASE: u32 = SHARED_ARENA_BASE - PDPT_AREA_SIZE;
+pub const PDPT_AREA_SIZE: u32 = 0x0040_0000; // 4 MB
+/// The end of private allocations (`MemoryManager`).
+pub const DYNAMIC_ALLOC_END: u32 = PDPT_AREA_BASE;
 /// The access flags `DosGetSharedMem` / `DosGetNamedSharedMem` /
 /// `DosGiveSharedMem` take.
 pub const SHARED_ACCESS_FLAGS: u32 = PAG_READ | PAG_WRITE | PAG_EXECUTE | PAG_GUARD;

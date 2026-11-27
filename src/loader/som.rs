@@ -3178,7 +3178,7 @@ mod tests {
         use super::super::constants::SYSTEM_AREA_BASE;
         let l = Loader::new_mock();
         assert!(l.som_bytes(SYSTEM_AREA_BASE, 16).is_none(), "inside");
-        let at = super::super::paging::PAGING_EXTRA_BASE - 4;
+        let at = super::super::paging::PROCESS_TABLES - 4;
         l.guest_write_bytes(at, b"abcd").unwrap();
         assert!(l.som_bytes(at, 16).is_none(), "running into it");
         assert_eq!(l.som_bytes(put(&l, 0x3400, "ok"), 16).as_deref(), Some(&b"ok"[..]));

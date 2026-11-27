@@ -57,8 +57,8 @@ use super::mutex_ext::MutexExt;
 use log::{debug, warn};
 
 /// Pages in a thread's paging block: the first gigabyte's page directory,
-/// with the thread's PDPT in its last 32 bytes, the TLM table, the
-/// thread-local page and the ring-0 page (its TSS and ring-0 stack).
+/// the TLM table, the thread-local page and the ring-0 page (its TSS and
+/// ring-0 stack). Its PDPT is apart, in [`PDPT_AREA_BASE`]'s pages.
 pub const PAGING_BLOCK_PAGES: u32 = 4;
 /// Bytes of a thread's paging block.
 pub const PAGING_BLOCK_SIZE: u32 = PAGING_BLOCK_PAGES * PAGE_SIZE;
@@ -69,14 +69,6 @@ const TLM_OFFSET: u32 = 2 * PAGE_SIZE;
 const RING0_OFFSET: u32 = 3 * PAGE_SIZE;
 /// A PDPT's size: four 8-byte entries (ADR-0131).
 const PDPT_SIZE: u32 = 32;
-/// The PDPT's offset in the block: the directory's last four entries
-/// (ADR-0131 addendum). Each thread's PDPT is in a page of its own, as
-/// some nested hosts cache PDPTs by the page CR3 names; the entries it
-/// takes would map 1016 MB - 1 GB, far above guest memory, and as
-/// directory entries they name supervisor-only, read-only tables.
-const PDPT_OFFSET: u32 = DIRECTORY_OFFSET + PAGE_SIZE - PDPT_SIZE;
-const PDPT_FIRST_ENTRY: u32 = PDPT_OFFSET / ENTRY_BYTES;
-const _: () = assert!(GUEST_CHUNKS <= PDPT_FIRST_ENTRY);
 /// The low addresses no 32-bit thread reaches (OS/2's low 64 KB, below
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
@@ -94,7 +86,11 @@ const ARENA_CHUNKS: std::ops::Range<u32> = TLM_CHUNK + 1..DYNAMIC_ALLOC_BASE >> 
 /// The allocator's region in 2 MB chunks: the directory entries that lead
 /// to the process tables instead of large pages (ADR-0114).
 pub const ALLOC_FIRST_CHUNK: u32 = DYNAMIC_ALLOC_BASE >> LARGE_PAGE_SHIFT;
-pub const ALLOC_CHUNKS: u32 = (SHARED_ARENA_BASE - DYNAMIC_ALLOC_BASE) >> LARGE_PAGE_SHIFT;
+pub const ALLOC_CHUNKS: u32 = (DYNAMIC_ALLOC_END - DYNAMIC_ALLOC_BASE) >> LARGE_PAGE_SHIFT;
+/// The 2 MB chunks of the threads' PDPTs (ADR-0131 addendum): one page
+/// per paging block, supervisor-only large pages.
+const PDPT_CHUNKS: std::ops::Range<u32> = PDPT_AREA_BASE >> LARGE_PAGE_SHIFT..SHARED_ARENA_BASE >> LARGE_PAGE_SHIFT;
+const _: () = assert!(PDPT_AREA_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT && PDPT_AREA_SIZE / PAGE_SIZE >= PAGING_BLOCKS);
 const _: () = assert!(DYNAMIC_ALLOC_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT
     && SHARED_ARENA_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT);
 /// The program area in 2 MB chunks (0 up to the API thunks), mapped
@@ -167,6 +163,7 @@ pub fn supervisor_only(page: u32) -> bool {
         || page == RING0_WINDOW
         || (PAGING_ARENA_BASE..PAGING_ARENA_END).contains(&page)
         || (PROCESS_TABLES..PAGING_EXTRA_END).contains(&page)
+        || (PDPT_AREA_BASE..SHARED_ARENA_BASE).contains(&page)
 }
 
 /// Whether the page at linear `page` holds Warpine's ring-0 code, the
@@ -270,8 +267,14 @@ pub fn process_pte_at(addr: u32) -> Option<u32> {
     if addr < EXE_AREA_END {
         Some(PROCESS_TABLES + (addr >> PAGE_SHIFT) * ENTRY_BYTES)
     } else {
-        (DYNAMIC_ALLOC_BASE..SHARED_ARENA_BASE + SHARED_ARENA_SIZE).contains(&addr)
-            .then(|| ALLOC_TABLES + ((addr - DYNAMIC_ALLOC_BASE) >> PAGE_SHIFT) * ENTRY_BYTES)
+        let entry = |tables: u32, base: u32| tables + ((addr - base) >> PAGE_SHIFT) * ENTRY_BYTES;
+        if (DYNAMIC_ALLOC_BASE..DYNAMIC_ALLOC_END).contains(&addr) {
+            Some(entry(ALLOC_TABLES, DYNAMIC_ALLOC_BASE))
+        } else {
+            // The PDPT area between has no process tables (large pages).
+            (SHARED_ARENA_BASE..SHARED_ARENA_BASE + SHARED_ARENA_SIZE).contains(&addr)
+                .then(|| entry(SHARED_TABLES, SHARED_ARENA_BASE))
+        }
     }
 }
 
@@ -375,14 +378,14 @@ pub fn paging_block(base: u32, tib: u32, nx: bool) -> Vec<u8> {
     let xd = if nx { PTE_XD } else { 0 };
     let table = |addr: u32| u64::from(addr) | PTE_FLAGS;
     let large = |chunk: u32| u64::from(chunk) << LARGE_PAGE_SHIFT | PDE_LARGE;
-    for i in 0..PDPT_FIRST_ENTRY {
+    for i in 0..ENTRIES {
         let entry = if i == TLM_CHUNK {
             table(base + TABLE_OFFSET)
         } else if i < EXE_CHUNKS {
             table(PROCESS_TABLES + i * PAGE_SIZE)
         } else if i == STUB_CHUNK {
             large(i) | PDE_READ_ONLY
-        } else if i == TABLES_CHUNK || EXTRA_CHUNKS.contains(&i) || ARENA_CHUNKS.contains(&i) {
+        } else if i == TABLES_CHUNK || EXTRA_CHUNKS.contains(&i) || ARENA_CHUNKS.contains(&i) || PDPT_CHUNKS.contains(&i) {
             large(i) | PTE_SUPERVISOR | xd
         } else if (ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS).contains(&i) {
             table(ALLOC_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE)
@@ -413,7 +416,6 @@ pub fn paging_block(base: u32, tib: u32, nx: bool) -> Vec<u8> {
     put32(RING0_OFFSET + TSS_SS0_OFFSET, u32::from(KERNEL_DATA_SEL));
     let iomap = (RING0_OFFSET + TSS_IOMAP_OFFSET) as usize;
     block[iomap..iomap + 2].copy_from_slice(&(TSS_SIZE as u16).to_le_bytes());
-    block[PDPT_OFFSET as usize..(PDPT_OFFSET + PDPT_SIZE) as usize].copy_from_slice(&pdpt_of_block(base));
     block
 }
 
@@ -428,16 +430,17 @@ pub fn pdpt_of_block(base: u32) -> [u8; PDPT_SIZE as usize] {
     pdpt
 }
 
-/// The CR3 value of the block at `base`: its PDPT, at the end of its
-/// directory; None for an address that is no block.
+/// The CR3 value of the block at `base`: its PDPT, the page of its slot in
+/// the PDPT area; None for an address that is no block.
 pub fn cr3_of_block(base: u32) -> Option<u32> {
-    valid_block(base).then_some(base + PDPT_OFFSET)
+    block_slot(base).map(|slot| PDPT_AREA_BASE + slot * PAGE_SIZE)
 }
 
 /// The block whose PDPT CR3 holds; None for a value that is no block's.
 pub fn block_of_cr3(cr3: u64) -> Option<u32> {
     let pdpt = u32::try_from(cr3 & CR3_ADDRESS).ok()?;
-    pdpt.checked_sub(PDPT_OFFSET).filter(|&base| valid_block(base))
+    let slot = pdpt.checked_sub(PDPT_AREA_BASE).filter(|off| off.is_multiple_of(PAGE_SIZE))? / PAGE_SIZE;
+    (slot < PAGING_BLOCKS).then(|| block_base(slot))
 }
 
 /// The address of block `slot`: the first [`MAIN_BLOCKS`] after the
@@ -559,7 +562,8 @@ impl super::Loader {
         let base = self.shared.paging_arena.lock_or_recover().alloc()?;
         let block = paging_block(base, tib, nx_enforced());
         let cr3 = cr3_of_block(base);
-        let written = cr3.is_some() && self.system_write_bytes(base, &block).is_some();
+        let written = cr3.is_some_and(|cr3| self.system_write_bytes(base, &block).is_some()
+            && self.system_write_bytes(cr3, &pdpt_of_block(base)).is_some());
         if !written {
             self.shared.paging_arena.lock_or_recover().free(base);
             return None;
@@ -665,9 +669,10 @@ mod tests {
             assert_eq!(pde(&b, i), u64::from(i) << LARGE_PAGE_SHIFT | PTE_SUPERVISOR | PDE_LARGE | PTE_XD,
                        "chunk {i}: Warpine's tables and blocks, supervisor-only (ADR-0115, 0131)");
         }
-        let last = PDPT_FIRST_ENTRY - 1;
-        assert_eq!(pde(&b, last), (u64::from(last) << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE | PTE_XD);
-        assert_eq!(pde(&b, PDPT_FIRST_ENTRY), u64::from(BASE) | PDPTE_PRESENT, "then the PDPT: supervisor-only, read-only as entries");
+        assert_eq!(pde(&b, ENTRIES - 1), (u64::from(ENTRIES - 1) << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE | PTE_XD);
+        for i in PDPT_CHUNKS {
+            assert_eq!(pde(&b, i), u64::from(i) << LARGE_PAGE_SHIFT | PTE_SUPERVISOR | PDE_LARGE | PTE_XD, "chunk {i}: the PDPTs, supervisor-only");
+        }
         assert_eq!(pte(&b, 0), u64::from(chunk) | PTE_SUPERVISOR | PTE_XD, "the GDT's first page: supervisor-only");
         let tib = (TIB_BASE >> PAGE_SHIFT) & (ENTRIES - 1);
         assert_eq!(pte(&b, tib), u64::from(TIB_BASE) | PTE_FLAGS | PTE_XD, "the TIB");
@@ -700,11 +705,11 @@ mod tests {
             assert_eq!(pde(&b, i), u64::from(SHARED_TABLES + (i - SHARED_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS,
                        "shared arena chunk {i}: through its process table");
         }
-        for i in (EXE_CHUNKS..PDPT_FIRST_ENTRY).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i) && !shared.contains(&i)) {
+        for i in (EXE_CHUNKS..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i) && !shared.contains(&i)) {
             let e = pde(&b, i);
             assert_eq!(e & ADDRESS, u64::from(i) << LARGE_PAGE_SHIFT, "directory entry {i}");
             let flags = if i == STUB_CHUNK { PDE_READ_ONLY }
-                        else if i == TABLES_CHUNK || EXTRA_CHUNKS.contains(&i) || ARENA_CHUNKS.contains(&i) { PTE_SUPERVISOR | PTE_XD }
+                        else if i == TABLES_CHUNK || EXTRA_CHUNKS.contains(&i) || ARENA_CHUNKS.contains(&i) || PDPT_CHUNKS.contains(&i) { PTE_SUPERVISOR | PTE_XD }
                         else { PTE_FLAGS | PTE_XD };
             assert_eq!(e & !ADDRESS, flags | PDE_LARGE, "directory entry {i}");
         }
@@ -788,9 +793,9 @@ mod tests {
         let pdpt: Vec<u64> = (0..4).map(|k| entry(&p, 8 * k)).collect();
         assert_eq!(pdpt, vec![u64::from(BASE) | PDPTE_PRESENT, u64::from(HIGH_DIRECTORIES) | PDPTE_PRESENT,
                               u64::from(HIGH_DIRECTORIES + PAGE_SIZE) | PDPTE_PRESENT, u64::from(HIGH_DIRECTORIES + 2 * PAGE_SIZE) | PDPTE_PRESENT]);
-        assert_eq!(cr3_of_block(BASE), Some(BASE + PAGE_SIZE - PDPT_SIZE), "the PDPT ends the directory");
-        assert_eq!(&b[PDPT_OFFSET as usize..(PDPT_OFFSET + PDPT_SIZE) as usize], &p[..], "written in the block");
-        assert!(supervisor_only(BASE), "in the supervisor-only arena");
+        assert_eq!(cr3_of_block(BASE), Some(PDPT_AREA_BASE + 5 * PAGE_SIZE), "slot 5's PDPT page");
+        assert!(supervisor_only(PDPT_AREA_BASE) && supervisor_only(SHARED_ARENA_BASE - PAGE_SIZE) && !supervisor_only(SHARED_ARENA_BASE));
+        assert!(crate::loader::guest_mem::protected(PDPT_AREA_BASE + 5 * PAGE_SIZE, 1), "no guest pointer reaches it");
         assert_eq!(block_of_cr3(cr3_of_block(BASE).unwrap() as u64), Some(BASE));
         assert_eq!(ring0_page_of_tlm(BASE + TLM_OFFSET), Some(BASE + RING0_OFFSET));
         assert_eq!(ring0_page_of_tlm(0), None);
@@ -840,7 +845,7 @@ mod tests {
     /// page (ADR-0131); the entry helpers address and fill them.
     #[test]
     fn the_process_tables_map_the_allocators_region() {
-        assert_eq!(ALLOC_CHUNKS * (1 << LARGE_PAGE_SHIFT), SHARED_ARENA_BASE - DYNAMIC_ALLOC_BASE);
+        assert_eq!(ALLOC_CHUNKS * (1 << LARGE_PAGE_SHIFT), DYNAMIC_ALLOC_END - DYNAMIC_ALLOC_BASE);
         assert!(supervisor_only(PROCESS_TABLES) && supervisor_only(PROCESS_TABLES + PROCESS_TABLES_SIZE - PAGE_SIZE));
         assert_eq!(process_pte_at(0), Some(PROCESS_TABLES), "the program area first");
         assert_eq!(process_pte_at(EXE_AREA_END - 1), Some(ALLOC_TABLES - 8));
@@ -848,7 +853,9 @@ mod tests {
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE), Some(ALLOC_TABLES));
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x234), Some(ALLOC_TABLES));
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x1234), Some(ALLOC_TABLES + 8));
-        assert_eq!(process_pte_at(SHARED_ARENA_BASE - 1), Some(SHARED_TABLES - 8));
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_END - 1), Some(SHARED_TABLES - 8));
+        assert_eq!(process_pte_at(PDPT_AREA_BASE), None, "the PDPTs keep their large pages");
+        assert_eq!(process_pte_at(SHARED_ARENA_BASE - 1), None);
         assert_eq!(process_pte_at(SHARED_ARENA_BASE), Some(SHARED_TABLES), "the shared arena's tables follow");
         assert_eq!(process_pte_at(SHARED_ARENA_BASE + SHARED_ARENA_SIZE - 1), Some(HIGH_DIRECTORIES - 8));
         assert_eq!(process_pte_at(SHARED_ARENA_BASE + SHARED_ARENA_SIZE), None);
@@ -860,7 +867,7 @@ mod tests {
             assert_eq!(loader.guest_read::<u64>(at), Some(u64::from(addr) | PTE_FLAGS | PTE_XD),
                        "{addr:#x}: the program area present, not executable until its code is marked");
         }
-        for addr in [DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + 0x5000, SHARED_ARENA_BASE - PAGE_SIZE] {
+        for addr in [DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + 0x5000, DYNAMIC_ALLOC_END - PAGE_SIZE] {
             let at = process_pte_at(addr).unwrap();
             assert_eq!(loader.guest_read::<u64>(at), Some(u64::from(addr)), "{addr:#x}: the allocator's region not present until allocated");
         }
@@ -941,7 +948,8 @@ mod tests {
         let loader = super::super::Loader::new_mock();
         let base = block_of_cr3(loader.alloc_paging_block(TIB_BASE).expect("a paging block").into()).unwrap();
         for addr in [GDT_BASE, IDT_BASE, IDT_HANDLER_BASE, TIB_BASE - 4, PAGING_ARENA_BASE, base, base + TLM_OFFSET, PAGING_ARENA_END - 4,
-                     PAGING_EXTRA_BASE, PAGING_EXTRA_END - 4] {
+                     PAGING_EXTRA_BASE, PAGING_EXTRA_END - 4, PROCESS_TABLES, MAGIC_API_BASE as u32,
+                     PDPT_AREA_BASE, SHARED_ARENA_BASE - 4] {
             assert!(protected(addr, 4), "{addr:#x}");
             assert_eq!(loader.guest_write::<u32>(addr, 0x5151), None, "{addr:#x}: refused");
             assert!(loader.guest_write_bytes(addr, &[1, 2, 3, 4]).is_none(), "{addr:#x}");
@@ -950,8 +958,9 @@ mod tests {
         }
         assert!(protected(TIB_BASE - 2, 4), "a write that straddles the edge");
         assert!(supervisor_only(PAGING_EXTRA_BASE) && supervisor_only(PAGING_EXTRA_END - PAGE_SIZE));
-        assert!(protected(PAGING_EXTRA_BASE - 2, 4), "a write into the extra blocks from below");
-        for addr in [TIB_BASE, PIB_BASE, TLM_PAGE, FS_WINDOW, PAGING_ARENA_END, DYNAMIC_ALLOC_BASE, PAGING_EXTRA_BASE - 4] {
+        assert!(protected(PROCESS_TABLES - 2, 4), "a write into the process tables from below");
+        for addr in [TIB_BASE, PIB_BASE, TLM_PAGE, FS_WINDOW, PAGING_ARENA_END, DYNAMIC_ALLOC_BASE, PROCESS_TABLES - 4,
+                     MAGIC_API_BASE as u32 - 4, DYNAMIC_ALLOC_END - 4, SHARED_ARENA_BASE] {
             assert!(!protected(addr, 4), "{addr:#x}");
         }
         assert_eq!(loader.system_write::<u32>(base + TLM_OFFSET, 0x5151), Some(()));

@@ -177,7 +177,7 @@ impl super::Loader {
 
     pub(crate) fn setup_stubs(&self) {
         for i in 0..STUB_AREA_SIZE {
-            self.guest_write::<u8>(MAGIC_API_BASE as u32 + i, 0xCC).expect("setup_stubs: write OOB");
+            self.system_write::<u8>(MAGIC_API_BASE as u32 + i, 0xCC).expect("setup_stubs: write OOB");
         }
     }
 

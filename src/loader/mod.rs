@@ -570,7 +570,7 @@ impl Loader {
         vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
 
         // Private allocations end where the shared arena begins.
-        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, SHARED_ARENA_BASE);
+        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_END);
         let alloc_pending = mem_mgr.pending_flag();
         let handle_mgr = HandleManager::new();
         let resource_mgr = ResourceManager::new();
@@ -720,10 +720,10 @@ impl Loader {
         const MOCK_DRIVE_C: &str = "target/test-drive-c";
         use vm_backend::mock::MockVmBackend;
         let vm: Arc<dyn VmBackend> = Arc::new(MockVmBackend);
-        let guest_mem_size = 64 * 1024 * 1024; // 64 MB (must cover DYNAMIC_ALLOC_BASE = 0x02000000)
+        let guest_mem_size = GUEST_MEM_SIZE as usize; // all of it: the PDPT area lies near the top
         let guest_mem = GuestMemory::alloc(guest_mem_size);
         vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
-        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + guest_mem_size as u32);
+        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_END);
         let alloc_pending = mem_mgr.pending_flag();
         let shared = Arc::new(SharedState {
             mem_mgr:      Mutex::new(mem_mgr),

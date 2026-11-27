@@ -101,6 +101,11 @@ case "$MODE" in
         step "Open Watcom and the probe's samples"
         ./vendor/setup_watcom.sh
         for s in hello nx_test tlm_test ring_test mem_protect_test stack_grow_test; do make -C "samples/$s"; done
+        step "PAE probe: hello alone, with Warpine's messages and crash dumps"
+        timeout 60 cargo run --quiet -- samples/hello/hello.exe || echo "hello: exit status $?"
+        for dump in "${XDG_STATE_HOME:-$HOME/.local/state}"/warpine/*; do
+            if [ -f "$dump" ]; then echo "== $dump"; cat "$dump"; fi
+        done
         step "PAE probe"
         cargo test --test integration -- --test-threads="$JOBS" test_hello_world test_no_execute_memory \
             test_thread_local_memory every_thread_has_a_tss_and_the_flat_segments \
