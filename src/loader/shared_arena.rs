@@ -534,8 +534,7 @@ impl super::SharedState {
                 }
             }
         }
-        self.tlb_epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.threads.table.lock_or_recover().kick_all_but(0);
+        self.shoot_down_tlbs();
     }
 
     /// Map the session's arena over the top of guest memory: the one a

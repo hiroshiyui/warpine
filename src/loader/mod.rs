@@ -485,9 +485,9 @@ pub struct SharedState {
     pub process_tables_ready: AtomicBool,
     /// The page states of `DosAllocMem` allocations (`vmem.rs`, ADR-0114).
     pub vmem: Mutex<vmem::PageMap>,
-    /// Counted up when pages lose access: every vCPU flushes its TLB once
-    /// it sees a new value (`vmem.rs`).
-    pub tlb_epoch: std::sync::atomic::AtomicU64,
+    /// TLB shootdowns when pages lose access (`vmem::TlbSync`, ADR-0114
+    /// addendum).
+    pub tlb: vmem::TlbSync,
     /// Set while allocations or frees wait for the page tables
     /// (`MemoryManager::pending_flag`, `vmem.rs`).
     pub alloc_pending: Arc<AtomicBool>,
@@ -641,7 +641,7 @@ impl Loader {
             paging_arena: Default::default(),
             process_tables_ready: AtomicBool::new(false),
             vmem: Default::default(),
-            tlb_epoch: Default::default(),
+            tlb: Default::default(),
             alloc_pending,
             pte_sync: Mutex::new(()),
             exit_reports: Default::default(),
@@ -762,7 +762,7 @@ impl Loader {
             paging_arena: Default::default(),
             process_tables_ready: AtomicBool::new(false),
             vmem: Default::default(),
-            tlb_epoch: Default::default(),
+            tlb: Default::default(),
             alloc_pending,
             pte_sync: Mutex::new(()),
             exit_reports: Default::default(),

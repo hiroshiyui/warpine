@@ -24,7 +24,9 @@
 //! every vCPU, and each reloads CR3 before it runs guest code again.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
@@ -386,6 +388,99 @@ fn set_pages(base: u32, region: &mut Region, addr: u32, cb: u32, flag: u32) -> R
     Ok(out)
 }
 
+/// TLB shootdowns (ADR-0114 addendum): when pages lose access, the call
+/// that took it away returns only once no vCPU can still reach them
+/// through a stale TLB entry. Each vCPU says whether it is in guest code
+/// and the epoch its TLB was last flushed for; [`TlbSync::shoot_down`]
+/// counts the epoch up, and its caller kicks every vCPU and waits.
+#[derive(Debug, Default)]
+pub struct TlbSync {
+    epoch: AtomicU64,
+    vcpus: Mutex<Vec<Weak<VcpuTlb>>>,
+}
+
+/// One vCPU's side of [`TlbSync`].
+#[derive(Debug, Default)]
+pub struct VcpuTlb {
+    in_guest: AtomicBool,
+    seen: AtomicU64,
+}
+
+/// How long a shootdown waits for the vCPUs before it gives up with a
+/// warning: a kicked vCPU leaves guest code within microseconds.
+pub const SHOOTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+impl TlbSync {
+    /// A new vCPU, clean for the current epoch.
+    pub fn register(&self) -> Arc<VcpuTlb> {
+        let vcpu = Arc::new(VcpuTlb { in_guest: AtomicBool::new(false), seen: AtomicU64::new(self.current()) });
+        let mut vcpus = self.vcpus.lock_or_recover();
+        vcpus.retain(|v| v.strong_count() > 0);
+        vcpus.push(Arc::downgrade(&vcpu));
+        vcpu
+    }
+
+    /// The current epoch.
+    pub fn current(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    /// `vcpu` is about to enter guest code: the epoch its TLB must be
+    /// clean for. Marked in guest code first, so that a shootdown counting
+    /// the epoch up after this either is seen here or waits for the vCPU.
+    pub fn enter(&self, vcpu: &VcpuTlb) -> u64 {
+        vcpu.in_guest.store(true, Ordering::SeqCst);
+        self.current()
+    }
+
+    /// `vcpu`'s TLB is clean for `epoch` (flushed, or nothing changed).
+    pub fn clean(vcpu: &VcpuTlb, epoch: u64) {
+        vcpu.seen.store(epoch, Ordering::SeqCst);
+    }
+
+    /// `vcpu` left guest code.
+    pub fn leave(vcpu: &VcpuTlb) {
+        vcpu.in_guest.store(false, Ordering::SeqCst);
+    }
+
+    /// Count the epoch up: the one every vCPU must reach.
+    pub fn shoot_down(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Wait until every vCPU is out of guest code or clean for `epoch`;
+    /// false when `timeout` passed first.
+    pub fn wait(&self, epoch: u64, timeout: Duration) -> bool {
+        let vcpus: Vec<Arc<VcpuTlb>> = self.vcpus.lock_or_recover().iter().filter_map(Weak::upgrade).collect();
+        let start = Instant::now();
+        let mut spins = 0u32;
+        loop {
+            let reached = |v: &Arc<VcpuTlb>| !v.in_guest.load(Ordering::SeqCst) || v.seen.load(Ordering::SeqCst) >= epoch;
+            if vcpus.iter().all(reached) {
+                return true;
+            }
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            spins += 1;
+            if spins < 64 { std::thread::yield_now() } else { std::thread::sleep(Duration::from_micros(50)) }
+        }
+    }
+}
+
+impl super::SharedState {
+    /// Take pages out of every vCPU's TLB (ADR-0114 addendum): count the
+    /// epoch up, kick every vCPU out of guest code and wait until each has
+    /// flushed or left it.
+    pub(crate) fn shoot_down_tlbs(&self) {
+        let epoch = self.tlb.shoot_down();
+        self.threads.table.lock_or_recover().kick_all_but(0);
+        if !self.tlb.wait(epoch, SHOOTDOWN_TIMEOUT) {
+            log::warn!("TLB shootdown: a vCPU did not leave guest code within {SHOOTDOWN_TIMEOUT:?}");
+        }
+    }
+}
+
 impl super::Loader {
     /// Write `changes` into the process tables, which are written first if
     /// no thread has run yet (a program's objects are protected before
@@ -469,8 +564,7 @@ impl super::Loader {
     /// count the epoch up and kick them; each reloads CR3 before it runs
     /// guest code again (`vcpu.rs`).
     pub(crate) fn flush_tlbs(&self) {
-        self.shared.tlb_epoch.fetch_add(1, Ordering::AcqRel);
-        self.shared.threads.table.lock_or_recover().kick_all_but(0);
+        self.shared.shoot_down_tlbs();
     }
 
     /// DosAllocMem (ordinal 299): reserve `cb` bytes, committed with
@@ -688,6 +782,38 @@ mod tests {
 
     const BASE: u32 = 0x0300_0000;
     const RW: u32 = PAG_COMMIT | PAG_READ | PAG_WRITE;
+
+    /// A shootdown waits for a vCPU in guest code until it is clean for
+    /// the new epoch or has left guest code; vCPUs outside guest code and
+    /// gone ones never hold it up (ADR-0114 addendum).
+    #[test]
+    fn a_tlb_shootdown_waits_for_every_vcpu_in_guest_code() {
+        let short = Duration::from_millis(20);
+        let sync = TlbSync::default();
+        let (a, b) = (sync.register(), sync.register());
+        let gone = sync.register();
+        let start = sync.enter(&gone);
+        TlbSync::clean(&gone, start);
+        drop(gone);
+        assert!(sync.wait(sync.shoot_down(), short), "nobody in guest code, the gone vCPU uncounted");
+        let old = sync.enter(&a);
+        TlbSync::clean(&a, old);
+        let epoch = sync.shoot_down();
+        assert!(!sync.wait(epoch, short), "a runs with a TLB older than the shootdown");
+        TlbSync::leave(&a);
+        assert!(sync.wait(epoch, short), "a left guest code");
+        assert_eq!(sync.enter(&b), epoch, "b enters after it: it sees the new epoch");
+        TlbSync::clean(&b, epoch);
+        assert!(sync.wait(epoch, short), "b is clean for it");
+        let epoch = sync.shoot_down();
+        let waiter = std::thread::scope(|s| {
+            let w = s.spawn(|| sync.wait(epoch, SHOOTDOWN_TIMEOUT));
+            std::thread::sleep(short);
+            TlbSync::clean(&b, sync.current());
+            w.join().unwrap()
+        });
+        assert!(waiter, "the waiter goes on once b flushed");
+    }
 
     /// Thread 1's stack is the `STACKSIZE` bytes below the entry ESP, in
     /// its object; whole pages above a page shared with data are sparse.

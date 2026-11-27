@@ -1690,11 +1690,12 @@ fn test_exception_chains_are_per_thread() {
 /// TSS, and its segments are the flat ones (code 0x08, data 0x10, the
 /// TIB at 0x18) with RPL 3; FS reaches its TIB. CLI raises
 /// XCPT_PRIVILEGED_INSTRUCTION, a context record cannot raise IOPL, the
-/// GDT, the ring-0 window and the paging arena cannot be read, and the API
-/// thunks' 4 MB cannot be written.
+/// GDT, the ring-0 window, the paging arena, the process tables and the
+/// PDPTs cannot be read, the API thunks' 4 MB cannot be written, and
+/// DosQueryMem refuses output pointers into the thunks, tables and PDPTs.
 #[test]
 fn every_thread_has_a_tss_and_the_flat_segments() {
-    let Some(out) = text_checks_pass_env("samples/ring_test/ring_test.exe", "ring_test", 17, &[]) else { return };
+    let Some(out) = text_checks_pass_env("samples/ring_test/ring_test.exe", "ring_test", 21, &[]) else { return };
     assert!(out.contains("ring_test info: running at ring 3"), "{out}");
     assert!(out.contains("ring_test info: thread 2: running at ring 3"), "{out}");
 }
@@ -1719,12 +1720,14 @@ fn a_programs_breakpoint_raises_xcpt_breakpoint() {
 /// states held by the page tables: reserved, read-only and decommitted
 /// pages fault, committed pages start zeroed, guard pages raise
 /// XCPT_GUARD_PAGE_VIOLATION once, the calls' errors, and a page made
-/// read-only faults on another thread whose TLB held it writable, the
+/// read-only faults on another thread whose TLB held it writable, and on
+/// one writing it all the time, none of whose writes lands after DosSetMem
+/// returns (a TLB shootdown, ADR-0114 addendum), the
 /// program's code object cannot be written, and freed or never allocated
 /// memory cannot be read.
 #[test]
 fn page_states_of_allocated_memory_hold() {
-    text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 42, &[]);
+    text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 44, &[]);
 }
 
 /// stack_grow_test (ADR-0114): a thread's stack is sparse, grows as it is

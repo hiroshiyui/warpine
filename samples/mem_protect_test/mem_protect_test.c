@@ -130,6 +130,24 @@ static void APIENTRY second(ULONG arg)
     second_faulted = faults(write_at, shared_page);
 }
 
+/* A thread writing all the time, in guest code when the page turns
+ * read-only: once DosSetMem returns, none of its writes lands (a TLB
+ * shootdown, ADR-0114 addendum). */
+static PULONG       spun_page;
+static volatile int spinner_faulted = -1;
+
+static void spin_write(PVOID p)
+{
+    volatile ULONG *w = (volatile ULONG *)p;
+    for (;;) *w = *w + 1;
+}
+
+static void APIENTRY spinner(ULONG arg)
+{
+    (void)arg;
+    spinner_faulted = faults(spin_write, spun_page);
+}
+
 int main(void)
 {
     PBYTE  p;
@@ -233,6 +251,22 @@ int main(void)
         DosPostEventSem(protected_now);
         DosWaitThread(&tid, DCWW_WAIT);
         check("read-only on another thread that wrote it", second_faulted == 1);
+    } else {
+        check("DosCreateThread", 0);
+    }
+
+    /* Another thread writing when the page turns read-only. */
+    DosAllocMem((PPVOID)&spun_page, PAGE, PAG_COMMIT | RW);
+    if (DosCreateThread(&tid, (PFNTHREAD)spinner, 0, 0, THREAD_STACK) == NO_ERROR) {
+        ULONG before, after;
+        while (*(volatile ULONG *)spun_page < 100000UL) DosSleep(0);
+        DosSetMem(spun_page, PAGE, PAG_READ);
+        before = *(volatile ULONG *)spun_page;
+        DosSleep(50);
+        after = *(volatile ULONG *)spun_page;
+        DosWaitThread(&tid, DCWW_WAIT);
+        check("no write of a running thread lands after DosSetMem returns", before == after);
+        check("the running thread faults", spinner_faulted == 1);
     } else {
         check("DosCreateThread", 0);
     }

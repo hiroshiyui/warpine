@@ -537,8 +537,9 @@ impl super::Loader {
         }
 
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
-        // The TLB epoch this vCPU's TLB is clean for (ADR-0114).
-        let mut tlb_epoch = self.shared.tlb_epoch.load(Ordering::Acquire);
+        // The TLB epoch this vCPU's TLB is clean for (ADR-0114 addendum).
+        let tlb = self.shared.tlb.register();
+        let mut tlb_epoch = self.shared.tlb.current();
         // Exits to memory past guest RAM in a row (see MMIO_STORM_LIMIT).
         let mut mmio_run: u32 = 0;
 
@@ -635,13 +636,15 @@ impl super::Loader {
             // reload CR3 so that its TLB forgets them.
             // So did the memory this thread freed (free memory is not
             // present), which only this thread's TLB is flushed for.
-            let epoch = self.shared.tlb_epoch.load(Ordering::Acquire);
+            let epoch = self.shared.tlb.enter(&tlb);
             let freed_here = super::managers::take_freed_here();
             if epoch != tlb_epoch || freed_here {
                 tlb_epoch = epoch;
                 flush_tlb(&mut *vcpu);
             }
+            super::vmem::TlbSync::clean(&tlb, tlb_epoch);
             let res = vcpu.run();
+            super::vmem::TlbSync::leave(&tlb);
             if let Err(e) = res {
                 let report = self.collect_crash_report(
                     &*vcpu, vcpu_id,

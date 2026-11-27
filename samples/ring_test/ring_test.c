@@ -31,6 +31,7 @@
  */
 #define INCL_DOS
 #define INCL_DOSEXCEPTIONS
+#define INCL_DOSERRORS
 #include <os2.h>
 #include <string.h>
 #include <setjmp.h>
@@ -45,6 +46,9 @@
 #define RING0_WINDOW  0x01841000UL
 #define PAGING_ARENA  0x01842000UL
 #define THUNK_CHUNK   0x01200000UL  /* in the API thunks' 4 MB, past the thunks */
+#define API_THUNKS    0x01000100UL  /* a thunk */
+#define PROC_TABLES   0x01200000UL  /* the process's page tables (ADR-0114) */
+#define PDPT_AREA     0x0DC00000UL  /* the threads' PDPTs (ADR-0131) */
 #define CLI_LEN  1
 #define IOPL_MASK 0x3000UL
 
@@ -166,6 +170,27 @@ static void check_protected(int ring3)
         check("the paging arena cannot be read", faults(read_at, PAGING_ARENA));
     }
     check("the API thunks' 4 MB cannot be written", faults(write_at, THUNK_CHUNK));
+    if (ring3) {
+        check("the process tables cannot be read", faults(read_at, PROC_TABLES));
+        check("the PDPTs cannot be read", faults(read_at, PDPT_AREA));
+    }
+}
+
+/* No API call writes Warpine's memory for a program (ADR-0113): given an
+ * output pointer there, DosQueryMem fails and writes nothing. */
+static void check_api_writes(void)
+{
+    static ULONG here;
+    ULONG cb, flags;
+    ULONG targets[3] = { API_THUNKS, PROC_TABLES, PDPT_AREA };
+    int   i, refused = 1;
+
+    for (i = 0; i < 3; i++) {
+        if (DosQueryMem(&here, (PULONG)targets[i], &flags) != ERROR_INVALID_PARAMETER) refused = 0;
+    }
+    check("DosQueryMem refuses output pointers into the thunks, tables and PDPTs", refused);
+    cb = sizeof(here);
+    check("the thunks still work", DosQueryMem(&here, &cb, &flags) == NO_ERROR && cb != 0);
 }
 
 static void check_privileged(void)
@@ -220,6 +245,7 @@ int main(void)
         check_privileged();
     }
     check_protected((read_cs() & RPL_MASK) == 3);
+    check_api_writes();
     if (DosCreateThread(&tid, (PFNTHREAD)second, 0, 0, 65536) == 0) {
         DosWaitThread(&tid, DCWW_WAIT);
     } else {
