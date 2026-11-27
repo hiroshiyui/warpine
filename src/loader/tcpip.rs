@@ -1020,7 +1020,7 @@ impl super::Loader {
             return SOCK_ERROR;
         };
         let buf_len = self.guest_read::<u32>(optlen_ptr).unwrap_or(0);
-        let Some(buf) = self.guest_slice_mut(optval_ptr, buf_len as usize) else {
+        let Some(mut buf) = self.guest_slice_mut(optval_ptr, buf_len as usize) else {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
             return SOCK_ERROR;
         };
@@ -1030,6 +1030,8 @@ impl super::Loader {
                 buf.as_mut_ptr() as *mut libc::c_void,
                 &mut actual_len)
         };
+        // Unpinned before any other guest access (`GuestSlice`).
+        drop(buf);
         if rc != 0 {
             let e = errno_to_soce(last_errno());
             self.shared.socket_mgr.lock_or_recover().set_errno(e);
@@ -1167,7 +1169,7 @@ impl super::Loader {
 
     pub fn so_gethostname(&self, name_ptr: u32, namelen: u32) -> u32 {
         debug!("gethostname(namelen={})", namelen);
-        let Some(buf) = self.guest_slice_mut(name_ptr, namelen as usize) else {
+        let Some(mut buf) = self.guest_slice_mut(name_ptr, namelen as usize) else {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
             return SOCK_ERROR;
         };

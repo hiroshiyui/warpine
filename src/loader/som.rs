@@ -1029,7 +1029,7 @@ impl Loader {
             rt.heap.blocks.insert(at, rounded);
             at
         };
-        if let Some(m) = self.guest_slice_mut(at, rounded as usize) { m.fill(0); }
+        if let Some(mut m) = self.guest_slice_mut(at, rounded as usize) { m.fill(0); }
         Some(at)
     }
 

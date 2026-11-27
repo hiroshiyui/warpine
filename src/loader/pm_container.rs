@@ -1719,7 +1719,7 @@ impl Loader {
         }
         let Some(addrs) = self.with_cnr(hwnd, |s, _| s.heap.carve(kind, size, n)).flatten() else { return 0 };
         for (i, &a) in addrs.iter().enumerate() {
-            if let Some(m) = self.guest_slice_mut(a, size as usize) { m.fill(0); }
+            if let Some(mut m) = self.guest_slice_mut(a, size as usize) { m.fill(0); }
             let _ = self.guest_write::<u32>(a, cb);
             let _ = self.guest_write::<u32>(a + next, addrs.get(i + 1).copied().unwrap_or(0));
         }

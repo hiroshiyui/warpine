@@ -601,7 +601,7 @@ impl Loader {
             }
         }
         let base = self.shared.mem_mgr.lock_or_recover().alloc(size)?;
-        if let Some(m) = self.guest_slice_mut(base, size as usize) { m.fill(0); }
+        if let Some(mut m) = self.guest_slice_mut(base, size as usize) { m.fill(0); }
         Some(base)
     }
 

@@ -88,9 +88,9 @@ impl super::Loader {
                 let data_size = (lx_file.page_map[page_idx].data_size as usize).min(PAGE_SIZE as usize);
                 if data_size > 0 {
                     file.seek(SeekFrom::Start(page_off))?;
-                    let slice = self.guest_slice_mut(target as u32, data_size).ok_or_else(|| io::Error::new(
+                    let mut slice = self.guest_slice_mut(target as u32, data_size).ok_or_else(|| io::Error::new(
                         io::ErrorKind::InvalidData, format!("object {} page {p} lies outside guest memory", i + 1)))?;
-                    file.read_exact(slice)?;
+                    file.read_exact(&mut slice)?;
                 }
             }
         }
@@ -317,9 +317,9 @@ impl super::Loader {
                     let target = base + (p as u32 * 4096);
                     file.seek(SeekFrom::Start(page_off))
                         .map_err(|e| format!("DLL page seek error: {}", e))?;
-                    let slice = self.guest_slice_mut(target, pm.data_size as usize)
+                    let mut slice = self.guest_slice_mut(target, pm.data_size as usize)
                         .ok_or_else(|| format!("DLL page 0x{:08X} out of guest memory bounds", target))?;
-                    file.read_exact(slice)
+                    file.read_exact(&mut slice)
                         .map_err(|e| format!("DLL page read error: {}", e))?;
                 }
             }

@@ -25,9 +25,9 @@ impl super::Loader {
 
             if data_len > 0 && seg.data_offset != 0 {
                 file.seek(SeekFrom::Start(file_off))?;
-                let buf = self.guest_slice_mut(guest_addr, data_len as usize)
+                let mut buf = self.guest_slice_mut(guest_addr, data_len as usize)
                     .expect("load_ne: segment target OOB");
-                file.read_exact(buf)?;
+                file.read_exact(&mut buf)?;
             }
             debug!("  NE Segment {}: {} bytes at 0x{:08X} ({})",
                 i + 1, data_len, guest_addr, if seg.is_code() { "CODE" } else { "DATA" });

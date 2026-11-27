@@ -1079,7 +1079,7 @@ impl super::Loader {
         // Zero the entire region first so unwritten fields default to 0.
         let len = cb.min(FM_SIZE) as usize;
         let zeros = vec![0u8; len];
-        if let Some(slice) = self.guest_slice_mut(addr, len) {
+        if let Some(mut slice) = self.guest_slice_mut(addr, len) {
             slice.copy_from_slice(&zeros);
         }
 
@@ -1094,7 +1094,7 @@ impl super::Loader {
             if off < cb {
                 let end = (off as usize + max).min(cb as usize);
                 let n = s.len().min(end - off as usize);
-                if let Some(slice) = self.guest_slice_mut(addr + off, max.min(cb as usize - off as usize)) {
+                if let Some(mut slice) = self.guest_slice_mut(addr + off, max.min(cb as usize - off as usize)) {
                     slice[..n].copy_from_slice(&s[..n]);
                 }
             }
